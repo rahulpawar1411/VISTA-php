@@ -4,7 +4,6 @@ import {
   Text,
   View,
   TextInput,
-  TouchableOpacity,
   Image,
   ImageBackground,
   KeyboardAvoidingView,
@@ -15,6 +14,9 @@ import {
   Alert
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import FastTouchable from '../components/FastTouchable';
+
+const TouchableOpacity = FastTouchable;
 
 /**
  * ====================================================================
@@ -29,7 +31,7 @@ export default function LoginScreen({
   apiUrl,
   onUpdateApiUrl,
   productionApiUrl = 'https://reeferon-crm-backend.onrender.com',
-  localApiUrl = 'http://192.168.147.129:5000'
+  localApiUrl = 'http://192.168.161.129:5000'
 }) {
   // Input form state variables
   const [email, setEmail] = useState('');
@@ -80,16 +82,21 @@ export default function LoginScreen({
       const data = await response.json();
 
       if (response.ok && data.success) {
-        if (data.user?.role !== 'do_operator') {
-          alert('Access Denied: Only Data Operators registered in the directory are allowed to log in.');
-          setLoading(false);
+        const role = String(data.user?.role || '').trim();
+        // Role-based mobile access — keep backend role exactly (email/password map to one role table)
+        if (role === 'do_operator' || role === 'customer' || role === 'sub_admin') {
+          console.log('🔑 Login success:', role, data.user?.email);
+          onLoginSuccess({
+            user: data.user,
+            token: data.token
+          });
           return;
         }
-        console.log('🔑 Real login success:', data.user);
-        onLoginSuccess({
-          user: data.user,
-          token: data.token
-        });
+        alert(
+          role === 'super_admin'
+            ? 'Super Admin must use the web portal. This app is for DO, Customer, and Sub-Admin accounts.'
+            : 'Access Denied: Invalid account role for this app.'
+        );
       } else {
         alert(data.message || 'Login failed. Please check your credentials.');
       }
@@ -437,7 +444,7 @@ const styles = StyleSheet.create({
     height: 48,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 24,
+    marginBottom: 24
   },
   signInButtonContent: {
     flexDirection: 'row',

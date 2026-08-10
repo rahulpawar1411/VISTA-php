@@ -1,31 +1,70 @@
+// ====================================================================
+// Offline SQLite Layer (mobile/src/database/db.js)
+// --------------------------------------------------------------------
+// Stores:
+//   local_assignments  → chamber/client master cache + pending add/delete
+//   local_inspections  → DO temperature logs waiting for upload
+//   client_lot_master  → suggestion names for Add Client UI
+//
+// RULES FOR DEVELOPERS:
+//   1) Prefer ALTER TABLE ADD COLUMN for schema changes
+//   2) NEVER DROP tables that may hold pending sync rows
+//   3) saveInspectionLocally / addLocalAssignment write sync_status='pending'
+//   4) markInspectionAsSynced / markAssignmentSynced clear the queue after API OK
+// ====================================================================
+
 import * as SQLite from 'expo-sqlite';
 
 let db = null;
 try {
-  // Open sync SQLite database file
+  // Single on-device DB file (Expo SQLite sync API)
   db = SQLite.openDatabaseSync('reeferon_offline.db');
 } catch (err) {
   console.error('❌ Error opening SQLite database:', err);
 }
 
 /**
- * Initializes local SQLite tables for client-chamber assignments cache
- * and pending inspections queue.
+ * Create tables if needed + additive migrations.
+ * Safe to call on every app start.
  */
 export const initDatabase = () => {
   if (!db) return;
-  try {
-    // 1. Create assignments table (caching assignments from backend)
-    try {
-      const tableInfo = db.getAllSync("PRAGMA table_info(local_assignments);");
-      const hasSyncStatus = tableInfo.some(col => col.name === 'sync_status');
-      const hasAction = tableInfo.some(col => col.name === 'action');
-      if (tableInfo.length > 0 && (!hasSyncStatus || !hasAction)) {
-        console.log('🧹 SQLite: Old local_assignments schema detected. Dropping for clean upgrade.');
-        db.execSync('DROP TABLE IF EXISTS local_assignments;');
-      }
-    } catch (err) {}
 
+  /** @returns {{ name: string }[]} */
+  const tableColumns = (table) => {
+    try {
+      return db.getAllSync(`PRAGMA table_info(${table});`) || [];
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const hasColumn = (cols, name) => cols.some((c) => c.name === name);
+
+  /**
+   * Add a missing column without wiping data.
+   * @param {string} table
+   * @param {string} column - column name to check
+   * @param {string} ddlFragment - e.g. "box_count INTEGER" (no "ADD COLUMN" prefix)
+   */
+  const ensureColumn = (table, column, ddlFragment) => {
+    try {
+      const cols = tableColumns(table);
+      if (cols.length === 0) return; // CREATE TABLE has not run yet for this name
+      if (hasColumn(cols, column)) return;
+      db.execSync(`ALTER TABLE ${table} ADD COLUMN ${ddlFragment};`);
+      console.log(`🌱 SQLite: Added ${table}.${column}`);
+    } catch (err) {
+      if (!/duplicate column/i.test(String(err?.message || err))) {
+        console.warn(`⚠️ SQLite migrate ${table}.${column}:`, err?.message || err);
+      }
+    }
+  };
+
+  try {
+    // ------------------------------------------------------------------
+    // 1) Assignments cache (server copy + local pending mutations)
+    // ------------------------------------------------------------------
     db.execSync(`
       CREATE TABLE IF NOT EXISTS local_assignments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,28 +78,14 @@ export const initDatabase = () => {
         UNIQUE(chamber_id, client_name) ON CONFLICT REPLACE
       );
     `);
+    ensureColumn('local_assignments', 'remark', 'remark TEXT');
+    ensureColumn('local_assignments', 'status', "status TEXT DEFAULT 'active'");
+    ensureColumn('local_assignments', 'sync_status', "sync_status TEXT DEFAULT 'synced'");
+    ensureColumn('local_assignments', 'action', "action TEXT DEFAULT 'none'");
 
-    // 2. Drop inspections queue table if it contains deprecated columns or old UNIQUE constraint to force clean schema update
-    try {
-      const tableInfo = db.getAllSync("PRAGMA table_info(local_inspections);");
-      const hasOldTemp = tableInfo.some(col => col.name === 'temperature');
-      const hasOldName = tableInfo.some(col => col.name === 'operator_name');
-      const hasOldTime = tableInfo.some(col => col.name === 'entry_time');
-      const hasOldPhoto = tableInfo.some(col => col.name === 'photo_uri');
-      const hasCreatedAt = tableInfo.length > 0 && tableInfo.some(col => col.name === 'created_at');
-      
-      const sqlSchema = db.getAllSync("SELECT sql FROM sqlite_master WHERE type='table' AND name='local_inspections';");
-      const hasOldUnique = sqlSchema.length > 0 && !sqlSchema[0].sql.includes('UNIQUE(entry_date, chamber_id, client_name, inspection_time)');
-
-      if (hasOldTemp || hasOldUnique || hasOldName || hasOldTime || hasOldPhoto || (tableInfo.length > 0 && !hasCreatedAt)) {
-        console.log('🧹 SQLite: Old column names or missing created_at detected. Dropping table local_inspections for clean schema migration.');
-        db.execSync('DROP TABLE IF EXISTS local_inspections;');
-      }
-    } catch (err) {
-      // Ignored if table doesn't exist yet
-    }
-
-    // Create inspections queue table
+    // ------------------------------------------------------------------
+    // 2) Inspection upload queue (offline DO logs)
+    // ------------------------------------------------------------------
     db.execSync(`
       CREATE TABLE IF NOT EXISTS local_inspections (
         id TEXT PRIMARY KEY,
@@ -86,60 +111,53 @@ export const initDatabase = () => {
       );
     `);
 
-    // Run simple schema migration to add box_temp if database exists with old temperature column
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN box_temp REAL;`);
-      console.log('🌱 SQLite: Added box_temp column to local_inspections.');
-    } catch (err) {}
+    // Older app builds used different column names — copy values, do not DROP
+    const inspCols = tableColumns('local_inspections');
+    if (inspCols.length > 0) {
+      ensureColumn('local_inspections', 'box_temp', 'box_temp REAL');
+      ensureColumn('local_inspections', 'monitor_supervisor_name', 'monitor_supervisor_name TEXT');
+      ensureColumn('local_inspections', 'inspection_time', 'inspection_time TEXT');
+      ensureColumn('local_inspections', 'temp_sensor_image', 'temp_sensor_image TEXT');
+      ensureColumn('local_inspections', 'box_count', 'box_count INTEGER');
+      ensureColumn('local_inspections', 'chamber_type', 'chamber_type TEXT');
+      ensureColumn('local_inspections', 'overdue_time', "overdue_time TEXT DEFAULT 'same day'");
+      ensureColumn('local_inspections', 'photo_capture_time', 'photo_capture_time TEXT');
+      ensureColumn('local_inspections', 'shift', "shift TEXT DEFAULT 'Morning'");
+      ensureColumn('local_inspections', 'reference_no', 'reference_no TEXT');
+      ensureColumn('local_inspections', 'server_log_id', 'server_log_id INTEGER');
+      ensureColumn('local_inspections', 'created_at', 'created_at TEXT DEFAULT NULL');
+      ensureColumn('local_inspections', 'updated_at', 'updated_at TEXT DEFAULT NULL');
+      ensureColumn('local_inspections', 'sync_status', "sync_status TEXT DEFAULT 'pending'");
 
-    // Programmatic migrations: Add box_count if table already exists without it
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN box_count INTEGER;`);
-      console.log('🌱 SQLite: Added box_count column to local_inspections.');
-    } catch (err) {}
+      try {
+        if (hasColumn(inspCols, 'temperature')) {
+          db.execSync(
+            `UPDATE local_inspections SET box_temp = temperature WHERE box_temp IS NULL AND temperature IS NOT NULL;`
+          );
+        }
+        if (hasColumn(inspCols, 'operator_name')) {
+          db.execSync(
+            `UPDATE local_inspections SET monitor_supervisor_name = operator_name WHERE (monitor_supervisor_name IS NULL OR monitor_supervisor_name = '') AND operator_name IS NOT NULL;`
+          );
+        }
+        if (hasColumn(inspCols, 'entry_time')) {
+          db.execSync(
+            `UPDATE local_inspections SET inspection_time = entry_time WHERE (inspection_time IS NULL OR inspection_time = '') AND entry_time IS NOT NULL;`
+          );
+        }
+        if (hasColumn(inspCols, 'photo_uri')) {
+          db.execSync(
+            `UPDATE local_inspections SET temp_sensor_image = photo_uri WHERE (temp_sensor_image IS NULL OR temp_sensor_image = '') AND photo_uri IS NOT NULL;`
+          );
+        }
+      } catch (copyErr) {
+        console.warn('⚠️ SQLite legacy column copy skipped:', copyErr?.message || copyErr);
+      }
+    }
 
-    // Programmatic migrations: Add shift if table already exists without it
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN shift TEXT DEFAULT 'Morning';`);
-      console.log('🌱 SQLite: Added shift column to local_inspections.');
-    } catch (err) {}
-
-    // Programmatic migrations: Add chamber_type if table already exists without it
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN chamber_type TEXT;`);
-      console.log('🌱 SQLite: Added chamber_type column to local_inspections.');
-    } catch (err) {}
-
-    // Programmatic migrations: Add overdue_time if table already exists without it
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN overdue_time TEXT DEFAULT 'same day';`);
-      console.log('🌱 SQLite: Added overdue_time column to local_inspections.');
-    } catch (err) {}
-
-    // Programmatic migrations: Add photo_capture_time if table already exists without it
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN photo_capture_time TEXT;`);
-      console.log('🌱 SQLite: Added photo_capture_time column to local_inspections.');
-    } catch (err) {}
-
-    // Programmatic migrations: Add reference_no if table already exists without it
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN reference_no TEXT;`);
-      console.log('🌱 SQLite: Added reference_no column to local_inspections.');
-    } catch (err) {}
-
-    // Server id from daily_chamber_temp_logs (needed for Super Admin edit permission)
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN server_log_id INTEGER;`);
-      console.log('🌱 SQLite: Added server_log_id column to local_inspections.');
-    } catch (err) {}
-
-    try {
-      db.execSync(`ALTER TABLE local_inspections ADD COLUMN updated_at TEXT DEFAULT NULL;`);
-      console.log('🌱 SQLite: Added updated_at column to local_inspections.');
-    } catch (err) {}
-
-    // Suggestion pool + defaults used when seeding empty chambers
+    // ------------------------------------------------------------------
+    // 3) Client lot name suggestions (UI picker only)
+    // ------------------------------------------------------------------
     db.execSync(`
       CREATE TABLE IF NOT EXISTS client_lot_master (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,7 +183,7 @@ export const initDatabase = () => {
         );
       } catch (_) {}
     }
-    
+
     console.log('✅ SQLite Database Tables initialized successfully.');
   } catch (error) {
     console.error('❌ Failed to initialize SQLite database tables:', error);

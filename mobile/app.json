@@ -1,25 +1,43 @@
 {
   "expo": {
-    "name": "ReeferON CRM",
+    "name": "ReeferON",
     "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "reeferon",
     "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.reeferon.crm"
+      "bundleIdentifier": "com.reeferon.crm",
+      "icon": "./assets/icon.png",
+      "infoPlist": {
+        "NSCameraUsageDescription": "ReeferON needs camera access to capture temperature sensor photos for daily chamber logs.",
+        "NSPhotoLibraryUsageDescription": "ReeferON needs photo library access when you choose or save verification images.",
+        "NSPhotoLibraryAddUsageDescription": "ReeferON may save captured temperature photos to your library when you export or share them.",
+        "NSUserNotificationsUsageDescription": "ReeferON sends reminders for morning and evening chamber inspection tasks."
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#ffffff",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.reeferon.crm",
       "versionCode": 1,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED"
+      ],
       "intentFilters": [
         {
           "action": "VIEW",
@@ -36,7 +54,24 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ReeferON needs photo library access to attach temperature verification images.",
+          "cameraPermission": "ReeferON needs camera access to capture temperature sensor photos for chamber logs.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#003580",
+          "defaultChannel": "task-reminders",
+          "sounds": []
+        }
+      ]
     ],
     "extra": {
       "eas": {

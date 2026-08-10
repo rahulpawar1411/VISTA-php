@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   ScrollView,
-  TouchableOpacity,
+  FlatList,
   Modal,
   TextInput,
   Alert,
@@ -21,6 +21,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import FastTouchable from '../components/FastTouchable';
+
+const TouchableOpacity = FastTouchable;
 
 // SQLite database and Sync Engine imports
 import { 
@@ -42,7 +45,97 @@ import {
   addClientLotMaster,
   DEFAULT_CLIENT_LOT_MASTER
 } from '../database/db';
-import { subscribeToSync, triggerSync } from '../services/syncEngine';
+import { subscribeToSync, triggerSync, formatLastSyncLabel, getLastSyncAt } from '../services/syncEngine';
+import { ensureCameraPermission } from '../utils/permissions';
+import { compressImageOnly } from '../utils/compressImage';
+import SplashScreen from './SplashScreen';
+import { dedupeInventoryLots } from '../utils/dedupeInventoryLots';
+import { buildReportReadingRows, latestReadingQty } from '../utils/buildReportReadingRows';
+import { refreshTaskReminders } from '../utils/taskNotifications';
+
+const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
+
+function pickDoLogImage(log) {
+  if (!log) return null;
+  return log.temp_sensor_image || log.sensor_image || log.photo_uri || null;
+}
+
+function resolveDoImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
+  if (raw == null) return null;
+  let value = String(raw).trim();
+  if (!value || value === 'null' || value === 'undefined') return null;
+  if (/^https?:\/\//i.test(value) || value.startsWith('file://') || value.startsWith('content://')) {
+    return value;
+  }
+  if (value.startsWith('data:')) return value;
+  const looksBase64 =
+    value.length > 200 &&
+    !value.includes('/') &&
+    !value.includes('\\') &&
+    /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
+  if (looksBase64 || value.startsWith('/9j/') || value.startsWith('iVBOR')) {
+    const mime = value.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+    return `data:${mime};base64,${value.replace(/\s/g, '')}`;
+  }
+  const base = String(baseUrl || '').replace(/\/$/, '');
+  if (!base) return null;
+  value = value.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (value.startsWith('uploads/')) return `${base}/${value}`;
+  if (!value.includes('/')) return `${base}/uploads/${folderHint}/${value}`;
+  return `${base}/${value}`;
+}
+
+function DoSensorPhotoView({ rawPath, apiUrl }) {
+  const uri = useMemo(() => {
+    const primary = resolveDoImageUrl(rawPath, apiUrl);
+    if (primary) return primary;
+    return resolveDoImageUrl(rawPath, PRODUCTION_API_URL);
+  }, [rawPath, apiUrl]);
+  const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setFailed(false);
+    setLoading(true);
+  }, [uri]);
+
+  if (!uri) {
+    return (
+      <View style={styles.doDetailImageEmpty}>
+        <Ionicons name="image-outline" size={28} color="#94a3b8" />
+        <Text style={styles.reportsStateText}>No photo attached to this log.</Text>
+      </View>
+    );
+  }
+  if (failed) {
+    return (
+      <View style={styles.doDetailImageEmpty}>
+        <Ionicons name="alert-circle-outline" size={28} color="#dc2626" />
+        <Text style={styles.reportsStateText}>Could not load sensor photo.</Text>
+      </View>
+    );
+  }
+  return (
+    <View>
+      {loading ? (
+        <View style={styles.doDetailImageLoading}>
+          <ActivityIndicator color="#003580" />
+        </View>
+      ) : null}
+      <Image
+        source={{ uri }}
+        style={[styles.doDetailImage, loading && { opacity: 0.2 }]}
+        resizeMode="contain"
+        onLoadStart={() => setLoading(true)}
+        onLoad={() => setLoading(false)}
+        onError={() => {
+          setLoading(false);
+          setFailed(true);
+        }}
+      />
+    </View>
+  );
+}
 
 // Configure Notifications Handler
 Notifications.setNotificationHandler({
@@ -248,10 +341,24 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [isProfileEditable, setIsProfileEditable] = useState(true); // Edit vs Read-only toggle
   const [reportSearchQuery, setReportSearchQuery] = useState('');
   const [reportChamberFilter, setReportChamberFilter] = useState('all'); // 'all' | chamber_id
-  const [reportClientFilter, setReportClientFilter] = useState('all'); // 'all' | client_name
-  const [reportShiftFilter, setReportShiftFilter] = useState('all'); // 'all' | 'Morning' | 'Evening'
+  const [reportClientFilter, setReportClientFilter] = useState('All');
+  const [reportWarehouseFilter, setReportWarehouseFilter] = useState('All');
+  const [reportShiftFilter, setReportShiftFilter] = useState('all'); // legacy temp-log filter
+  const [reportView, setReportView] = useState('all'); // all | mismatch (inventory)
   const [showReportChamberDropdown, setShowReportChamberDropdown] = useState(false);
   const [showReportClientDropdown, setShowReportClientDropdown] = useState(false);
+  const [showReportWarehouseDropdown, setShowReportWarehouseDropdown] = useState(false);
+  const [inventoryReportRows, setInventoryReportRows] = useState([]);
+  const [inventoryReportWarehouses, setInventoryReportWarehouses] = useState([]);
+  const [inventoryReportClients, setInventoryReportClients] = useState([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsError, setReportsError] = useState('');
+  const [reportsRefreshing, setReportsRefreshing] = useState(false);
+  const [selectedInventoryReport, setSelectedInventoryReport] = useState(null);
+  const [inventoryHistory, setInventoryHistory] = useState([]);
+  const [inventoryHistoryLoading, setInventoryHistoryLoading] = useState(false);
+  const [inventoryHistoryError, setInventoryHistoryError] = useState('');
+  const [selectedReportLog, setSelectedReportLog] = useState(null); // Customer-style log detail from inventory day row
   const [editingExistingLog, setEditingExistingLog] = useState(null); // local completed log being edited after SA approval
   const [updateTimeInput, setUpdateTimeInput] = useState(''); // HH:mm on edit form → saved as inspection_time + updated_at
   const [permissionModal, setPermissionModal] = useState({
@@ -299,60 +406,6 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }
     };
     loadClickedStates();
-  }, []);
-
-  useEffect(() => {
-    const initNotifications = async () => {
-      try {
-        const { status: existingStatus } = await Notifications.getPermissionsAsync();
-        let finalStatus = existingStatus;
-        if (existingStatus !== 'granted') {
-          const { status } = await Notifications.requestPermissionsAsync();
-          finalStatus = status;
-        }
-        if (finalStatus !== 'granted') {
-          console.warn('Notifications permission not granted.');
-          return;
-        }
-
-        // Cancel previous schedules to prevent duplicates
-        await Notifications.cancelAllScheduledNotificationsAsync();
-
-        // Schedule Morning Task daily at 10:00 AM
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: "Morning Task Active! ☀️",
-            body: "Today's Morning Task is active. Open the app to complete assignments.",
-            sound: true,
-          },
-          trigger: {
-            hour: 10,
-            minute: 0,
-            repeats: true,
-          },
-        });
-
-        // Schedule Evening Task daily at 4:00 PM (16:00)
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: "Evening Task Active! 🌙",
-            body: "Today's Evening Task is active. Open the app to complete assignments.",
-            sound: true,
-          },
-          trigger: {
-            hour: 16,
-            minute: 0,
-            repeats: true,
-          },
-        });
-
-        console.log('🔔 Offline daily task notifications scheduled successfully!');
-      } catch (err) {
-        console.warn('Failed to configure notifications:', err);
-      }
-    };
-
-    initNotifications();
   }, []);
 
   const handleSelectShift = async (shift) => {
@@ -454,8 +507,20 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [selectedTaskDueDate, setSelectedTaskDueDate] = useState('');
   const [overdueTasks, setOverdueTasks] = useState([]);
   const [overdueCount, setOverdueCount] = useState(0);
-  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'syncing'
+  const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'syncing' | 'partial' | 'failed'
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [syncMessage, setSyncMessage] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+
+  const handleSyncProgress = (payload) => {
+    const p = typeof payload === 'string' ? { status: payload } : payload || {};
+    if (p.status) setSyncStatus(p.status);
+    if (p.lastSyncAt) setLastSyncAt(p.lastSyncAt);
+    if (p.message) setSyncMessage(p.message);
+    if (p.status === 'idle' || p.status === 'partial' || p.status === 'failed') {
+      loadInspectionsAndSummary();
+    }
+  };
 
   /** True when every Master Setup client on every chamber is logged for this shift today. */
   const isShiftFullyCompleted = (shiftName) => {
@@ -481,6 +546,28 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     () => isShiftFullyCompleted('Evening'),
     [assignments, completedLogs, chambersList]
   );
+
+  // Schedule morning/evening reminders — skip if that shift is already completed today
+  useEffect(() => {
+    if (isLoadingData) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        if (cancelled) return;
+        await refreshTaskReminders({
+          morningCompleted: isMorningCompleted,
+          eveningCompleted: isEveningCompleted
+        });
+      } catch (err) {
+        console.warn('Failed to refresh task reminders:', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMorningCompleted, isEveningCompleted, isLoadingData]);
 
   const completedChambersCount = useMemo(() => {
     const todayStr = new Date().toISOString().split('T')[0];
@@ -625,10 +712,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       await AsyncStorage.removeItem('chamber_client_targets');
     } catch (_) {}
 
-      unsubscribeSync = subscribeToSync(apiUrl, token, (status) => {
-        setSyncStatus(status);
-        loadInspectionsAndSummary();
-      });
+      unsubscribeSync = subscribeToSync(apiUrl, token, handleSyncProgress);
+
+      const storedSync = await getLastSyncAt();
+      if (storedSync) setLastSyncAt(storedSync);
 
       await fetchAndLoadAssignments();
     })();
@@ -854,7 +941,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }
       return true;
     } catch (err) {
-      if (!options.silent) Alert.alert('Add Chamber', err.message || 'Failed');
+      if (!options.silent) Alert.alert('Add Chamber', err.message || 'Unable to complete this action. Please try again.');
       return false;
     }
   };
@@ -994,7 +1081,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           await executeChamberCreate(name, remark, null);
           return;
         }
-        throw new Error(data.error || data.message || 'Failed to request allow.');
+        throw new Error(data.error || data.message || 'Failed to request approval.');
       }
 
       setShowAddChamberModal(false);
@@ -1003,7 +1090,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       await refreshPermissionNotifications();
       Alert.alert(
         'Request sent to Super Admin',
-        `Allow needed to add "${name}". After Super Admin approves, open notifications (bell) — chamber will assign automatically.`
+        `Super Admin approval is required to add "${name}". After approval, open Notifications — the chamber will be assigned automatically.`
       );
     } catch (err) {
       Alert.alert('Add Chamber', err.message || 'Could not send request.');
@@ -1038,7 +1125,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       Alert.alert('Deleted', `"${chamber.name}" removed.`);
       return true;
     } catch (err) {
-      Alert.alert('Delete Chamber', err.message || 'Failed');
+      Alert.alert('Delete Chamber', err.message || 'Unable to complete this action. Please try again.');
       return false;
     }
   };
@@ -1080,7 +1167,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }
       Alert.alert(
         'Request sent to Super Admin',
-        `Allow needed to delete "${chamber.name}". After Super Admin approves, open notifications (bell) or tap Delete again.`
+        `Super Admin approval is required to delete "${chamber.name}". After approval, open Notifications or tap Delete again.`
       );
       // Refresh permission notifications
       try {
@@ -1255,7 +1342,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     if (notif.record_type === 'ClientMaster') {
       Alert.alert(
         'Client Master',
-        'Client master changes are saved immediately. Super Admin is notified only — no allow step.'
+        'Client master changes are saved immediately. Super Admin has been notified; approval is not required.'
       );
       await markPermissionNotificationComplete(notif.id);
       try {
@@ -1314,7 +1401,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const onRefresh = async () => {
     setRefreshing(true);
     try {
-      await triggerSync(apiUrl, token, setSyncStatus);
+      await triggerSync(apiUrl, token, handleSyncProgress);
       await fetchAndLoadAssignments();
     } catch (err) {
       console.warn('Failed to refresh data', err);
@@ -1592,17 +1679,23 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     setIsLoadingData(false);
   };
 
-  // Launch phone camera to snap box photo
+  // Launch phone camera — then compress only (no resize)
   const handleLaunchCamera = async () => {
     try {
+      const allowed = await ensureCameraPermission();
+      if (!allowed) return;
+
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: false,
-        quality: 0.7,
+        quality: 1
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        setCapturedImage(result.assets[0].uri);
+        const originalUri = result.assets[0].uri;
+        // Compress JPEG only — dimensions unchanged
+        const compressedUri = await compressImageOnly(originalUri, 0.5);
+        setCapturedImage(compressedUri);
         setCapturedImageTimestamp(Date.now());
       }
     } catch (error) {
@@ -1703,8 +1796,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
     if (!editingExistingLog && getClientsForChamber(selectedChamber.id).length === 0) {
       Alert.alert(
-        'Add clients first',
-        'Is chamber pe Master Setup me client add karo — phir task submit hoga.',
+        'Add Clients First',
+        'Add clients for this chamber in Master Setup before submitting a task.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -1740,8 +1833,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       Alert.alert(
         'Retake Photo Required',
         editingExistingLog
-          ? 'Edit submit pe image time ko submit time se compare kiya jata hai. Naya verification photo lo.'
-          : 'Photo capture time missing. Please retake the verification photo.'
+          ? 'On edit, the photo capture time is compared with the submit time. Please take a new verification photo.'
+          : 'Photo capture time is missing. Please retake the verification photo.'
       );
       return;
     }
@@ -1807,7 +1900,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       if (!captureTimeStr) {
         Alert.alert(
           'Retake Photo Required',
-          'Edit pe image capture time submit time se compare hota hai. Naya photo lo phir update karo.'
+          'Photo capture time must be compared with the submit time. Please retake the photo, then update.'
         );
         return;
       }
@@ -1993,10 +2086,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         ]
       );
 
-      triggerSync(apiUrl, token, (status) => {
-        setSyncStatus(status);
-        loadInspectionsAndSummary();
-      });
+      triggerSync(apiUrl, token, handleSyncProgress);
     } else {
       Alert.alert('Database Error', 'Failed to save log to local SQLite queue.');
     }
@@ -2050,7 +2140,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       setNewClientInput('');
       loadLocalAssignmentsData(chambersList);
       reportDOActivity('ADD_CLIENT', `Added client "${clientName}" to ${managerSelectedChamber.name} only`, 'Added for this chamber only');
-      if (apiUrl && token) triggerSync(apiUrl, token, setSyncStatus);
+      if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress);
       Alert.alert('Success', `"${clientName}" added to ${managerSelectedChamber.name} only.`);
     } else {
       Alert.alert('Error', 'Failed to add client to this chamber.');
@@ -2091,7 +2181,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       `${displayName} edited client master "${oldName}" → "${newName}" on ${managerSelectedChamber.name} (chamber_id: ${managerSelectedChamber.id}).`,
       `Renamed "${oldName}" to "${newName}"`
     );
-    if (apiUrl && token) triggerSync(apiUrl, token, setSyncStatus);
+    if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress);
     Alert.alert('Updated', `"${oldName}" renamed to "${newName}". Super Admin has been notified.`);
   };
 
@@ -2536,10 +2626,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         'Sync Required',
         'This log is still in the device queue. Wait until it syncs to the cloud, then request edit permission.'
       );
-      triggerSync(apiUrl, token, (status) => {
-        setSyncStatus(status);
-        loadInspectionsAndSummary();
-      });
+      triggerSync(apiUrl, token, handleSyncProgress);
       return;
     }
 
@@ -2649,8 +2736,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     const masterClients = getClientsForChamber(chamber.id);
     if (masterClients.length === 0) {
       Alert.alert(
-        'Add clients first',
-        `"${chamber.name}" pe abhi koi client nahi. Master Setup me add karo.`,
+        'Add Clients First',
+        `No clients are assigned to "${chamber.name}". Add them in Master Setup.`,
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Open Master Setup', onPress: () => openMasterSetupAddClients(chamber) }
@@ -2764,10 +2851,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             </View>
             <TouchableOpacity 
               style={styles.syncBtn}
-              onPress={() => triggerSync(apiUrl, token, (status) => {
-                setSyncStatus(status);
-                loadInspectionsAndSummary();
-              })}
+              onPress={() => triggerSync(apiUrl, token, handleSyncProgress)}
             >
               <Text style={styles.syncBtnText}>Upload Queue</Text>
             </TouchableOpacity>
@@ -2922,7 +3006,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     }}>
                       {isEveningCompleted
                         ? 'Completed'
-                        : (isEveningUnlocked ? 'Evening Slot' : 'Locks until evening')}
+                        : (isEveningUnlocked ? 'Evening Slot' : 'Available after 4:00 PM')}
                     </Text>
                   </View>
                   {isEveningCompleted ? (
@@ -3054,8 +3138,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 </Text>
                 <Text style={styles.setupClientsBannerSub}>
                   {allEmpty
-                    ? 'Chamber-wise client master empty hai. Master Setup → Clients me add karo.'
-                    : `${emptyClientChambers.length} chamber(s) me 0 clients — tap to add.`}
+                    ? 'No clients are configured yet. Open Master Setup → Clients to add them.'
+                    : `${emptyClientChambers.length} chamber(s) have no clients — tap to add.`}
                 </Text>
               </View>
               <Text style={styles.setupClientsBannerCta}>Add ➔</Text>
@@ -3110,7 +3194,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       color: needsClients ? '#0369a1' : '#64748b',
                       marginTop: 6
                     }}>
-                      {needsClients ? '0 clients · Tap to add' : `${clientCount} client${clientCount === 1 ? '' : 's'}`}
+                      {needsClients ? 'No clients · Tap to add' : `${clientCount} client${clientCount === 1 ? '' : 's'}`}
                     </Text>
                   </View>
 
@@ -3364,7 +3448,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                         (shiftName === 'Morning' && (l.inspection_time === '10:00' || !l.inspection_time)))))
                               );
                               if (!chamberLog) {
-                                Alert.alert('Edit', 'Is chamber ke liye abhi koi completed client log nahi mila.');
+                                Alert.alert('Edit', 'No completed client logs were found for this chamber.');
                                 return;
                               }
                               if (item.shift_time === '16:00') handleSelectShift('Evening');
@@ -3425,6 +3509,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         }
         if (
           reportClientFilter !== 'all' &&
+          reportClientFilter !== 'All' &&
           String(log.client_name) !== String(reportClientFilter)
         ) {
           return false;
@@ -3459,6 +3544,308 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         if (tb !== ta) return tb.localeCompare(ta);
         return (Number(b.id) || 0) - (Number(a.id) || 0);
       });
+  };
+
+  /** DO access scope: own warehouse + clients from active assignments only */
+  const doAccessScope = useMemo(() => {
+    const warehouse = String(user?.warehouse_name || '').trim();
+    const active = (assignments || []).filter((a) => a && a.status !== 'inactive');
+    const clientNames = Array.from(
+      new Set(
+        active
+          .map((a) => String(a.client_name || '').trim())
+          .filter((n) => n && n.toLowerCase() !== 'general')
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    const clientSet = new Set(clientNames.map((c) => c.toLowerCase()));
+    const chamberNames = Array.from(
+      new Set(active.map((a) => String(a.chamber_name || '').trim()).filter(Boolean))
+    );
+    const chamberSet = new Set(chamberNames.map((c) => c.toLowerCase()));
+    return {
+      warehouse,
+      warehouseLower: warehouse.toLowerCase(),
+      clients: clientNames,
+      clientSet,
+      chamberSet
+    };
+  }, [user?.warehouse_name, assignments]);
+
+  const loadInventoryReports = useCallback(async () => {
+    if (!apiUrl || !token) return;
+    setReportsLoading(true);
+    setReportsError('');
+    try {
+      const res = await fetch(`${apiUrl}/api/dashboard/inventory-reconciliation`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json'
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.message || data.error || `Failed to load inventory (${res.status})`);
+      }
+      let rows = Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data)
+          ? data
+          : [];
+
+      // Soft DO access (same as backend chamber-temp):
+      // warehouse match OR blank warehouse; then assigned clients when possible
+      const { warehouseLower, clientSet } = doAccessScope;
+      if (warehouseLower) {
+        rows = rows.filter((r) => {
+          const wh = String(r.warehouse_name || '').trim().toLowerCase();
+          return !wh || wh === warehouseLower;
+        });
+      }
+      if (clientSet.size > 0) {
+        const byClient = rows.filter((r) =>
+          clientSet.has(String(r.client_name || '').trim().toLowerCase())
+        );
+        if (byClient.length > 0) rows = byClient;
+      }
+
+      // Client filter options = DO-accessible clients (assignments first)
+      const clientsFromRows = Array.from(
+        new Set(
+          rows
+            .map((r) => String(r.client_name || '').trim())
+            .filter((n) => n && n.toLowerCase() !== 'general')
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      const accessibleClients =
+        doAccessScope.clients.length > 0 ? doAccessScope.clients : clientsFromRows;
+
+      setInventoryReportWarehouses(
+        doAccessScope.warehouse ? [doAccessScope.warehouse] : []
+      );
+      setInventoryReportClients(accessibleClients);
+      setInventoryReportRows(rows);
+
+      // Drop selected client if no longer in access list
+      setReportClientFilter((prev) => {
+        if (!prev || prev === 'All' || prev === 'all') return 'All';
+        const ok = accessibleClients.some(
+          (c) => c.toLowerCase() === String(prev).toLowerCase()
+        );
+        return ok ? prev : 'All';
+      });
+    } catch (err) {
+      setInventoryReportRows([]);
+      setInventoryReportClients(doAccessScope.clients);
+      setInventoryReportWarehouses(
+        doAccessScope.warehouse ? [doAccessScope.warehouse] : []
+      );
+      setReportsError(err.message || 'Failed to load inventory reports.');
+    } finally {
+      setReportsLoading(false);
+      setReportsRefreshing(false);
+    }
+  }, [apiUrl, token, doAccessScope]);
+
+  useEffect(() => {
+    if (currentNavTab === 'Reports') {
+      loadInventoryReports();
+    }
+  }, [currentNavTab, loadInventoryReports]);
+
+  const filteredInventoryReportRows = useMemo(() => {
+    let rows = inventoryReportRows;
+
+    // Soft warehouse access: own WH or blank (DO must not see other warehouses)
+    if (doAccessScope.warehouseLower) {
+      rows = rows.filter((r) => {
+        const wh = String(r.warehouse_name || '').trim().toLowerCase();
+        return !wh || wh === doAccessScope.warehouseLower;
+      });
+    }
+    // Assigned clients when filterable without wiping all rows
+    if (doAccessScope.clientSet.size > 0) {
+      const byClient = rows.filter((r) =>
+        doAccessScope.clientSet.has(String(r.client_name || '').trim().toLowerCase())
+      );
+      if (byClient.length > 0) rows = byClient;
+    }
+
+    if (reportClientFilter && reportClientFilter !== 'All' && reportClientFilter !== 'all') {
+      const cLower = reportClientFilter.toLowerCase().trim();
+      // Only allow selecting DO-accessible clients
+      if (doAccessScope.clientSet.size > 0 && !doAccessScope.clientSet.has(cLower)) {
+        rows = [];
+      } else {
+        rows = rows.filter(
+          (r) => r.client_name && String(r.client_name).toLowerCase().trim() === cLower
+        );
+      }
+    }
+    return [...dedupeInventoryLots(rows)].sort((a, b) => {
+      // LIFO: newest audit / task first (before opening detail)
+      const dateA = String(a.last_audit_date || a.entry_date || '').slice(0, 10);
+      const dateB = String(b.last_audit_date || b.entry_date || '').slice(0, 10);
+      if (dateB !== dateA) {
+        if (!dateA) return 1;
+        if (!dateB) return -1;
+        return dateB.localeCompare(dateA);
+      }
+      const timeA = String(a.updated_at || a.created_at || a.last_audit_date || '')
+        .replace('T', ' ')
+        .slice(0, 19);
+      const timeB = String(b.updated_at || b.created_at || b.last_audit_date || '')
+        .replace('T', ' ')
+        .slice(0, 19);
+      if (timeB !== timeA) {
+        if (!timeA) return 1;
+        if (!timeB) return -1;
+        return timeB.localeCompare(timeA);
+      }
+      return String(a.client_name || '').localeCompare(String(b.client_name || ''));
+    });
+  }, [inventoryReportRows, reportClientFilter, doAccessScope]);
+
+  const inventoryReportSummary = useMemo(() => {
+    let inward = 0;
+    let outward = 0;
+    let mismatches = 0;
+    let totalBoxes = 0;
+    filteredInventoryReportRows.forEach((r) => {
+      inward += Math.max(0, Number(r.total_inward_boxes) || 0);
+      outward += Math.max(0, Number(r.total_outward_boxes) || 0);
+      const bal = Math.max(0, Number(r.calculated_balance) || 0);
+      const phys = Math.max(0, Number(r.physical_audit_count) || 0);
+      totalBoxes += phys;
+      if (bal - phys !== 0) mismatches += 1;
+    });
+    return {
+      lots: filteredInventoryReportRows.length,
+      inward,
+      outward,
+      mismatches,
+      totalBoxes
+    };
+  }, [filteredInventoryReportRows]);
+
+  /** Latest total boxes after DO task (physical audit). */
+  const getDoLotTotalBoxes = (item) => {
+    if (item == null) return 0;
+    if (item.physical_audit_count != null && item.physical_audit_count !== '') {
+      return Math.max(0, Number(item.physical_audit_count) || 0);
+    }
+    return Math.max(0, Number(item.calculated_balance) || 0);
+  };
+  const openInventoryReportDetail = useCallback(
+    async (row) => {
+      setSelectedInventoryReport(row);
+      setInventoryHistory([]);
+      setInventoryHistoryError('');
+      setInventoryHistoryLoading(true);
+      try {
+        const qs = new URLSearchParams({
+          page: '1',
+          limit: '200',
+          export: '1'
+        });
+        if (row.warehouse_name) qs.set('warehouse', String(row.warehouse_name).trim());
+        if (row.client_name) qs.set('client', String(row.client_name).trim());
+
+        const res = await fetch(`${apiUrl}/api/chamber-temp?${qs.toString()}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json'
+          }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.message || data.error || `Failed to load history (${res.status})`);
+        }
+        let items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+
+        // Client + warehouse only — keep full Morning/Evening trail for stock In/Out
+        const clientNeedle = String(row.client_name || '')
+          .trim()
+          .toLowerCase();
+        const whNeedle = String(row.warehouse_name || '')
+          .trim()
+          .toLowerCase();
+        items = items.filter((r) => {
+          const c = String(r.client_name || '')
+            .trim()
+            .toLowerCase();
+          const w = String(r.warehouse_name || '')
+            .trim()
+            .toLowerCase();
+          const clientMatch = !clientNeedle || c === clientNeedle;
+          const whMatch = !whNeedle || w === whNeedle;
+          return clientMatch && whMatch;
+        });
+
+        setInventoryHistory(buildReportReadingRows(items));
+      } catch (err) {
+        // Offline fallback: local inspections for this client/chamber
+        try {
+          const local = buildReportReadingRows(
+            getAllLocalInspections(displayName).filter((log) => {
+              if (!log) return false;
+              if (
+                row.client_name &&
+                String(log.client_name || '').trim().toLowerCase() !==
+                  String(row.client_name).trim().toLowerCase()
+              ) {
+                return false;
+              }
+              if (
+                row.warehouse_name &&
+                String(log.warehouse_name || '').trim().toLowerCase() &&
+                String(log.warehouse_name || '').trim().toLowerCase() !==
+                  String(row.warehouse_name).trim().toLowerCase()
+              ) {
+                return false;
+              }
+              return true;
+            })
+          );
+          setInventoryHistory(local);
+          setInventoryHistoryError(local.length ? '' : err.message || 'Failed to load day-wise qty.');
+        } catch (_) {
+          setInventoryHistory([]);
+          setInventoryHistoryError(err.message || 'Failed to load day-wise qty.');
+        }
+      } finally {
+        setInventoryHistoryLoading(false);
+      }
+    },
+    [apiUrl, token, displayName]
+  );
+
+  const closeInventoryReportDetail = () => {
+    setSelectedInventoryReport(null);
+    setInventoryHistory([]);
+    setInventoryHistoryError('');
+    setInventoryHistoryLoading(false);
+    setSelectedReportLog(null);
+  };
+
+  const formatInventoryReportTime = (row) => {
+    const to24hTime = (value) => {
+      if (value == null || value === '') return null;
+      if (typeof value === 'string' && /^\d{1,2}:\d{2}/.test(value.trim())) {
+        const m = value.trim().match(/^(\d{1,2}):(\d{2})/);
+        if (m) return `${String(parseInt(m[1], 10)).padStart(2, '0')}:${m[2]}`;
+      }
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) {
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      }
+      return null;
+    };
+    const candidates = [row.created_at, row.submit_time, row.photo_capture_time, row.inspection_time];
+    for (const c of candidates) {
+      const t = to24hTime(c);
+      if (t) return t;
+    }
+    return '—';
   };
 
   // Modal to display Client Box Inventory Reports in a dedicated overlay view
@@ -3904,11 +4291,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     </Text>
                     <Text style={{ fontSize: 11, fontWeight: '600', color: '#475569', marginBottom: 6 }}>
                       {notif.record_type === 'MasterSetup'
-                        ? 'Master Setup (no allow needed)'
+                        ? 'Master Setup (approval not required)'
                         : notif.record_type === 'ChamberMaster'
                           ? `${/ADD chamber/i.test(String(notif.description || '')) ? 'Chamber add' : 'Chamber delete'} ${isApproved ? 'approved' : 'denied'}`
                           : notif.record_type === 'ClientMaster'
-                            ? 'Already saved · Super Admin notified only'
+                            ? 'Saved. Super Admin has been notified.'
                           : `${shiftLabel} task · Edit ${isApproved ? 'approved' : 'denied'}${meta.reference_no ? ` · ${meta.reference_no}` : ''}`}
                     </Text>
 
@@ -3916,7 +4303,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       <Text style={{ fontSize: 9.5, color: isApproved ? '#16a34a' : '#ef4444', fontWeight: '800' }}>
                         {notif.record_type === 'ChamberMaster' && isApproved
                           ? (/ADD chamber/i.test(String(notif.description || ''))
-                            ? 'Tap to assign chamber ➔'
+                            ? 'Tap to assign chamber →'
                             : 'Tap to delete chamber ➔')
                           : notif.record_type === 'ClientMaster'
                             ? 'Tap to dismiss ➔'
@@ -3977,7 +4364,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                   <Text style={{ fontSize: 9.5, color: '#ca8a04', fontWeight: '800' }}>
-                    {pendingMorning.length > 0 ? 'Click & Check ➔' : 'View Details ➔'}
+                    {pendingMorning.length > 0 ? 'Review Tasks →' : 'View Details →'}
                   </Text>
                   {pendingMorning.length > 0 && <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#eab308' }} />}
                 </View>
@@ -4023,7 +4410,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Text style={{ fontSize: 9.5, color: '#3b82f6', fontWeight: '800' }}>
-                      {pendingEvening.length > 0 ? 'Click & Check ➔' : 'View Details ➔'}
+                      {pendingEvening.length > 0 ? 'Review Tasks →' : 'View Details →'}
                     </Text>
                     {pendingEvening.length > 0 && <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3b82f6' }} />}
                   </View>
@@ -4142,330 +4529,497 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     );
   };
 
-  // C. REPORTS TAB VIEW
+  // C. REPORTS TAB VIEW — inventory (Client filter only; no WH / chamber)
   const renderReportsView = () => {
-    // Chamber list for this DO (Master Setup / assigned chambers)
-    const accessChambers = (chambersList || []).length
-      ? chambersList
-      : assignments
-          .filter((a) => a && a.status !== 'inactive')
-          .reduce((acc, a) => {
-            if (!acc.some((c) => Number(c.id) === Number(a.chamber_id))) {
-              acc.push({ id: a.chamber_id, name: a.chamber_name });
-            }
-            return acc;
-          }, []);
+    const openReportFilter = showReportClientDropdown ? 'client' : null;
 
-    // Client filter = that chamber's client master (or all masters if All Chambers)
-    const accessClients =
-      reportChamberFilter === 'all'
-        ? Array.from(
-            new Set(
-              accessChambers.flatMap((ch) =>
-                getClientsForChamber(ch.id).map((a) => String(a.client_name || '').trim())
-              )
-            )
-          )
-            .filter(Boolean)
-            .sort((a, b) => String(a).localeCompare(String(b)))
-        : getClientsForChamber(reportChamberFilter)
-            .map((a) => String(a.client_name || '').trim())
-            .filter(Boolean)
-            .sort((a, b) => String(a).localeCompare(String(b)));
+    const reportFilterOptions = openReportFilter
+      ? [
+          { value: 'All', label: 'All Clients' },
+          ...(inventoryReportClients.length
+            ? inventoryReportClients
+            : doAccessScope.clients
+          ).map((name) => ({ value: name, label: name }))
+        ]
+      : [];
 
-    const selectedChamberLabel =
-      reportChamberFilter === 'all'
-        ? 'All Chambers'
-        : (accessChambers.find((c) => Number(c.id) === Number(reportChamberFilter))?.name ||
-          `Chamber ${reportChamberFilter}`);
+    const closeReportFilters = () => {
+      setShowReportClientDropdown(false);
+      setShowReportWarehouseDropdown(false);
+      setShowReportChamberDropdown(false);
+    };
 
-    const selectedClientLabel =
-      reportClientFilter === 'all' ? 'All Clients' : reportClientFilter;
+    const clearReportFilters = () => {
+      setReportView('all');
+      setReportWarehouseFilter('All');
+      setReportClientFilter('All');
+      setReportChamberFilter('all');
+      closeReportFilters();
+    };
 
-    // Logs: DO scope + date range + chamber + client + search (same as Export)
-    const filteredLogs = getFilteredReportLogs();
-
-    const renderFilterDropdown = ({
-      label,
-      valueLabel,
-      open,
-      setOpen,
-      options,
-      onSelect,
-      closeOther,
-      emptyText
-    }) => (
-      <View style={{ flex: 1, position: 'relative', zIndex: open ? 30 : 1 }}>
-        <Text style={styles.reportFilterLabel}>{label}</Text>
+    const renderInventoryItem = ({ item }) => {
+      const inward = Math.max(0, Number(item.total_inward_boxes) || 0);
+      const outward = Math.max(0, Number(item.total_outward_boxes) || 0);
+      const balance = Math.max(0, Number(item.calculated_balance) || 0);
+      const totalBoxes = getDoLotTotalBoxes(item);
+      const outOfStock = totalBoxes === 0;
+      return (
         <TouchableOpacity
-          style={styles.reportFilterTrigger}
+          style={styles.dailyCard}
+          onPress={() => openInventoryReportDetail(item)}
           activeOpacity={0.85}
-          onPress={() => {
-            closeOther();
-            setOpen(!open);
-          }}
         >
-          <Text style={styles.reportFilterTriggerText} numberOfLines={1}>
-            {valueLabel}
-          </Text>
-          <Ionicons
-            name={open ? 'chevron-up' : 'chevron-down'}
-            size={16}
-            color="#64748b"
-          />
-        </TouchableOpacity>
-        {open && (
-          <View style={styles.reportFilterDropdownInline}>
-            <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={{ maxHeight: 180 }}>
-              {options.length === 0 ? (
-                <Text style={{ padding: 12, fontSize: 12, color: '#94a3b8' }}>
-                  {emptyText || 'No options'}
+          <View style={styles.dailyTop}>
+            <View style={styles.dailyTextCol}>
+              <Text style={styles.dailyChamber} numberOfLines={1}>
+                {item.client_name || 'Client'}
+              </Text>
+              <Text style={styles.dailyMetaLine} numberOfLines={1}>
+                {item.chamber_name || 'Chamber'}
+                {item.warehouse_name || user?.warehouse_name
+                  ? ` · ${item.warehouse_name || user?.warehouse_name}`
+                  : ''}
+                {` · In ${inward} · Out ${outward} · Bal ${balance}`}
+                {` · Total ${totalBoxes}`}
+              </Text>
+              {outOfStock ? (
+                <Text style={styles.outOfStockTag} numberOfLines={1}>
+                  Out of stock
                 </Text>
+              ) : null}
+            </View>
+            <View style={styles.totalBoxesCol}>
+              {outOfStock ? (
+                <Text style={styles.outOfStockValue}>0</Text>
               ) : (
-                options.map((opt) => (
-                  <TouchableOpacity
-                    key={String(opt.value)}
-                    style={styles.reportFilterOption}
-                    onPress={() => {
-                      onSelect(opt.value);
-                      setOpen(false);
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.reportFilterOptionText,
-                        opt.value === (label.startsWith('Chamber') ? reportChamberFilter : reportClientFilter) && {
-                          color: '#003580',
-                          fontWeight: '700'
-                        }
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {opt.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))
+                <Text style={styles.totalBoxesValue}>{totalBoxes}</Text>
               )}
-            </ScrollView>
-          </View>
-        )}
-      </View>
-    );
-
-    return (
-      <ScrollView
-        contentContainerStyle={styles.reportsContainer}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        onScrollBeginDrag={() => {
-          setShowReportChamberDropdown(false);
-          setShowReportClientDropdown(false);
-        }}
-      >
-        {/* DO profile scope */}
-        <View style={styles.reportScopeCard}>
-          <Text style={styles.reportScopeTitle}>DO Reports</Text>
-          <Text style={styles.reportScopeSub} numberOfLines={2}>
-            {displayName} · {accessChambers.length} chamber
-            {accessChambers.length === 1 ? '' : 's'} in access
-          </Text>
-        </View>
-
-        {/* Calendar / date range filter */}
-        <Text style={[styles.reportSectionLabel, { marginTop: 4 }]}>Date</Text>
-        {renderDateSlider()}
-        <View style={styles.reportDateRangeRow}>
-          <TouchableOpacity
-            style={styles.reportDateRangeBtn}
-            activeOpacity={0.85}
-            onPress={() => {
-              setCalendarMonth(new Date(reportDateFrom));
-              setCalendarPickMode('from');
-              setShowCalendarModal(true);
-            }}
-          >
-            <Ionicons name="calendar-outline" size={16} color="#003580" />
-            <Text style={styles.reportDateRangeBtnText}>
-              {reportDateFrom === reportDateTo
-                ? reportDateFrom
-                : `${reportDateFrom} → ${reportDateTo}`}
-            </Text>
-            <Ionicons name="chevron-down" size={14} color="#64748b" />
-          </TouchableOpacity>
-          {!(
-            reportDateFrom === new Date().toISOString().split('T')[0] &&
-            reportDateTo === reportDateFrom
-          ) && (
-            <TouchableOpacity
-              style={styles.reportDateTodayBtn}
-              onPress={() => {
-                const today = new Date().toISOString().split('T')[0];
-                setSelectedReportDate(today);
-                setReportDateFrom(today);
-                setReportDateTo(today);
-              }}
-            >
-              <Text style={styles.reportDateTodayBtnText}>Today</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Chamber + Client filters (DO access only) — Client below Chamber */}
-        <Text style={[styles.reportSectionLabel, { marginTop: 10 }]}>Filters</Text>
-        <View style={{ marginBottom: 4 }}>
-          {renderFilterDropdown({
-            label: 'Chamber',
-            valueLabel: selectedChamberLabel,
-            open: showReportChamberDropdown,
-            setOpen: setShowReportChamberDropdown,
-            closeOther: () => setShowReportClientDropdown(false),
-            options: [
-              { value: 'all', label: 'All Chambers' },
-              ...accessChambers.map((c) => ({ value: c.id, label: c.name }))
-            ],
-            onSelect: (val) => {
-              setReportChamberFilter(val);
-              // Reset client when chamber changes — client master is chamber-wise
-              setReportClientFilter('all');
-            }
-          })}
-        </View>
-        <View style={{ marginBottom: 12, marginTop: 8 }}>
-          {renderFilterDropdown({
-            label:
-              reportChamberFilter === 'all'
-                ? 'Client Master'
-                : `Client Master (${selectedChamberLabel})`,
-            valueLabel: selectedClientLabel,
-            open: showReportClientDropdown,
-            setOpen: setShowReportClientDropdown,
-            closeOther: () => setShowReportChamberDropdown(false),
-            emptyText:
-              reportChamberFilter === 'all'
-                ? 'No client masters on chambers yet.'
-                : 'No client master on this chamber. Add in Master Setup.',
-            options: [
-              { value: 'all', label: 'All Clients' },
-              ...accessClients.map((name) => ({ value: name, label: name }))
-            ],
-            onSelect: (val) => setReportClientFilter(val)
-          })}
-        </View>
-
-        {/* Slot filter — Morning / Evening */}
-        <Text style={[styles.reportSectionLabel, { marginTop: 10 }]}>Slot</Text>
-        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
-          {[
-            { value: 'all', label: 'All' },
-            { value: 'Morning', label: 'Morning' },
-            { value: 'Evening', label: 'Evening' }
-          ].map((opt) => {
-            const active = reportShiftFilter === opt.value;
-            return (
-              <TouchableOpacity
-                key={opt.value}
-                activeOpacity={0.85}
-                onPress={() => setReportShiftFilter(opt.value)}
-                style={{
-                  flex: 1,
-                  paddingVertical: 10,
-                  borderRadius: 10,
-                  borderWidth: 1,
-                  borderColor: active
-                    ? (opt.value === 'Morning' ? '#eab308' : opt.value === 'Evening' ? '#2563eb' : '#0369a1')
-                    : '#e2e8f0',
-                  backgroundColor: active
-                    ? (opt.value === 'Morning' ? '#fef9c3' : opt.value === 'Evening' ? '#eff6ff' : '#e0f2fe')
-                    : '#ffffff',
-                  alignItems: 'center'
-                }}
-              >
-                <Text style={{
-                  fontSize: 12,
-                  fontWeight: '700',
-                  color: active
-                    ? (opt.value === 'Morning' ? '#ca8a04' : opt.value === 'Evening' ? '#2563eb' : '#0369a1')
-                    : '#64748b'
-                }}>
-                  {opt.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* Logs list */}
-        <View style={styles.alertLogsCard}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <Text style={[styles.alertLogsCardTitle, { marginBottom: 0 }]}>
-              Logs ({filteredLogs.length})
-            </Text>
-          </View>
-
-          <View style={styles.reportSearchBar}>
-            <Ionicons name="search-outline" size={16} color="#64748b" style={{ marginRight: 6 }} />
-            <TextInput
-              style={{ flex: 1, fontSize: 13, color: '#1e293b', padding: 0 }}
-              placeholder="Search client, chamber, ref…"
-              placeholderTextColor="#94a3b8"
-              value={reportSearchQuery}
-              onChangeText={setReportSearchQuery}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            {reportSearchQuery !== '' && (
-              <TouchableOpacity onPress={() => setReportSearchQuery('')}>
-                <Ionicons name="close-circle" size={18} color="#94a3b8" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {filteredLogs.length === 0 ? (
-            <View style={styles.reportsEmptyRow}>
-              <Ionicons name="clipboard-outline" size={24} color="#94a3b8" />
-              <Text style={[styles.reportsEmptyText, { color: '#64748b', fontWeight: '500' }]}>
-                No logs for this date / chamber / client / slot filter.
+              <Text style={[styles.totalBoxesLabel, outOfStock && styles.outOfStockLabel]}>
+                {outOfStock ? 'Out of stock' : 'boxes'}
               </Text>
             </View>
-          ) : (
-            filteredLogs.map((log) => {
-              const pattern = getChamberTypeAndDefault(log.chamber_id);
-              const checkType = log.chamber_type || pattern.type;
-              let isCompliant = true;
-              if (checkType === 'Frozen' && log.box_temp > -18) isCompliant = false;
-              if (checkType === 'Chilled' && (log.box_temp < -5 || log.box_temp > 5)) isCompliant = false;
-              if (checkType === 'Dry' && (log.box_temp < 15 || log.box_temp > 25)) isCompliant = false;
+          </View>
+        </TouchableOpacity>
+      );
+    };
 
-              return (
-                <View key={log.id} style={styles.alertLogItem}>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.alertLogClient} numberOfLines={1}>
-                      {log.client_name}
-                    </Text>
-                    <Text style={styles.alertLogMeta} numberOfLines={2}>
-                      {log.entry_date || '—'} · {log.chamber_name} · {log.shift || checkType} · {log.inspection_time || '—'}
-                    </Text>
-                    <Text style={{ fontSize: 10, color: log.sync_status === 'synced' ? '#16a34a' : '#c2410c', fontWeight: '600', marginTop: 3 }}>
-                      {log.sync_status === 'synced' ? 'Synced' : 'Pending sync'}
-                      {log.reference_no ? ` · ${log.reference_no}` : ''}
-                    </Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end', marginLeft: 8 }}>
-                    <Text style={[styles.alertLogTemp, { color: isCompliant ? '#16a34a' : '#b91c1c' }]}>
-                      {log.box_temp}°C
-                    </Text>
-                    <Text style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
-                      {log.box_count != null ? `${log.box_count} boxes` : '—'}
-                    </Text>
-                  </View>
+    return (
+      <>
+        <View style={styles.reportsContentArea}>
+          <View style={styles.doFilterPanel}>
+            <View style={styles.doFilterRow}>
+              <TouchableOpacity
+                style={[
+                  styles.doFilterChip,
+                  reportClientFilter !== 'All' &&
+                    reportClientFilter !== 'all' &&
+                    styles.doFilterChipActive
+                ]}
+                onPress={() => setShowReportClientDropdown(!showReportClientDropdown)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.doFilterChipLabel}>Client</Text>
+                <Text style={styles.doFilterChipValue} numberOfLines={1}>
+                  {reportClientFilter === 'all' ? 'All' : reportClientFilter}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.doSuggestChip, { alignSelf: 'center' }]}
+                onPress={clearReportFilters}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.doSuggestText}>Clear</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.dailyBanner}>
+            <Ionicons name="cube-outline" size={14} color="#003580" />
+            <Text style={styles.dailyBannerText}>
+              Inventory · {inventoryReportSummary.lots} lot
+              {inventoryReportSummary.lots === 1 ? '' : 's'}
+              {` · Total boxes ${inventoryReportSummary.totalBoxes}`}
+              {` · In ${inventoryReportSummary.inward} · Out ${inventoryReportSummary.outward}`}
+              {inventoryReportSummary.totalBoxes === 0 && inventoryReportSummary.lots > 0
+                ? ' · Out of stock'
+                : ''}
+            </Text>
+          </View>
+
+          {reportsLoading && !reportsRefreshing ? (
+            <View style={styles.reportsCenterState}>
+              <ActivityIndicator size="large" color="#003580" />
+              <Text style={styles.reportsStateText}>Loading inventory…</Text>
+            </View>
+          ) : reportsError ? (
+            <View style={styles.reportsCenterState}>
+              <Ionicons name="warning-outline" size={28} color="#dc2626" />
+              <Text style={styles.reportsStateText}>{reportsError}</Text>
+              <TouchableOpacity style={styles.reportsRetryBtn} onPress={loadInventoryReports}>
+                <Text style={styles.reportsRetryText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredInventoryReportRows}
+              keyExtractor={(item, idx) =>
+                `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${item.chamber_name || 'ch'}-${idx}`
+              }
+              renderItem={renderInventoryItem}
+              contentContainerStyle={styles.reportsListBody}
+              refreshControl={
+                <RefreshControl
+                  refreshing={reportsRefreshing}
+                  onRefresh={() => {
+                    setReportsRefreshing(true);
+                    loadInventoryReports();
+                  }}
+                />
+              }
+              ListEmptyComponent={
+                <View style={styles.reportsCenterState}>
+                  <Ionicons name="cube-outline" size={28} color="#94a3b8" />
+                  <Text style={styles.reportsStateText}>No inventory for selected filters.</Text>
                 </View>
-              );
-            })
+              }
+            />
           )}
         </View>
 
-        <View style={{ height: 100 }} />
-      </ScrollView>
+        <Modal
+          visible={openReportFilter != null}
+          transparent
+          animationType="fade"
+          onRequestClose={closeReportFilters}
+        >
+          <View style={styles.reportFilterModalOverlay}>
+            <TouchableOpacity
+              style={StyleSheet.absoluteFill}
+              activeOpacity={1}
+              pressBorder={false}
+              onPress={closeReportFilters}
+            />
+            <View style={styles.reportFilterModalSheet}>
+              <Text style={styles.reportFilterModalTitle}>Select client</Text>
+              <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled">
+                {reportFilterOptions.length === 0 ? (
+                  <Text style={styles.reportFilterModalEmpty}>No options</Text>
+                ) : (
+                  reportFilterOptions.map((opt) => {
+                    const selected = reportClientFilter === opt.value;
+                    return (
+                      <TouchableOpacity
+                        key={String(opt.value)}
+                        style={styles.reportFilterOption}
+                        onPress={() => {
+                          setReportClientFilter(opt.value);
+                          closeReportFilters();
+                        }}
+                        activeOpacity={0.85}
+                      >
+                        <Text
+                          style={[
+                            styles.reportFilterOptionText,
+                            selected && { color: '#003580', fontWeight: '700' }
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {opt.label}
+                        </Text>
+                        {selected ? (
+                          <Ionicons name="checkmark-circle" size={18} color="#003580" />
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.reportFilterModalClose}
+                onPress={closeReportFilters}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.reportFilterModalCloseText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={!!selectedInventoryReport}
+          transparent
+          animationType="slide"
+          onRequestClose={closeInventoryReportDetail}
+        >
+          <View style={styles.invDetailOverlay}>
+            <View style={styles.invDetailSheet}>
+              <View style={styles.invDetailHead}>
+                <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                  <Text style={styles.invDetailTitle} numberOfLines={1}>
+                    {selectedInventoryReport?.client_name || 'Inventory'}
+                  </Text>
+                  <Text style={styles.invExcelSub} numberOfLines={1}>
+                    {selectedInventoryReport?.warehouse_name || user?.warehouse_name || 'Warehouse'}
+                    {selectedInventoryReport?.chamber_name
+                      ? ` · ${selectedInventoryReport.chamber_name}`
+                      : ''}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={closeInventoryReportDetail}>
+                  <Ionicons name="close" size={22} color="#334155" />
+                </TouchableOpacity>
+              </View>
+
+              {(() => {
+                const readingTotal = latestReadingQty(inventoryHistory);
+                const totalBoxes =
+                  readingTotal != null
+                    ? readingTotal
+                    : getDoLotTotalBoxes(selectedInventoryReport);
+                const outOfStock = totalBoxes === 0;
+                return (
+                  <View
+                    style={[
+                      styles.totalBoxesBanner,
+                      outOfStock && styles.totalBoxesBannerEmpty
+                    ]}
+                  >
+                    <Ionicons
+                      name={outOfStock ? 'alert-circle-outline' : 'cube-outline'}
+                      size={16}
+                      color={outOfStock ? '#dc2626' : '#003580'}
+                    />
+                    <Text
+                      style={[
+                        styles.totalBoxesBannerText,
+                        outOfStock && styles.totalBoxesBannerTextEmpty
+                      ]}
+                    >
+                      {outOfStock
+                        ? 'Out of stock · Total boxes 0'
+                        : `Total boxes · ${totalBoxes}`}
+                    </Text>
+                  </View>
+                );
+              })()}
+
+              <View style={styles.invExcelHead}>
+                <Text style={[styles.invExcelHeadCell, styles.invExcelColDate]}>Date</Text>
+                <Text style={[styles.invExcelHeadCell, styles.invExcelColTime]}>Time</Text>
+                <Text style={[styles.invExcelHeadCell, styles.invExcelColTemp]}>Temp</Text>
+                <Text style={[styles.invExcelHeadCell, styles.invExcelColIn]}>In</Text>
+                <Text style={[styles.invExcelHeadCell, styles.invExcelColOut]}>Out</Text>
+                <Text style={[styles.invExcelHeadCell, styles.invExcelColQty]}>Left</Text>
+              </View>
+
+              {inventoryHistoryLoading ? (
+                <View style={styles.reportsCenterState}>
+                  <ActivityIndicator size="large" color="#003580" />
+                  <Text style={styles.reportsStateText}>Loading day records…</Text>
+                </View>
+              ) : inventoryHistoryError ? (
+                <View style={styles.reportsCenterState}>
+                  <Ionicons name="warning-outline" size={28} color="#dc2626" />
+                  <Text style={styles.reportsStateText}>{inventoryHistoryError}</Text>
+                  <TouchableOpacity
+                    style={styles.reportsRetryBtn}
+                    onPress={() =>
+                      selectedInventoryReport && openInventoryReportDetail(selectedInventoryReport)
+                    }
+                  >
+                    <Text style={styles.reportsRetryText}>Retry</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <ScrollView>
+                  {inventoryHistory.length === 0 ? (
+                    <View style={styles.reportsCenterState}>
+                      <Text style={styles.reportsStateText}>No day-wise qty found for this lot.</Text>
+                    </View>
+                  ) : (
+                    inventoryHistory.map((row, idx) => {
+                      const dateLabel =
+                        String(row.formatted_date || row.entry_date || '').slice(0, 10) || '—';
+                      const timeLabel = formatInventoryReportTime(row);
+                      const temp =
+                        row.box_temp != null
+                          ? `${row.box_temp}°C`
+                          : row.chamber_temp != null
+                            ? `${row.chamber_temp}°C`
+                            : '—';
+                      const qty = row._qty != null ? row._qty : null;
+                      const inQty = row._inQty != null ? row._inQty : '—';
+                      const outQty = row._outQty != null ? row._outQty : '—';
+                      return (
+                        <TouchableOpacity
+                          key={String(row.id || `${dateLabel}-${idx}`)}
+                          style={[styles.invExcelRow, idx % 2 === 1 && styles.invExcelRowAlt]}
+                          onPress={() => setSelectedReportLog(row)}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={[styles.invExcelCell, styles.invExcelColDate]} numberOfLines={1}>
+                            {dateLabel}
+                          </Text>
+                          <Text style={[styles.invExcelCell, styles.invExcelColTime]} numberOfLines={1}>
+                            {timeLabel}
+                          </Text>
+                          <Text style={[styles.invExcelCell, styles.invExcelColTemp]} numberOfLines={1}>
+                            {temp}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.invExcelCell,
+                              styles.invExcelColIn,
+                              inQty !== '—' && inQty !== '0' && { color: '#059669', fontWeight: '800' }
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {inQty}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.invExcelCell,
+                              styles.invExcelColOut,
+                              outQty !== '—' && outQty !== '0' && { color: '#dc2626', fontWeight: '800' }
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {outQty}
+                          </Text>
+                          <Text
+                            style={[styles.invExcelCell, styles.invExcelColQty, { fontWeight: '800' }]}
+                            numberOfLines={1}
+                          >
+                            {qty == null ? '—' : qty}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+      </>
+    );
+  };
+
+  // Customer-style full log / task details (from inventory day row)
+  const renderReportLogDetailModal = () => {
+    if (!selectedReportLog) return null;
+    const item = selectedReportLog;
+    const imagePath = pickDoLogImage(item);
+    const detailFields = [
+      ['Client', item.client_name],
+      ['Warehouse', item.warehouse_name || user?.warehouse_name],
+      ['Chamber', item.chamber_name],
+      ['Chamber type', item.chamber_type],
+      ['Shift', item.shift],
+      ['Inspection time', item.inspection_time],
+      ['Date', item.formatted_date || item.entry_date],
+      [
+        'Temperature',
+        item.box_temp != null
+          ? `${item.box_temp}°C`
+          : item.chamber_temp != null
+            ? `${item.chamber_temp}°C`
+            : null
+      ],
+      [
+        'Box qty',
+        item.box_count != null && item.box_count !== '' ? `${item.box_count} boxes` : null
+      ],
+      ['Supervisor', item.monitor_supervisor_name],
+      ['Operator', item.operator_email],
+      ['Reference', item.reference_no],
+      ['Photo time', item.photo_capture_time],
+      [
+        'Time variance',
+        item.time_variance_minutes != null ? `${item.time_variance_minutes} min` : null
+      ],
+      ['Remarks', item.remarks],
+      [
+        'Updates',
+        item.update_count != null && Number(item.update_count) > 0
+          ? String(item.update_count)
+          : null
+      ],
+      [
+        'Sync',
+        item.sync_status
+          ? item.sync_status === 'synced'
+            ? 'Synced'
+            : 'Pending sync'
+          : null
+      ]
+    ];
+
+    const tempText =
+      item.box_temp != null
+        ? `${item.box_temp}°C`
+        : item.chamber_temp != null
+          ? `${item.chamber_temp}°C`
+          : '—';
+
+    const renderDetailRow = (label, value) => {
+      if (value == null || value === '') return null;
+      return (
+        <View style={styles.doLogDetailRow} key={label}>
+          <Text style={styles.doLogDetailLabel}>{label}</Text>
+          <Text style={styles.doLogDetailValue}>{String(value)}</Text>
+        </View>
+      );
+    };
+
+    return (
+      <Modal
+        visible={Boolean(selectedReportLog)}
+        animationType="slide"
+        onRequestClose={() => setSelectedReportLog(null)}
+      >
+        <SafeAreaView style={styles.doDetailSafe}>
+          <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+          <View style={styles.doDetailHeader}>
+            <TouchableOpacity
+              style={styles.doDetailBackBtn}
+              onPress={() => setSelectedReportLog(null)}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="arrow-back" size={22} color="#0f172a" />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.doDetailTitle} numberOfLines={1}>
+                Log details
+              </Text>
+              <Text style={styles.doDetailSub} numberOfLines={1}>
+                {item.client_name || 'Client'}
+              </Text>
+            </View>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
+            <View style={styles.doDetailHeroCard}>
+              <Text style={styles.doDetailHeroTemp}>{tempText}</Text>
+              <Text style={styles.doDetailHeroMeta}>
+                {item.box_count != null && item.box_count !== ''
+                  ? `${item.box_count} boxes`
+                  : 'Box qty —'}
+                {item.shift ? ` · ${item.shift}` : ''}
+              </Text>
+            </View>
+
+            <View style={styles.doDetailCard}>
+              {detailFields.map(([label, value]) => renderDetailRow(label, value))}
+            </View>
+
+            <View style={styles.doDetailCard}>
+              <Text style={styles.doDetailSectionTitle}>Sensor photo</Text>
+              <DoSensorPhotoView rawPath={imagePath} apiUrl={apiUrl} />
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     );
   };
 
@@ -4489,16 +5043,56 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <Text style={styles.syncStatusLabel}>Sync Queue Status:</Text>
             <View style={[
               styles.syncStatusBadge,
-              { backgroundColor: unsyncedLogs.length > 0 ? '#fff7ed' : '#f0fdf4' }
+              {
+                backgroundColor:
+                  syncStatus === 'failed'
+                    ? '#fef2f2'
+                    : syncStatus === 'partial'
+                      ? '#fff7ed'
+                      : unsyncedLogs.length > 0
+                        ? '#fff7ed'
+                        : '#f0fdf4'
+              }
             ]}>
               <Text style={[
                 styles.syncStatusText,
-                { color: unsyncedLogs.length > 0 ? '#c2410c' : '#16a34a' }
+                {
+                  color:
+                    syncStatus === 'failed'
+                      ? '#dc2626'
+                      : syncStatus === 'partial'
+                        ? '#c2410c'
+                        : unsyncedLogs.length > 0
+                          ? '#c2410c'
+                          : '#16a34a'
+                }
               ]}>
-                {unsyncedLogs.length > 0 ? `${unsyncedLogs.length} Logs Pending` : 'All Synced'}
+                {syncStatus === 'syncing'
+                  ? 'Syncing…'
+                  : syncStatus === 'failed'
+                    ? `Sync failed · ${unsyncedLogs.length} pending`
+                    : syncStatus === 'partial'
+                      ? `Partial sync · ${unsyncedLogs.length} left`
+                      : unsyncedLogs.length > 0
+                        ? `${unsyncedLogs.length} Logs Pending`
+                        : 'All Synced'}
               </Text>
             </View>
           </View>
+
+          {syncStatus === 'failed' || syncStatus === 'partial' ? (
+            <Text style={{ fontSize: 11, color: '#64748b', marginBottom: 8, marginTop: -4 }}>
+              {syncMessage || 'Offline data is still on this phone. Tap Sync Now when network is stable.'}
+            </Text>
+          ) : syncMessage ? (
+            <Text style={{ fontSize: 11, color: '#64748b', marginBottom: 8, marginTop: -4 }}>
+              {syncMessage}
+            </Text>
+          ) : null}
+
+          <Text style={{ fontSize: 10, color: '#94a3b8', marginBottom: 8 }}>
+            Last successful sync: {formatLastSyncLabel(lastSyncAt)}
+          </Text>
 
           {syncStatus === 'syncing' ? (
             <View style={styles.syncSpinnerContainer}>
@@ -4509,10 +5103,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <TouchableOpacity 
               style={[styles.syncActionBtn, unsyncedLogs.length === 0 && styles.syncActionBtnDisabled]} 
               disabled={unsyncedLogs.length === 0}
-              onPress={() => triggerSync(apiUrl, token, (status) => {
-                setSyncStatus(status);
-                loadInspectionsAndSummary();
-              })}
+              onPress={() => triggerSync(apiUrl, token, handleSyncProgress)}
             >
               <Ionicons name="cloud-upload" size={18} color="#ffffff" style={{ marginRight: 6 }} />
               <Text style={styles.syncActionBtnText}>Upload Local Queue Now</Text>
@@ -4533,7 +5124,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
 
         <View style={styles.appInfoBox}>
-          <Text style={styles.appInfoText}>ReeferON CRM Mobile Client</Text>
+          <Text style={styles.appInfoText}>ReeferON Mobile Client</Text>
           <Text style={styles.appInfoVersion}>Version 1.1.0 (SQLite Active)</Text>
         </View>
 
@@ -4829,7 +5420,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                               if (ordered.length === 0) {
                                 return (
                                   <Text style={{ padding: 12, fontSize: 12, color: '#94a3b8' }}>
-                                    No clients on this chamber yet. Use Plus → Manage Chambers to add client names for this chamber only.
+                      No clients on this chamber yet. Open Master Setup → Clients to add client names for this chamber.
                                   </Text>
                                 );
                               }
@@ -5012,7 +5603,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                           />
                         </View>
                         <Text style={{ fontSize: 9, color: '#475569', marginTop: 4, marginLeft: 2, fontWeight: '600' }}>
-                          Total boxes in chamber now (never negative). Example: was 30, now 45 → 15 inward.
+                          Enter the current total boxes in the chamber (cannot be negative). Example: previously 30, now 45 → 15 inward.
                         </Text>
                       </>
                     ) : (
@@ -5047,9 +5638,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                         style={styles.verticalCameraBtn}
                         onPress={handleLaunchCamera}
                       >
-                        <Ionicons name="camera" size={32} color="#003580" />
+                        <Ionicons name="camera" size={32} color="#ffffff" />
                         <Text style={styles.verticalCameraBtnText}>Snap Verification Photo</Text>
-                        <Text style={{ fontSize: 9, color: '#64748b', marginTop: 2 }}>Must clearly show temperature reading sensor</Text>
+                        <Text style={{ fontSize: 9, color: '#bfdbfe', marginTop: 2 }}>Must clearly show the temperature sensor reading</Text>
                       </TouchableOpacity>
                     )
                   ) : (
@@ -5086,7 +5677,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   <View style={styles.metaRow}>
                     <Text style={styles.metaLabel}>Sync Engine:</Text>
                     <Text style={[styles.metaVal, { color: logSyncStatus === 'synced' ? '#16a34a' : '#ea580c', fontWeight: 'bold' }]}>
-                      {logSyncStatus === 'synced' ? 'Synced to Cloud' : 'Device Queue (Offline)'}
+                      {logSyncStatus === 'synced' ? 'Synced to Cloud' : 'Queued on Device (Offline)'}
                     </Text>
                   </View>
                 </View>
@@ -5102,7 +5693,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   onPress={handleSaveInspection}
                 >
                   <Text style={styles.submitBtnText}>
-                    {editingExistingLog ? 'Update Reading' : 'Submit Reading (Save Locally)'}
+                    {editingExistingLog ? 'Update Reading' : 'Submit Reading'}
                   </Text>
                 </TouchableOpacity>
               ) : (
@@ -5198,7 +5789,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <View style={styles.mmCard}>
                 <Text style={styles.mmCardTitle}>Add chamber</Text>
                 <Text style={styles.mmCardHint}>
-                  Tap below → enter chamber name + remark → Send Request. Super Admin allows in Role & Permission, then chamber assigns automatically.
+                  Enter the chamber name and reason below, then send the request. After Super Admin approves it in Role & Permission, the chamber is assigned automatically.
                 </Text>
                 <TouchableOpacity
                   style={[styles.mmPrimaryBtn, { alignSelf: 'stretch', justifyContent: 'center' }]}
@@ -5316,7 +5907,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       Client master · {managerSelectedChamber.name}
                     </Text>
                     <Text style={styles.mmCardHint}>
-                      Chamber empty hai to yahan client add karo. Add / edit / delete pe Super Admin notify hota hai (allow nahi).
+                      If this chamber has no clients, add them here. Super Admin is notified of adds and deletes; approval is not required.
                     </Text>
                     <View style={styles.mmAddRow}>
                       <TextInput
@@ -5379,7 +5970,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                     `Added client "${name}" to ${managerSelectedChamber.name} only`,
                                     'Added for this chamber only'
                                   );
-                                  if (apiUrl && token) triggerSync(apiUrl, token, setSyncStatus);
+                                  if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress);
                                 }
                               }}
                             >
@@ -5413,42 +6004,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                         </Text>
                       </View>
                     ) : (
-                      chamberClients.map((item) => {
-                        const isEditing =
-                          editingClientName &&
-                          Number(editingClientName.chamberId) === Number(managerSelectedChamber.id) &&
-                          editingClientName.oldName === item.client_name;
-                        return (
+                      chamberClients.map((item) => (
                           <View key={item.client_name} style={styles.mmClientRow}>
-                            {isEditing ? (
-                              <View style={styles.mmAddRow}>
-                                <TextInput
-                                  style={styles.mmTextInput}
-                                  value={editClientDraft}
-                                  onChangeText={setEditClientDraft}
-                                  autoCapitalize="words"
-                                  placeholder="New name"
-                                  placeholderTextColor="#94a3b8"
-                                  autoFocus
-                                />
-                                <TouchableOpacity
-                                  style={styles.mmIconBtnSuccess}
-                                  onPress={handleRenameChamberClient}
-                                >
-                                  <Ionicons name="checkmark" size={18} color="#15803d" />
-                                </TouchableOpacity>
-                                <TouchableOpacity
-                                  style={styles.mmIconBtnNeutral}
-                                  onPress={() => {
-                                    setEditingClientName(null);
-                                    setEditClientDraft('');
-                                  }}
-                                >
-                                  <Ionicons name="close" size={18} color="#64748b" />
-                                </TouchableOpacity>
-                              </View>
-                            ) : (
-                              <>
                                 <View style={styles.mmClientAvatar}>
                                   <Text style={styles.mmClientAvatarText}>
                                     {String(item.client_name).charAt(0).toUpperCase()}
@@ -5458,28 +6015,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                   {item.client_name}
                                 </Text>
                                 <TouchableOpacity
-                                  style={styles.mmIconBtnNeutral}
-                                  onPress={() => {
-                                    setEditingClientName({
-                                      chamberId: managerSelectedChamber.id,
-                                      oldName: item.client_name
-                                    });
-                                    setEditClientDraft(item.client_name);
-                                  }}
-                                >
-                                  <Ionicons name="create-outline" size={16} color="#0369a1" />
-                                </TouchableOpacity>
-                                <TouchableOpacity
                                   style={styles.mmIconBtnDanger}
                                   onPress={() => handleDeleteClient(item.client_name)}
                                 >
                                   <Ionicons name="trash-outline" size={16} color="#dc2626" />
                                 </TouchableOpacity>
-                              </>
-                            )}
                           </View>
-                        );
-                      })
+                        ))
                     )}
                   </ScrollView>
                 </>
@@ -5562,7 +6104,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       `${displayName} deleted client master "${target.clientName}" from ${target.chamberName} (chamber_id: ${target.chamberId}). Remark: ${remark}`,
                       remark
                     );
-                    if (apiUrl && token) triggerSync(apiUrl, token, setSyncStatus);
+                    if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress);
                     if (target.permissionNotifId) {
                       markPermissionNotificationComplete(target.permissionNotifId);
                     }
@@ -6145,7 +6687,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           {/* Backdrop Touch Area to close (rendered second to fill right side) */}
           <TouchableOpacity 
             style={styles.drawerBackdrop} 
-            activeOpacity={1} 
+            activeOpacity={1}
+            pressBorder={false} 
             onPress={closeDrawer} 
           />
         </View>
@@ -6263,7 +6806,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     setShowAddClientModal(false);
                     loadLocalAssignmentsData(chambersList);
                     reportDOActivity('ADD_CLIENT', `Added client "${name}" to ${selectedChamber.name} only`, '');
-                    if (apiUrl && token) triggerSync(apiUrl, token, setSyncStatus);
+                    if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress);
                     setSelectedClient(name);
                     setTempInput('');
                     setBoxCountInput('');
@@ -6365,15 +6908,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
   // Main UI Shell
   if (isLoadingData) {
-    return (
-      <SafeAreaView style={[styles.container, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#f1f5f9' }]}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f1f5f9" />
-        <ActivityIndicator size="large" color="#003580" />
-        <Text style={{ marginTop: 15, fontSize: 13, color: '#475569', fontWeight: 'bold' }}>
-          Loading chamber data...
-        </Text>
-      </SafeAreaView>
-    );
+    return <SplashScreen />;
   }
 
   return (
@@ -6392,8 +6927,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           {syncStatus === 'syncing' ? (
             <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 12 }} />
           ) : (
-            <TouchableOpacity onPress={() => triggerSync(apiUrl, token, setSyncStatus)}>
-              <Ionicons name="sync-outline" size={22} color="#ffffff" style={{ marginRight: 12 }} />
+            <TouchableOpacity onPress={() => triggerSync(apiUrl, token, handleSyncProgress)}>
+              <Ionicons
+                name="sync-outline"
+                size={22}
+                color={syncStatus === 'failed' ? '#fecaca' : syncStatus === 'partial' ? '#fed7aa' : '#ffffff'}
+                style={{ marginRight: 12 }}
+              />
             </TouchableOpacity>
           )}
           {(() => {
@@ -6447,6 +6987,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       {renderHistoryModal()}
       {renderNotificationsModal()}
       {renderCalendarModal()}
+      {renderReportLogDetailModal()}
 
       {/* Navigation Tab Bar Overlay */}
       {renderBottomTabBar()}
@@ -6634,7 +7175,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#ea580c',
     borderRadius: 6,
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 6
   },
   syncBtnText: {
     color: '#ffffff',
@@ -6894,7 +7435,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#003580',
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 10
   },
   recordLogBtnText: {
     color: '#ffffff',
@@ -7317,7 +7858,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#003580',
     height: 44,
     paddingHorizontal: 14,
-    borderRadius: 10,
+    borderRadius: 10
   },
   mmPrimaryBtnDisabled: {
     backgroundColor: '#94a3b8',
@@ -7624,7 +8165,7 @@ const styles = StyleSheet.create({
     height: 38,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
+    marginTop: 8
   },
   submitBtnText: {
     color: '#ffffff',
@@ -7985,11 +8526,256 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
 
-  // Reports View Styles
+  // Reports View Styles — match Sub-Admin layout
   reportsContainer: {
     padding: 14,
     flexGrow: 1,
   },
+  reportsContentArea: {
+    flex: 1,
+    paddingBottom: 64,
+    backgroundColor: '#f8fafc'
+  },
+  reportsListBody: {
+    padding: 8,
+    paddingBottom: 88
+  },
+  reportsCenterState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 28,
+    gap: 8
+  },
+  reportsStateText: {
+    color: '#64748b',
+    textAlign: 'center',
+    fontSize: 13,
+    lineHeight: 19
+  },
+  reportsRetryBtn: {
+    marginTop: 8,
+    backgroundColor: '#003580',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10
+  },
+  reportsRetryText: { color: '#fff', fontWeight: '700', fontSize: 13, textAlign: 'center' },
+  invDetailOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    justifyContent: 'flex-end'
+  },
+  invDetailSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    maxHeight: '88%',
+    paddingBottom: 16
+  },
+  invDetailHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0'
+  },
+  invDetailTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
+  invExcelSub: { fontSize: 11, color: '#64748b', fontWeight: '600', marginTop: 2 },
+  invExcelHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: '#f1f5f9',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0'
+  },
+  invExcelHeadCell: { fontSize: 9, fontWeight: '800', color: '#64748b' },
+  invExcelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9'
+  },
+  invExcelRowAlt: { backgroundColor: '#f8fafc' },
+  invExcelCell: { fontSize: 10, color: '#334155', fontWeight: '600' },
+  invExcelColDate: { flex: 1.2 },
+  invExcelColTime: { flex: 0.85 },
+  invExcelColTemp: { flex: 0.75 },
+  invExcelColIn: { flex: 0.55, textAlign: 'right' },
+  invExcelColOut: { flex: 0.55, textAlign: 'right' },
+  invExcelColQty: { flex: 0.65, textAlign: 'right' },
+  doLogDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9'
+  },
+  doLogDetailLabel: {
+    width: 110,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+    textTransform: 'uppercase'
+  },
+  doLogDetailValue: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0f172a',
+    textAlign: 'right'
+  },
+  doDetailSafe: { flex: 1, backgroundColor: '#f8fafc' },
+  doDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0'
+  },
+  doDetailBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9'
+  },
+  doDetailTitle: { fontSize: 16, fontWeight: '800', color: '#0f172a' },
+  doDetailSub: { fontSize: 12, color: '#64748b', fontWeight: '600', marginTop: 1 },
+  doDetailBody: { padding: 16, paddingBottom: 40 },
+  doDetailHeroCard: {
+    backgroundColor: '#003580',
+    borderRadius: 14,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    marginBottom: 12
+  },
+  doDetailHeroTemp: { fontSize: 28, fontWeight: '900', color: '#ffffff' },
+  doDetailHeroMeta: { fontSize: 13, fontWeight: '700', color: '#bfdbfe', marginTop: 6 },
+  doDetailCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    marginBottom: 12
+  },
+  doDetailSectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#003580',
+    marginBottom: 10,
+    textTransform: 'uppercase'
+  },
+  doDetailImage: {
+    width: '100%',
+    height: 260,
+    borderRadius: 10,
+    backgroundColor: '#f1f5f9'
+  },
+  doDetailImageEmpty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 28,
+    gap: 8
+  },
+  doDetailImageLoading: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1
+  },
+  dailyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: '#eff6ff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#dbeafe'
+  },
+  dailyBannerText: {
+    fontSize: 10,
+    color: '#003580',
+    fontWeight: '700',
+    flex: 1
+  },
+  dailyCard: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    marginBottom: 5,
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  dailyTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  dailyTextCol: { flex: 1, minWidth: 0 },
+  dailyChamber: { fontSize: 12, fontWeight: '800', color: '#0f172a' },
+  dailyTemp: { fontSize: 13, fontWeight: '800', color: '#003580' },
+  dailyMetaLine: { fontSize: 10, color: '#64748b', fontWeight: '600', marginTop: 1 },
+  totalBoxesCol: { alignItems: 'flex-end', minWidth: 64 },
+  totalBoxesValue: { fontSize: 15, fontWeight: '900', color: '#003580' },
+  totalBoxesLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#64748b',
+    marginTop: 1,
+    textTransform: 'uppercase'
+  },
+  outOfStockValue: { fontSize: 15, fontWeight: '900', color: '#dc2626' },
+  outOfStockLabel: { color: '#dc2626' },
+  outOfStockTag: {
+    marginTop: 3,
+    alignSelf: 'flex-start',
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#dc2626',
+    backgroundColor: '#fee2e2',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: 'hidden'
+  },
+  totalBoxesBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#eff6ff',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 10,
+    marginHorizontal: 10,
+    borderWidth: 1,
+    borderColor: '#dbeafe'
+  },
+  totalBoxesBannerEmpty: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#fecaca'
+  },
+  totalBoxesBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#003580'
+  },
+  totalBoxesBannerTextEmpty: { color: '#dc2626' },
   reportScopeCard: {
     backgroundColor: '#003580',
     borderRadius: 14,
@@ -8060,74 +8846,125 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 8,
+    marginBottom: 8
   },
   reportDateRangeBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minHeight: 48
   },
   reportDateRangeBtnText: {
-    flex: 1,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
-    color: '#0f172a',
+    color: '#334155',
+    marginTop: 1
   },
   reportDateTodayBtn: {
     paddingVertical: 10,
     paddingHorizontal: 14,
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: '#eff6ff',
     borderWidth: 1,
     borderColor: '#bfdbfe',
+    minHeight: 48,
+    justifyContent: 'center'
   },
   reportDateTodayBtnText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#003580',
+    color: '#003580'
   },
   reportFiltersRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    marginBottom: 14,
-    zIndex: 20,
+    gap: 8,
+    marginBottom: 8,
+    zIndex: 20
+  },
+  reportClearRow: {
+    flexDirection: 'row',
+    marginBottom: 8
+  },
+  reportClearBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#fee2e2',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#fecaca'
+  },
+  reportClearBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#dc2626'
+  },
+  reportFilterTextWrap: {
+    flex: 1,
+    minWidth: 0
   },
   reportFilterLabel: {
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 9,
+    fontWeight: '800',
     color: '#64748b',
-    marginBottom: 5,
-    marginLeft: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
   },
   reportFilterTrigger: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#ffffff',
+    gap: 8,
+    backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    minHeight: 42,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minHeight: 48
+  },
+  reportFilterTriggerActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#93c5fd'
   },
   reportFilterTriggerText: {
     flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginRight: 6,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginTop: 1
+  },
+  reportFilterTriggerTextActive: {
+    color: '#003580'
+  },
+  reportSlotChip: {
+    flex: 1,
+    paddingVertical: 8,
+    minHeight: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  reportSlotChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b'
   },
   reportFilterDropdown: {
     position: 'absolute',
-    top: 62,
+    top: 52,
     left: 0,
     right: 0,
     backgroundColor: '#ffffff',
@@ -8139,19 +8976,117 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
-    overflow: 'hidden',
+    overflow: 'hidden'
   },
   reportFilterOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f1f5f9',
+    borderBottomColor: '#f1f5f9'
   },
   reportFilterOptionText: {
-    fontSize: 13,
+    flex: 1,
+    fontSize: 12,
     color: '#334155',
-    fontWeight: '500',
+    fontWeight: '500'
   },
+  reportFilterModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    justifyContent: 'flex-end'
+  },
+  reportFilterModalSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 20,
+    maxHeight: '70%'
+  },
+  reportFilterModalTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 10
+  },
+  reportFilterModalEmpty: {
+    paddingVertical: 20,
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#94a3b8'
+  },
+  reportFilterModalClose: {
+    marginTop: 12,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#f1f5f9'
+  },
+  reportFilterModalCloseText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#334155'
+  },
+  /* DO Reports filters — same as Sub-Admin filterPanel */
+  doFilterPanel: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0'
+  },
+  doLogTypeRow: { flexDirection: 'row', gap: 6, marginBottom: 6 },
+  doLogTypeChip: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  doLogTypeChipActive: { backgroundColor: '#003580', borderColor: '#003580' },
+  doLogTypeChipText: { fontSize: 11, fontWeight: '700', color: '#64748b' },
+  doLogTypeChipTextActive: { color: '#fff' },
+  doFilterRow: { flexDirection: 'row', gap: 6, marginBottom: 6 },
+  doFilterChip: {
+    flex: 1,
+    minWidth: 0,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 5
+  },
+  doFilterChipActive: { borderColor: '#93c5fd', backgroundColor: '#eff6ff' },
+  doFilterChipLabel: {
+    fontSize: 8,
+    color: '#94a3b8',
+    fontWeight: '700',
+    letterSpacing: 0.2
+  },
+  doFilterChipValue: {
+    fontSize: 11,
+    color: '#0f172a',
+    fontWeight: '700',
+    marginTop: 1
+  },
+  doSuggestRow: { gap: 6, paddingBottom: 2 },
+  doSuggestChip: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4
+  },
+  doSuggestClear: { backgroundColor: '#fee2e2' },
+  doSuggestText: { fontSize: 11, fontWeight: '700', color: '#334155' },
   reportSearchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -8399,7 +9334,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#ea580c',
     paddingVertical: 10,
-    borderRadius: 8,
+    borderRadius: 8
   },
   syncActionBtnDisabled: {
     backgroundColor: '#fdba74',
@@ -8465,7 +9400,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#ef4444',
     paddingVertical: 12,
     borderRadius: 10,
-    elevation: 2,
+    elevation: 2
   },
   moreLogoutBtnText: {
     color: '#ffffff',
@@ -8503,19 +9438,19 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 120,
     borderRadius: 12,
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: '#cbd5e1',
-    borderStyle: 'dashed',
+    borderStyle: 'solid',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#003580',
     marginVertical: 8,
   },
   verticalCameraBtnText: {
     fontSize: 13,
-    fontWeight: 'bold',
-    color: '#003580',
-    marginTop: 6,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginTop: 6
   },
   verticalPhotoWrapper: {
     width: '100%',
