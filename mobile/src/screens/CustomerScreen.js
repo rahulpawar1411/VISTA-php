@@ -12,7 +12,9 @@ import {
   RefreshControl,
   FlatList,
   Modal,
-  Linking
+  Linking,
+  TextInput,
+  Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import FastTouchable from '../components/FastTouchable';
@@ -197,6 +199,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [dynamicWarehouses, setDynamicWarehouses] = useState([]);
   const [dynamicClients, setDynamicClients] = useState([]);
   const [todayLogItems, setTodayLogItems] = useState([]);
+  const [homeUpdates, setHomeUpdates] = useState([]);
   const [homeLoading, setHomeLoading] = useState(false);
   const [homeRefreshing, setHomeRefreshing] = useState(false);
   const [homeError, setHomeError] = useState('');
@@ -218,6 +221,13 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportsError, setReportsError] = useState('');
   const [reportsRefreshing, setReportsRefreshing] = useState(false);
+  const [adminNotes, setAdminNotes] = useState([]);
+  const [adminNotesLoading, setAdminNotesLoading] = useState(false);
+  const [adminNotesError, setAdminNotesError] = useState('');
+  const [queryMessage, setQueryMessage] = useState('');
+  const [querySending, setQuerySending] = useState(false);
+  const [queryError, setQueryError] = useState('');
+  const [querySuccess, setQuerySuccess] = useState('');
 
   const displayName = user?.full_name || user?.email?.split('@')[0] || 'Customer';
 
@@ -481,37 +491,90 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     setHomeError('');
     try {
       const today = toLocalYmd();
-      const qs = new URLSearchParams({
-        page: '1',
-        limit: '100',
-        fromDate: today,
-        toDate: today
-      });
-      const res = await fetch(`${apiUrl}/api/chamber-temp?${qs.toString()}`, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${token}`
-        }
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 401) {
+      const fromUpdates = (() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 14);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      })();
+
+      const [todayRes, updatesRes] = await Promise.all([
+        fetch(
+          `${apiUrl}/api/chamber-temp?${new URLSearchParams({
+            page: '1',
+            limit: '100',
+            fromDate: today,
+            toDate: today
+          }).toString()}`,
+          {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${token}`
+            }
+          }
+        ),
+        fetch(
+          `${apiUrl}/api/chamber-temp?${new URLSearchParams({
+            page: '1',
+            limit: '100',
+            fromDate: fromUpdates,
+            toDate: today,
+            export: '1'
+          }).toString()}`,
+          {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${token}`
+            }
+          }
+        )
+      ]);
+
+      const todayData = await todayRes.json().catch(() => ({}));
+      if (!todayRes.ok) {
+        if (todayRes.status === 401) {
           throw new Error('Session expired or account not found on this server. Logout and login again.');
         }
-        throw new Error(data.message || data.error || `Failed to load overview (${res.status})`);
+        throw new Error(
+          todayData.message || todayData.error || `Failed to load overview (${todayRes.status})`
+        );
       }
 
-      const items = Array.isArray(data?.items)
-        ? data.items
-        : Array.isArray(data)
-          ? data
+      const todayItems = Array.isArray(todayData?.items)
+        ? todayData.items
+        : Array.isArray(todayData)
+          ? todayData
           : [];
-      const scoped = applyScope(items).filter((row) => {
+      const scopedToday = applyScope(todayItems).filter((row) => {
         const d = String(row.formatted_date || row.entry_date || '').slice(0, 10);
         return d === today;
       });
-      setTodayLogItems(scoped);
+      setTodayLogItems(scopedToday);
+
+      const updatesData = await updatesRes.json().catch(() => ({}));
+      const updateItems = Array.isArray(updatesData?.items)
+        ? updatesData.items
+        : Array.isArray(updatesData)
+          ? updatesData
+          : [];
+      const scopedUpdates = applyScope(updateItems)
+        .filter((row) => Number(row.update_count) > 0 || String(row.update_details || '').trim())
+        .sort((a, b) => {
+          const ta = String(a.updated_at || a.created_at || '')
+            .replace('T', ' ')
+            .slice(0, 19);
+          const tb = String(b.updated_at || b.created_at || '')
+            .replace('T', ' ')
+            .slice(0, 19);
+          if (tb !== ta) return tb.localeCompare(ta);
+          return (Number(b.id) || 0) - (Number(a.id) || 0);
+        })
+        .slice(0, 12);
+      setHomeUpdates(scopedUpdates);
     } catch (err) {
       const msg =
         err?.message === 'Network request failed'
@@ -519,6 +582,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
           : err.message || 'Failed to load overview.';
       console.warn('Customer home overview failed:', msg);
       setTodayLogItems([]);
+      setHomeUpdates([]);
       setHomeError(msg);
     } finally {
       setHomeLoading(false);
@@ -526,6 +590,16 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     }
   }, [apiUrl, token, applyScope]);
 
+  const formatUpdatePreview = (row) => {
+    const raw = String(row?.update_details || '').trim();
+    if (!raw) {
+      const n = Number(row?.update_count) || 0;
+      return n > 0 ? `Updated ${n} time${n === 1 ? '' : 's'}` : 'Updated';
+    }
+    const parts = raw.split('|').map((p) => p.trim()).filter(Boolean);
+    const last = parts[parts.length - 1] || raw;
+    return last.length > 90 ? `${last.slice(0, 90)}…` : last;
+  };
   const loadLogs = useCallback(async () => {
     if (!apiUrl || !token) return;
     setLogsLoading(true);
@@ -960,9 +1034,36 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     setReportHistoryLoading(false);
   };
 
+  const loadAdminNotes = useCallback(async () => {
+    if (!apiUrl || !token) return;
+    setAdminNotesLoading(true);
+    setAdminNotesError('');
+    try {
+      const res = await fetch(`${apiUrl}/api/customer-notes`, {
+        method: 'GET',
+        headers: authHeaders
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || data.message || `Failed to load notes (${res.status})`);
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      // Read-only: only Super Admin updates (customers cannot send)
+      setAdminNotes(items.filter((m) => m?.author_role === 'super_admin'));
+    } catch (err) {
+      setAdminNotes([]);
+      setAdminNotesError(err.message || 'Failed to load notes.');
+    } finally {
+      setAdminNotesLoading(false);
+    }
+  }, [apiUrl, token, authHeaders]);
+
   useEffect(() => {
-    if (activeTab === 'Dashboard') loadHomeOverview();
-  }, [activeTab, loadHomeOverview]);
+    if (activeTab === 'Dashboard') {
+      loadHomeOverview();
+      loadAdminNotes();
+    }
+  }, [activeTab, loadHomeOverview, loadAdminNotes]);
 
   useEffect(() => {
     if (activeTab === 'Logs') {
@@ -972,7 +1073,9 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   }, [activeTab, logType, loadLogs, loadInventory]);
 
   useEffect(() => {
-    if (activeTab === 'Reports') loadReports();
+    if (activeTab === 'Reports') {
+      loadReports();
+    }
   }, [activeTab, loadReports]);
 
   const onRefresh = () => {
@@ -984,7 +1087,48 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const onHomeRefresh = () => {
     setHomeRefreshing(true);
     loadHomeOverview();
+    loadAdminNotes();
   };
+
+  const submitCustomerQuery = useCallback(async () => {
+    const msg = String(queryMessage || '').trim();
+    if (!msg) {
+      setQueryError('Please type your query message.');
+      setQuerySuccess('');
+      return;
+    }
+    if (!apiUrl || !token) {
+      setQueryError('Not connected. Check server and login again.');
+      return;
+    }
+    setQuerySending(true);
+    setQueryError('');
+    setQuerySuccess('');
+    try {
+      const res = await fetch(`${apiUrl}/api/customer-reports`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          reference_no: 'Query',
+          message: msg
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || data.message || 'Failed to submit query.');
+      }
+      setQueryMessage('');
+      setQuerySuccess(data.message || 'Query submitted.');
+      Alert.alert('Submitted', data.message || 'Your query was submitted.');
+    } catch (err) {
+      setQueryError(err.message || 'Failed to submit query.');
+    } finally {
+      setQuerySending(false);
+    }
+  }, [queryMessage, apiUrl, token, authHeaders]);
 
   const renderFilterDropdown = (key, label, options, selected, onSelect, formatOption) => {
     const open = openFilter === key;
@@ -1336,7 +1480,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                 item.update_count != null && Number(item.update_count) > 0
                   ? String(item.update_count)
                   : null
-              ]
+              ],
+              ['Update details', item.update_details]
             ];
 
     const tempText =
@@ -1965,43 +2110,122 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                     </TouchableOpacity>
                   </View>
                 ) : (
-                  <View style={styles.card}>
-                    <View style={styles.cardTitleRow}>
-                      <Text style={styles.cardTitle}>Today logs</Text>
-                      <TouchableOpacity onPress={() => setActiveTab('Logs')} activeOpacity={0.85}>
-                        <Text style={styles.linkText}>View all →</Text>
-                      </TouchableOpacity>
-                    </View>
-                    {todayLogItems.length === 0 ? (
-                      <Text style={styles.cardHint}>No temperature logs for today yet.</Text>
-                    ) : (
-                      todayLogItems.map((item, idx) => (
-                        <TouchableOpacity
-                          key={String(item.id || item.reference_no || idx)}
-                          style={[styles.recentRow, idx > 0 && styles.recentRowBorder]}
-                          onPress={() => setSelectedLog(item)}
-                          activeOpacity={0.85}
-                        >
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.recentClient} numberOfLines={1}>
-                              {item.client_name || 'Client'}
-                            </Text>
-                            <Text style={styles.recentMeta} numberOfLines={1}>
-                              {item.chamber_name || 'Chamber'} · {item.shift || item.inspection_time || '—'}
-                              {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
-                            </Text>
-                          </View>
-                          <Text style={styles.recentTemp}>
-                            {item.box_temp != null
-                              ? `${item.box_temp}°C`
-                              : item.chamber_temp != null
-                                ? `${item.chamber_temp}°C`
-                                : '—'}
-                          </Text>
+                  <>
+                    <View style={[styles.card, styles.adminNotesHomeCard]}>
+                      <View style={styles.cardTitleRow}>
+                        <Text style={styles.cardTitle}>New Updates</Text>
+                        <TouchableOpacity onPress={loadAdminNotes} activeOpacity={0.85}>
+                          <Text style={styles.linkText}>Refresh</Text>
                         </TouchableOpacity>
-                      ))
-                    )}
-                  </View>
+                      </View>
+                      {adminNotesError ? (
+                        <Text style={[styles.cardHint, { color: '#dc2626' }]}>{adminNotesError}</Text>
+                      ) : null}
+                      {adminNotesLoading ? (
+                        <ActivityIndicator size="small" color="#003580" style={{ marginVertical: 12 }} />
+                      ) : adminNotes.length === 0 ? (
+                        <Text style={styles.cardHint}>No new updates yet.</Text>
+                      ) : (
+                        <ScrollView
+                          style={styles.adminNotesScroll}
+                          nestedScrollEnabled
+                          showsVerticalScrollIndicator={false}
+                        >
+                          {adminNotes.map((m) => (
+                            <View
+                              key={String(m.id)}
+                              style={[styles.adminNoteBubble, styles.adminNoteBubbleAdmin]}
+                            >
+                              <Text style={[styles.adminNoteBody, styles.adminNoteBodyAdmin]}>
+                                {m.message}
+                              </Text>
+                            </View>
+                          ))}
+                        </ScrollView>
+                      )}
+                    </View>
+
+                    {homeUpdates.length > 0 ? (
+                      <View style={styles.card}>
+                        <View style={styles.cardTitleRow}>
+                          <Text style={styles.cardTitle}>Log changes</Text>
+                          <TouchableOpacity onPress={() => setActiveTab('Logs')} activeOpacity={0.85}>
+                            <Text style={styles.linkText}>View all →</Text>
+                          </TouchableOpacity>
+                        </View>
+                        {homeUpdates.map((item, idx) => (
+                          <TouchableOpacity
+                            key={`upd-${String(item.id || item.reference_no || idx)}`}
+                            style={[styles.recentRow, idx > 0 && styles.recentRowBorder]}
+                            onPress={() => setSelectedLog(item)}
+                            activeOpacity={0.85}
+                          >
+                            <View style={styles.updateIconWrap}>
+                              <Ionicons name="create-outline" size={16} color="#003580" />
+                            </View>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text style={styles.recentClient} numberOfLines={1}>
+                                {item.client_name || 'Client'}
+                                {item.chamber_name ? ` · ${item.chamber_name}` : ''}
+                              </Text>
+                              <Text style={styles.recentMeta} numberOfLines={2}>
+                                {formatUpdatePreview(item)}
+                              </Text>
+                              <Text style={styles.updateMetaLine} numberOfLines={1}>
+                                {String(item.formatted_date || item.entry_date || '').slice(0, 10) ||
+                                  '—'}
+                                {item.shift ? ` · ${item.shift}` : ''}
+                                {Number(item.update_count) > 0
+                                  ? ` · ${item.update_count} update${
+                                      Number(item.update_count) === 1 ? '' : 's'
+                                    }`
+                                  : ''}
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    ) : null}
+
+                    <View style={styles.card}>
+                      <View style={styles.cardTitleRow}>
+                        <Text style={styles.cardTitle}>Today logs</Text>
+                        <TouchableOpacity onPress={() => setActiveTab('Logs')} activeOpacity={0.85}>
+                          <Text style={styles.linkText}>View all →</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {todayLogItems.length === 0 ? (
+                        <Text style={styles.cardHint}>No temperature logs for today yet.</Text>
+                      ) : (
+                        todayLogItems.map((item, idx) => (
+                          <TouchableOpacity
+                            key={String(item.id || item.reference_no || idx)}
+                            style={[styles.recentRow, idx > 0 && styles.recentRowBorder]}
+                            onPress={() => setSelectedLog(item)}
+                            activeOpacity={0.85}
+                          >
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.recentClient} numberOfLines={1}>
+                                {item.client_name || 'Client'}
+                              </Text>
+                              <Text style={styles.recentMeta} numberOfLines={1}>
+                                {item.chamber_name || 'Chamber'} ·{' '}
+                                {item.shift || item.inspection_time || '—'}
+                                {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
+                              </Text>
+                            </View>
+                            <Text style={styles.recentTemp}>
+                              {item.box_temp != null
+                                ? `${item.box_temp}°C`
+                                : item.chamber_temp != null
+                                  ? `${item.chamber_temp}°C`
+                                  : '—'}
+                            </Text>
+                          </TouchableOpacity>
+                        ))
+                      )}
+                    </View>
+                  </>
                 )}
               </>
             )}
@@ -2036,6 +2260,44 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                         : allowedWarehouses.join(', ')}
                     </Text>
                   </Text>
+                </View>
+
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>Send query</Text>
+                  <Text style={styles.queryLabel}>Message</Text>
+                  <TextInput
+                    style={[styles.queryInput, styles.queryMessageInput]}
+                    value={queryMessage}
+                    onChangeText={setQueryMessage}
+                    placeholder="Type your query…"
+                    placeholderTextColor="#94a3b8"
+                    multiline
+                    textAlignVertical="top"
+                  />
+                  {queryError ? (
+                    <Text style={[styles.cardHint, { color: '#dc2626' }]}>{queryError}</Text>
+                  ) : null}
+                  {querySuccess ? (
+                    <Text style={[styles.cardHint, { color: '#16a34a' }]}>{querySuccess}</Text>
+                  ) : null}
+                  <TouchableOpacity
+                    style={[
+                      styles.querySendBtn,
+                      (!String(queryMessage || '').trim() || querySending) && { opacity: 0.55 }
+                    ]}
+                    onPress={submitCustomerQuery}
+                    disabled={!String(queryMessage || '').trim() || querySending}
+                    activeOpacity={0.85}
+                  >
+                    {querySending ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <>
+                        <Ionicons name="send-outline" size={16} color="#fff" />
+                        <Text style={styles.querySendText}>Submit query</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
                 </View>
 
                 <TouchableOpacity
@@ -2505,6 +2767,43 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#334155'
   },
+  queryLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
+    marginTop: 10,
+    marginBottom: 6
+  },
+  queryInput: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#0f172a',
+    backgroundColor: '#f8fafc'
+  },
+  queryMessageInput: {
+    minHeight: 110,
+    maxHeight: 180
+  },
+  querySendBtn: {
+    marginTop: 12,
+    backgroundColor: '#003580',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8
+  },
+  querySendText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 14
+  },
   mono: { fontSize: 12, color: '#0f172a', marginTop: 8, fontWeight: '600' },
   statsGrid: {
     flexDirection: 'row',
@@ -2559,6 +2858,20 @@ const styles = StyleSheet.create({
   recentRowBorder: { borderTopWidth: 1, borderTopColor: '#f1f5f9' },
   recentClient: { fontSize: 13, fontWeight: '800', color: '#0f172a' },
   recentMeta: { fontSize: 11, color: '#64748b', marginTop: 2, fontWeight: '600' },
+  updateIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  updateMetaLine: {
+    fontSize: 10,
+    color: '#94a3b8',
+    marginTop: 3,
+    fontWeight: '600'
+  },
   recentTemp: { fontSize: 14, fontWeight: '800', color: '#0369a1' },
   logsWrap: { flex: 1 },
   filtersCard: {
@@ -2570,6 +2883,84 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     gap: 8
   },
+  adminNotesCard: {
+    backgroundColor: '#fff',
+    marginHorizontal: 10,
+    marginTop: 10,
+    marginBottom: 8,
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  adminNotesHomeCard: {
+    paddingBottom: 10
+  },
+  adminNotesScroll: {
+    maxHeight: 280,
+    marginTop: 8
+  },
+  adminNoteBubble: {
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+    maxWidth: '92%'
+  },
+  adminNoteBubbleAdmin: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe'
+  },
+  adminNoteBubbleMine: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  adminNoteAuthor: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 4
+  },
+  adminNoteAuthorAdmin: { color: '#003580' },
+  adminNoteBody: {
+    fontSize: 13,
+    color: '#0f172a',
+    fontWeight: '600',
+    lineHeight: 18
+  },
+  adminNoteBodyAdmin: { color: '#0f172a' },
+  adminNoteCompose: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    marginTop: 8
+  },
+  adminNoteInput: {
+    flex: 1,
+    minHeight: 40,
+    maxHeight: 90,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0f172a',
+    backgroundColor: '#f8fafc'
+  },
+  adminNoteSend: {
+    backgroundColor: '#003580',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minWidth: 64,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  adminNoteSendText: { color: '#fff', fontWeight: '800', fontSize: 12 },
   filterChipRow: {
     flexDirection: 'row',
     gap: 8
