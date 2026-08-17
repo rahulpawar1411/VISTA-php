@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import FastTouchable from '../components/FastTouchable';
+import { ensureLocationPermission } from '../utils/permissions';
 
 const TouchableOpacity = FastTouchable;
 
@@ -86,6 +87,9 @@ export default function LoginScreen({
         // Role-based mobile access — keep backend role exactly (email/password map to one role table)
         if (role === 'do_operator' || role === 'customer' || role === 'sub_admin') {
           console.log('🔑 Login success:', role, data.user?.email);
+          if (role === 'do_operator' || role === 'sub_admin') {
+            void ensureLocationPermission({ required: false });
+          }
           onLoginSuccess({
             user: data.user,
             token: data.token
@@ -221,11 +225,6 @@ export default function LoginScreen({
               />
             </TouchableOpacity>
           </View>
-
-          {/* Forgot Password action button */}
-          <TouchableOpacity style={styles.forgotPassword}>
-            <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
-          </TouchableOpacity>
 
           {/* Submit Sign-In button */}
           <TouchableOpacity style={styles.signInButton} onPress={handleSignIn}>
@@ -428,15 +427,6 @@ const styles = StyleSheet.create({
   },
   eyeIcon: {
     padding: 6,
-  },
-  forgotPassword: {
-    alignSelf: 'flex-end',
-    marginBottom: 24,
-  },
-  forgotPasswordText: {
-    color: '#0056b3',
-    fontSize: 13,
-    fontWeight: '600',
   },
   signInButton: {
     backgroundColor: '#0033a0',

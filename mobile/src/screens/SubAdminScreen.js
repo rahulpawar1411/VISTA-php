@@ -14,7 +14,8 @@ import {
   Linking,
   Alert,
   Share,
-  Platform
+  Platform,
+  BackHandler
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -453,6 +454,36 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     }
   }, [apiUrl, token, authHeaders]);
 
+  // Handle Android system back button presses
+  useEffect(() => {
+    const backAction = () => {
+      if (showNotifications) {
+        setShowNotifications(false);
+        return true;
+      }
+      if (selectedLog) {
+        setSelectedLog(null);
+        return true;
+      }
+      if (selectedReport) {
+        setSelectedReport(null);
+        return true;
+      }
+      if (showCalendarModal) {
+        setShowCalendarModal(false);
+        return true;
+      }
+      if (activeTab !== 'Home') {
+        setActiveTab('Home');
+        return true;
+      }
+      return false;
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [showNotifications, selectedLog, selectedReport, showCalendarModal, activeTab]);
+
   const loadLogs = useCallback(async () => {
     if (!apiUrl || !token) return;
     setLogsLoading(true);
@@ -683,7 +714,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       n.request_remark ||
       n.remark ||
       '';
-    return String(msg).trim() || 'Role & Permission request';
+    return String(msg)
+      .replace(/\s*\(id:\s*\d+\)/gi, '')
+      .replace(/Chamber\s*#\s*\d+/gi, (n.chamber_name || 'Chamber').trim())
+      .trim() || 'Role & Permission request';
   };
 
   const getNotifTitle = (n) => {
@@ -692,10 +726,15 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     const action = /DELETE|delete/i.test(String(n.raw_action || n.description || ''))
       ? 'Delete'
       : 'Edit';
-    if (status === 'Pending') return `Role & Permission · ${action} · ${type}`;
-    if (status === 'Approved') return `${action} approved · ${type}`;
-    if (status === 'Denied') return `${action} denied · ${type}`;
-    return `${status} · ${type}`;
+    const chamberLabel = String(n.chamber_name || '').trim();
+    const typeLabel =
+      (type === 'ChamberMaster' || type === 'Chamber') && chamberLabel
+        ? chamberLabel
+        : type;
+    if (status === 'Pending') return `Role & Permission · ${action} · ${typeLabel}`;
+    if (status === 'Approved') return `${action} approved · ${typeLabel}`;
+    if (status === 'Denied') return `${action} denied · ${typeLabel}`;
+    return `${status} · ${typeLabel}`;
   };
 
   const filteredNotifications = useMemo(() => {
@@ -895,6 +934,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         });
         if (row.warehouse_name) qs.set('warehouse', String(row.warehouse_name).trim());
         if (row.client_name) qs.set('client', String(row.client_name).trim());
+        if (row.chamber_id != null && String(row.chamber_id).trim() !== '') {
+          qs.set('chamber_id', String(row.chamber_id));
+        } else if (row.chamber_name) {
+          qs.set('chamber', String(row.chamber_name).trim());
+        }
 
         const res = await fetch(`${apiUrl}/api/chamber-temp?${qs.toString()}`, {
           headers: authHeaders
@@ -905,11 +949,16 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         }
         let items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
 
-        // Client + warehouse only — keep Morning/Evening trail for In/Out (e.g. 65 → 60 = Out 5)
         const clientNeedle = String(row.client_name || '')
           .trim()
           .toLowerCase();
         const whNeedle = String(row.warehouse_name || '')
+          .trim()
+          .toLowerCase();
+        const chamberId = row.chamber_id != null && String(row.chamber_id).trim() !== ''
+          ? Number(row.chamber_id)
+          : null;
+        const chamberNeedle = String(row.chamber_name || '')
           .trim()
           .toLowerCase();
         items = items.filter((r) => {
@@ -921,7 +970,14 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             .toLowerCase();
           const clientMatch = !clientNeedle || c === clientNeedle;
           const whMatch = !whNeedle || w === whNeedle;
-          return clientMatch && whMatch;
+          const logCid = r.chamber_id != null && String(r.chamber_id).trim() !== ''
+            ? Number(r.chamber_id)
+            : null;
+          const chamberMatch = chamberId != null && Number.isFinite(chamberId)
+            ? logCid === chamberId
+            : !chamberNeedle ||
+              String(r.chamber_name || '').trim().toLowerCase() === chamberNeedle;
+          return clientMatch && whMatch && chamberMatch;
         });
 
         setReportHistory(buildReportReadingRows(items));
@@ -2121,7 +2177,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 4 : 4,
+    paddingBottom: 16,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0'

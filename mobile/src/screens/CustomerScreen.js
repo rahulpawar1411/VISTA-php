@@ -14,12 +14,25 @@ import {
   Modal,
   Linking,
   TextInput,
-  Alert
+  Alert,
+  Platform,
+  BackHandler
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import FastTouchable from '../components/FastTouchable';
-import { dedupeInventoryLots } from '../utils/dedupeInventoryLots';
+import {
+  dedupeInventoryLots,
+  chamberZoneStyle,
+  normalizeChamberZone,
+  pickComplianceZone,
+} from '../utils/dedupeInventoryLots';
 import { buildReportReadingRows, latestReadingQty } from '../utils/buildReportReadingRows';
+import {
+  DOCK_REPORT_PAGE_SIZE,
+  splitLogPhotoPaths,
+  formatPhotoCaptureMetadataLines,
+  resolveDockImageUrl,
+} from '../utils/customerLogReportHelpers';
 
 const TouchableOpacity = FastTouchable;
 
@@ -184,7 +197,29 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
 
   const [warehouseFilter, setWarehouseFilter] = useState('All');
   const [clientFilter, setClientFilter] = useState('All');
-  const [logType, setLogType] = useState('chambers'); // chambers | inward | outward | inventory
+  const [logsReportsMode, setLogsReportsMode] = useState('temperature'); // temperature | inward | outward
+  const [logsChamberFilter, setLogsChamberFilter] = useState('all');
+  const [logsClientFilter, setLogsClientFilter] = useState('All');
+  const [logsTypeFilter, setLogsTypeFilter] = useState('all');
+  const [logsReportDateFrom, setLogsReportDateFrom] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+  const [logsReportDateTo, setLogsReportDateTo] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+  const [chamberReportLogs, setChamberReportLogs] = useState([]);
+  const [chamberReportsLoading, setChamberReportsLoading] = useState(false);
+  const [chamberReportsError, setChamberReportsError] = useState('');
+  const [showLogsChamberDropdown, setShowLogsChamberDropdown] = useState(false);
+  const [showLogsClientDropdown, setShowLogsClientDropdown] = useState(false);
+  const [showLogsTypeDropdown, setShowLogsTypeDropdown] = useState(false);
+  const [calendarContext, setCalendarContext] = useState('dock'); // dock | logsTemp
+  const [logSearch, setLogSearch] = useState('');
+  const [logPage, setLogPage] = useState(1);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logHasMore, setLogHasMore] = useState(false);
   const [dateFrom, setDateFrom] = useState('All');
   const [dateTo, setDateTo] = useState('All');
   const [openFilter, setOpenFilter] = useState(null); // 'warehouse' | 'client' | null
@@ -324,11 +359,12 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     setWarehouseFilter('All');
     setClientFilter('All');
     setOpenFilter(null);
-    if (logType === 'chambers') {
-      const t = toLocalYmd();
-      applyDateRange(t, t);
-    } else if (logType !== 'inventory') {
+    setLogSearch('');
+    setLogPage(1);
+    if (logsReportsMode === 'inward' || logsReportsMode === 'outward') {
       applyDateRange('All', 'All');
+    } else {
+      clearLogsReportFilters();
     }
   };
 
@@ -439,6 +475,32 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     },
     [allowedClients, allowedWarehouses]
   );
+
+  // Handle Android system back button presses
+  useEffect(() => {
+    const backAction = () => {
+      if (selectedLog) {
+        setSelectedLog(null);
+        return true;
+      }
+      if (selectedReport) {
+        setSelectedReport(null);
+        return true;
+      }
+      if (showCalendarModal) {
+        setShowCalendarModal(false);
+        return true;
+      }
+      if (activeTab !== 'Dashboard') {
+        setActiveTab('Dashboard');
+        return true;
+      }
+      return false;
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [selectedLog, selectedReport, showCalendarModal, activeTab]);
 
   // Keep selected filters inside assigned scope
   useEffect(() => {
@@ -600,42 +662,35 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     const last = parts[parts.length - 1] || raw;
     return last.length > 90 ? `${last.slice(0, 90)}…` : last;
   };
-  const loadLogs = useCallback(async () => {
+  const loadLogs = useCallback(async (overrides = {}) => {
     if (!apiUrl || !token) return;
     setLogsLoading(true);
     setLogsError('');
     try {
-      let from = dateFrom;
-      let to = dateTo;
-      if (logType === 'chambers' && (from === 'All' || to === 'All')) {
-        const t = toLocalYmd();
-        from = from === 'All' ? t : from;
-        to = to === 'All' ? t : to;
-      }
+      const isDock = logsReportsMode === 'inward' || logsReportsMode === 'outward';
+      if (!isDock) return;
+      let from = overrides.fromDate ?? (dateFrom === 'All' ? '' : dateFrom);
+      let to = overrides.toDate ?? (dateTo === 'All' ? '' : dateTo);
+      const page = overrides.page ?? logPage;
+      const search = overrides.search ?? logSearch;
 
-      const qs = new URLSearchParams({
-        page: '1',
-        limit: '300'
-      });
+      const qs = new URLSearchParams();
+      qs.set('page', String(page));
+      qs.set('limit', String(DOCK_REPORT_PAGE_SIZE));
+      const trimmedSearch = String(search || '').trim();
+      if (trimmedSearch) qs.set('search', trimmedSearch);
+
       if (warehouseFilter && warehouseFilter !== 'All') {
         qs.set('warehouse', warehouseFilter);
       }
       if (clientFilter && clientFilter !== 'All') {
         qs.set('client', clientFilter);
       }
-      if (from && from !== 'All') {
-        qs.set('fromDate', from);
-      }
-      if (to && to !== 'All') {
-        qs.set('toDate', to);
-      }
+      if (from) qs.set('fromDate', from);
+      if (to) qs.set('toDate', to);
 
       const endpoint =
-        logType === 'inward'
-          ? '/api/inward-logs'
-          : logType === 'outward'
-            ? '/api/outward-logs'
-            : '/api/chamber-temp';
+        logsReportsMode === 'inward' ? '/api/inward-logs' : '/api/outward-logs';
 
       const res = await fetch(`${apiUrl}${endpoint}?${qs.toString()}`, {
         method: 'GET',
@@ -654,32 +709,12 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         : Array.isArray(data)
           ? data
           : [];
-      items = items.map((row) => normalizeLogRow(row, logType));
+      items = items.map((row) => normalizeLogRow(row, logsReportsMode));
       items = applyScope(items, warehouseFilter, clientFilter);
 
-      if (logType === 'chambers') {
-        items = items.filter((row) => {
-          const d = String(row.formatted_date || row.entry_date || '').slice(0, 10);
-          if (!d) return from === 'All' && to === 'All';
-          if (from && from !== 'All' && d < from) return false;
-          if (to && to !== 'All' && d > to) return false;
-          return true;
-        });
-        items.sort((a, b) => {
-          // LIFO: newest task first (before opening detail)
-          const da = String(a.formatted_date || a.entry_date || '').slice(0, 10);
-          const db = String(b.formatted_date || b.entry_date || '').slice(0, 10);
-          if (db !== da) return db.localeCompare(da);
-          const ta = String(a.created_at || a.updated_at || a.photo_capture_time || '')
-            .replace('T', ' ')
-            .slice(0, 19);
-          const tb = String(b.created_at || b.updated_at || b.photo_capture_time || '')
-            .replace('T', ' ')
-            .slice(0, 19);
-          if (tb !== ta) return tb.localeCompare(ta);
-          return (Number(b.id) || 0) - (Number(a.id) || 0);
-        });
-      }
+      setLogPage(page);
+      setLogTotal(Number(data.total) || items.length);
+      setLogHasMore(Boolean(data.hasMore));
 
       setLogs(items);
 
@@ -725,11 +760,35 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     clientFilter,
     dateFrom,
     dateTo,
-    logType,
+    logsReportsMode,
+    logPage,
+    logSearch,
     applyScope,
     allowedClients.length,
     allowedWarehouses.length
   ]);
+
+  const applyDockLogFilters = useCallback(() => {
+    setLogPage(1);
+    loadLogs({ page: 1 });
+  }, [loadLogs]);
+
+  const clearDockLogFilters = useCallback(() => {
+    setLogSearch('');
+    setLogPage(1);
+    applyDateRange('All', 'All');
+    loadLogs({ page: 1, search: '', fromDate: '', toDate: '' });
+  }, [loadLogs]);
+
+  const goLogPrevPage = useCallback(() => {
+    if (logPage <= 1) return;
+    loadLogs({ page: logPage - 1 });
+  }, [logPage, loadLogs]);
+
+  const goLogNextPage = useCallback(() => {
+    if (!logHasMore) return;
+    loadLogs({ page: logPage + 1 });
+  }, [logHasMore, logPage, loadLogs]);
 
   const loadInventory = useCallback(async () => {
     if (!apiUrl || !token) return;
@@ -776,17 +835,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     setReportsLoading(true);
     setReportsError('');
     try {
-      const qs = new URLSearchParams();
-      if (reportWarehouseFilter && reportWarehouseFilter !== 'All') {
-        qs.set('warehouse', reportWarehouseFilter);
-      }
-      if (reportClientFilter && reportClientFilter !== 'All') {
-        qs.set('client', reportClientFilter);
-      }
-      const res = await fetch(
-        `${apiUrl}/api/dashboard/inventory-reconciliation${qs.toString() ? `?${qs}` : ''}`,
-        { headers: authHeaders }
-      );
+      const res = await fetch(`${apiUrl}/api/dashboard/inventory-reconciliation`, { headers: authHeaders });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status === 401) {
@@ -821,7 +870,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       setReportsLoading(false);
       setReportsRefreshing(false);
     }
-  }, [apiUrl, token, authHeaders, applyScope, reportWarehouseFilter, reportClientFilter]);
+  }, [apiUrl, token, authHeaders, applyScope]);
 
   /** LIFO: last-in (newest DO audit / update) first on outer Reports list */
   const sortLotsLifo = (rows) =>
@@ -903,6 +952,230 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       totalBoxes
     };
   }, [filteredReportRows]);
+
+  const closeLogsReportDropdowns = () => {
+    setShowLogsChamberDropdown(false);
+    setShowLogsClientDropdown(false);
+    setShowLogsTypeDropdown(false);
+  };
+
+  const clearLogsReportFilters = () => {
+    setLogsChamberFilter('all');
+    setLogsClientFilter('All');
+    setLogsTypeFilter('all');
+    closeLogsReportDropdowns();
+    const t = toLocalYmd();
+    setLogsReportDateFrom(t);
+    setLogsReportDateTo(t);
+  };
+
+  const logDateKey = (value) => String(value || '').slice(0, 10);
+
+  const resolveReportLotType = useCallback((row) => {
+    return pickComplianceZone(row?.chamber_type) || 'Frozen';
+  }, []);
+
+  const chambersList = useMemo(() => {
+    const map = new Map();
+    [...reportRows, ...chamberReportLogs].forEach((row) => {
+      const id = row?.chamber_id;
+      const name = row?.chamber_name;
+      if (id != null && name) {
+        map.set(Number(id), {
+          id: Number(id),
+          name: String(name).trim(),
+          chamber_type: row.chamber_type,
+        });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => {
+      const na = parseInt((String(a.name || '').match(/\d+/) || [a.id])[0], 10);
+      const nb = parseInt((String(b.name || '').match(/\d+/) || [b.id])[0], 10);
+      return na - nb;
+    });
+  }, [reportRows, chamberReportLogs]);
+
+  const logsReportClientOptions = useMemo(() => {
+    let list = [];
+    if (logsChamberFilter === 'all' || logsChamberFilter === 'All') {
+      list = allowedClients.length ? [...allowedClients] : [...reportClients];
+    } else {
+      list = Array.from(
+        new Set(
+          [...reportRows, ...chamberReportLogs]
+            .filter((r) => Number(r.chamber_id) === Number(logsChamberFilter))
+            .map((r) => String(r.client_name || '').trim())
+            .filter(Boolean)
+        )
+      );
+    }
+    if (allowedClients.length) {
+      const accessSet = new Set(allowedClients.map((c) => normName(c)));
+      list = list.filter((c) => accessSet.has(normName(c)));
+    }
+    return list.sort((a, b) => String(a).localeCompare(String(b)));
+  }, [
+    logsChamberFilter,
+    allowedClients,
+    reportClients,
+    reportRows,
+    chamberReportLogs,
+  ]);
+
+  const filteredLogsInventoryRows = useMemo(() => {
+    let rows = reportRows;
+    if (logsChamberFilter && logsChamberFilter !== 'All' && logsChamberFilter !== 'all') {
+      rows = rows.filter((r) => {
+        const cidMatch = r.chamber_id != null && Number(r.chamber_id) === Number(logsChamberFilter);
+        const selectedCh = chambersList.find((c) => Number(c.id) === Number(logsChamberFilter));
+        const cnameMatch =
+          selectedCh &&
+          r.chamber_name &&
+          normName(r.chamber_name) === normName(selectedCh.name);
+        return cidMatch || cnameMatch;
+      });
+    }
+    if (logsClientFilter && logsClientFilter !== 'All' && logsClientFilter !== 'all') {
+      rows = rows.filter(
+        (r) => r.client_name && normName(r.client_name) === normName(logsClientFilter)
+      );
+    }
+    if (logsTypeFilter && logsTypeFilter !== 'all' && logsTypeFilter !== 'All') {
+      const want = normalizeChamberZone(logsTypeFilter);
+      rows = rows.filter((r) => resolveReportLotType(r) === want);
+    }
+    return sortLotsLifo(dedupeInventoryLots(rows));
+  }, [
+    reportRows,
+    logsChamberFilter,
+    logsClientFilter,
+    logsTypeFilter,
+    chambersList,
+    resolveReportLotType,
+  ]);
+
+  const logsInventorySummary = useMemo(() => {
+    let totalBoxes = 0;
+    filteredLogsInventoryRows.forEach((r) => {
+      totalBoxes += Math.max(0, Number(r.physical_audit_count) || 0);
+    });
+    return {
+      lots: filteredLogsInventoryRows.length,
+      totalBoxes,
+    };
+  }, [filteredLogsInventoryRows]);
+
+  const getFilteredLogsTemperature = useCallback(() => {
+    const from =
+      logsReportDateFrom <= logsReportDateTo ? logsReportDateFrom : logsReportDateTo;
+    const to =
+      logsReportDateFrom <= logsReportDateTo ? logsReportDateTo : logsReportDateFrom;
+    const shiftRank = (log) => {
+      const s = String(log?.shift || '').trim().toLowerCase();
+      if (s === 'evening') return 1;
+      if (s === 'morning') return 0;
+      const t = String(log?.inspection_time || '');
+      if (/^16:00|^18:00/.test(t)) return 1;
+      return 0;
+    };
+    const timeKey = (log) =>
+      String(log?.updated_at || log?.created_at || log?.photo_capture_time || log?.inspection_time || '');
+
+    return chamberReportLogs
+      .filter((log) => {
+        if (!log) return false;
+        if (
+          logsChamberFilter !== 'all' &&
+          logsChamberFilter !== 'All' &&
+          Number(log.chamber_id) !== Number(logsChamberFilter)
+        ) {
+          return false;
+        }
+        if (
+          logsClientFilter !== 'all' &&
+          logsClientFilter !== 'All' &&
+          String(log.client_name) !== String(logsClientFilter)
+        ) {
+          return false;
+        }
+        if (logsTypeFilter !== 'all' && logsTypeFilter !== 'All') {
+          if (resolveReportLotType(log) !== normalizeChamberZone(logsTypeFilter)) return false;
+        }
+        const entryDay = logDateKey(log.entry_date || log.formatted_date);
+        if (entryDay && (entryDay < from || entryDay > to)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const da = String(a.entry_date || '');
+        const db = String(b.entry_date || '');
+        if (db !== da) return db.localeCompare(da);
+        const sr = shiftRank(b) - shiftRank(a);
+        if (sr !== 0) return sr;
+        const ta = timeKey(a);
+        const tb = timeKey(b);
+        if (tb !== ta) return tb.localeCompare(ta);
+        return (Number(b.id) || 0) - (Number(a.id) || 0);
+      });
+  }, [
+    chamberReportLogs,
+    logsChamberFilter,
+    logsClientFilter,
+    logsTypeFilter,
+    logsReportDateFrom,
+    logsReportDateTo,
+    resolveReportLotType,
+  ]);
+
+  const loadChamberReportLogs = useCallback(async () => {
+    if (!apiUrl || !token) return;
+    setChamberReportsLoading(true);
+    setChamberReportsError('');
+    try {
+      const from =
+        logsReportDateFrom <= logsReportDateTo ? logsReportDateFrom : logsReportDateTo;
+      const to =
+        logsReportDateFrom <= logsReportDateTo ? logsReportDateTo : logsReportDateFrom;
+      const qs = new URLSearchParams({
+        page: '1',
+        limit: '500',
+        fromDate: from,
+        toDate: to,
+      });
+      const res = await fetch(`${apiUrl}/api/chamber-temp?${qs.toString()}`, {
+        headers: authHeaders,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('Session expired or account not found on this server. Logout and login again.');
+        }
+        throw new Error(data.message || data.error || `Failed to load logs (${res.status})`);
+      }
+      const items = Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data)
+          ? data
+          : [];
+      setChamberReportLogs(applyScope(items.map((row) => normalizeLogRow(row, 'chambers'))));
+    } catch (err) {
+      const msg =
+        err?.message === 'Network request failed'
+          ? `Cannot reach server: ${apiUrl}. Open Login settings → Local server, or use Production.`
+          : err.message || 'Failed to load temperature logs.';
+      setChamberReportLogs([]);
+      setChamberReportsError(msg);
+    } finally {
+      setChamberReportsLoading(false);
+      setRefreshing(false);
+    }
+  }, [
+    apiUrl,
+    token,
+    authHeaders,
+    logsReportDateFrom,
+    logsReportDateTo,
+    applyScope,
+  ]);
 
   const inventorySummary = useMemo(() => {
     let totalBoxes = 0;
@@ -996,6 +1269,11 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         });
         if (row.warehouse_name) qs.set('warehouse', String(row.warehouse_name).trim());
         if (row.client_name) qs.set('client', String(row.client_name).trim());
+        if (row.chamber_id != null && String(row.chamber_id).trim() !== '') {
+          qs.set('chamber_id', String(row.chamber_id));
+        } else if (row.chamber_name) {
+          qs.set('chamber', String(row.chamber_name).trim());
+        }
 
         const res = await fetch(`${apiUrl}/api/chamber-temp?${qs.toString()}`, {
           headers: authHeaders
@@ -1007,13 +1285,22 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         let items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
         items = applyScope(items);
 
-        // Client + warehouse history only (keep all shifts/chambers so 65→60 Out calc works)
         const clientNeedle = normName(row.client_name);
         const whNeedle = normName(row.warehouse_name);
+        const chamberId = row.chamber_id != null && String(row.chamber_id).trim() !== ''
+          ? Number(row.chamber_id)
+          : null;
+        const chamberNeedle = normName(row.chamber_name);
         items = items.filter((r) => {
           const clientMatch = !clientNeedle || normName(r.client_name) === clientNeedle;
           const whMatch = !whNeedle || normName(r.warehouse_name) === whNeedle;
-          return clientMatch && whMatch;
+          const logCid = r.chamber_id != null && String(r.chamber_id).trim() !== ''
+            ? Number(r.chamber_id)
+            : null;
+          const chamberMatch = chamberId != null && Number.isFinite(chamberId)
+            ? logCid === chamberId
+            : !chamberNeedle || normName(r.chamber_name) === chamberNeedle;
+          return clientMatch && whMatch && chamberMatch;
         });
 
         setReportHistory(buildReportReadingRows(items));
@@ -1066,11 +1353,20 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   }, [activeTab, loadHomeOverview, loadAdminNotes]);
 
   useEffect(() => {
-    if (activeTab === 'Logs') {
-      if (logType === 'inventory') loadInventory();
-      else loadLogs();
+    if (activeTab !== 'Logs') return;
+    if (logsReportsMode === 'temperature') {
+      loadChamberReportLogs();
+    } else {
+      loadLogs();
     }
-  }, [activeTab, logType, loadLogs, loadInventory]);
+  }, [
+    activeTab,
+    logsReportsMode,
+    loadChamberReportLogs,
+    loadLogs,
+    logsReportDateFrom,
+    logsReportDateTo,
+  ]);
 
   useEffect(() => {
     if (activeTab === 'Reports') {
@@ -1079,9 +1375,16 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   }, [activeTab, loadReports]);
 
   const onRefresh = () => {
-    setRefreshing(true);
-    if (logType === 'inventory') loadInventory();
-    else loadLogs();
+    if (activeTab === 'Reports') {
+      setReportsRefreshing(true);
+      loadReports();
+    } else if (logsReportsMode === 'temperature') {
+      setRefreshing(true);
+      loadChamberReportLogs();
+    } else {
+      setRefreshing(true);
+      loadLogs();
+    }
   };
 
   const onHomeRefresh = () => {
@@ -1295,44 +1598,823 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     );
   };
 
-  const renderLogItem = ({ item }) => {
-    if (item._logType === 'chambers' || (!item._logType && logType === 'chambers')) {
-      const dateLabel = formatDateLabel(
-        String(item.formatted_date || item.entry_date || '').slice(0, 10) || 'All'
-      );
-      const temp =
-        item.box_temp != null
-          ? `${item.box_temp}°C`
-          : item.chamber_temp != null
-            ? `${item.chamber_temp}°C`
-            : '—';
-      return (
-        <TouchableOpacity
-          style={styles.dailyCard}
-          onPress={() => setSelectedLog(item)}
-          activeOpacity={0.85}
-        >
-          <View style={styles.dailyTop}>
-            <View style={styles.dailyTextCol}>
-              <Text style={styles.dailyChamber} numberOfLines={1}>
-                {item.chamber_name || 'Chamber'}
-                {item.client_name ? ` · ${item.client_name}` : ''}
-              </Text>
+  const renderLogsInventoryItem = ({ item }) => {
+    const totalBoxes = getLotTotalBoxes(item);
+    const outOfStock = totalBoxes === 0;
+    const zone = chamberZoneStyle(resolveReportLotType(item));
+    return (
+      <TouchableOpacity
+        style={styles.dailyCard}
+        onPress={() => openReportDetail(item)}
+        activeOpacity={0.85}
+      >
+        <View style={styles.dailyTop}>
+          <View style={styles.dailyTextCol}>
+            <Text style={styles.dailyChamber} numberOfLines={1}>
+              {item.client_name || 'Client'}
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 3, gap: 6 }}>
               <Text style={styles.dailyMetaLine} numberOfLines={1}>
-                {dateLabel}
-                {item.shift ? ` · ${item.shift}` : ''}
-                {item.box_count != null ? ` · ${item.box_count} boxes` : ''}
-                {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
+                {item.chamber_name || 'Chamber'}
+              </Text>
+              <View style={{ backgroundColor: zone.bg, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 1 }}>
+                <Text style={{ fontSize: 9, fontWeight: '800', color: zone.color }}>{zone.type}</Text>
+              </View>
+            </View>
+          </View>
+          <View style={styles.totalBoxesCol}>
+            <Text style={[styles.totalBoxesValue, outOfStock && styles.outOfStockValue]}>
+              {outOfStock ? '0' : totalBoxes}
+            </Text>
+            <Text style={[styles.totalBoxesLabel, outOfStock && styles.outOfStockLabel]}>
+              {outOfStock ? 'out of stock' : 'boxes'}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderLogsDateSlider = () => {
+    const sliderDates = [];
+    const weekDayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    for (let i = 0; i < 7; i += 1) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      sliderDates.push(d);
+    }
+
+    return (
+      <View style={styles.sliderOuterContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sliderScroll}>
+          {sliderDates.map((dateObj, i) => {
+            const dateStr = toLocalYmd(dateObj);
+            const isSelected =
+              logsReportDateFrom === logsReportDateTo && dateStr === logsReportDateFrom;
+            const dayName = i === 0 ? 'Today' : weekDayNames[dateObj.getDay()];
+            const dayNum = String(dateObj.getDate()).padStart(2, '0');
+
+            return (
+              <TouchableOpacity
+                key={dateStr}
+                style={[styles.sliderCard, isSelected && styles.sliderCardActive]}
+                onPress={() => {
+                  setLogsReportDateFrom(dateStr);
+                  setLogsReportDateTo(dateStr);
+                }}
+              >
+                <Text style={[styles.sliderDayName, isSelected && styles.sliderTextActive]}>{dayName}</Text>
+                <Text style={[styles.sliderDayNum, isSelected && styles.sliderTextActive]}>{dayNum}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+        <TouchableOpacity
+          style={styles.sliderCalendarBtn}
+          onPress={() => {
+            setCalendarContext('logsTemp');
+            setCalendarMonth(new Date(`${logsReportDateFrom}T12:00:00`));
+            setCalendarPickMode('from');
+            setShowCalendarModal(true);
+          }}
+        >
+          <Ionicons name="calendar-outline" size={18} color="#003580" />
+          <Text style={styles.sliderCalendarBtnText}>Range</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const renderLogsReportsView = () => {
+    const reportDdBtn = {
+      height: 36,
+      backgroundColor: '#fff',
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: '#e2e8f0',
+      paddingHorizontal: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    };
+    const reportDdMenu = {
+      position: 'absolute',
+      top: 40,
+      left: 0,
+      right: 0,
+      backgroundColor: '#fff',
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: '#e2e8f0',
+      maxHeight: 200,
+      zIndex: 220,
+      elevation: 8,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.12,
+      shadowRadius: 4,
+    };
+
+    const renderDdItem = (key, label, selected, onPress) => (
+      <TouchableOpacity
+        key={key}
+        style={{
+          paddingVertical: 10,
+          paddingHorizontal: 10,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: '#f1f5f9',
+        }}
+        onPress={onPress}
+      >
+        <Text style={{ fontSize: 12, color: '#0f172a', fontWeight: selected ? '800' : '500' }} numberOfLines={1}>
+          {label}
+        </Text>
+        {selected ? <Ionicons name="checkmark" size={14} color="#003580" /> : null}
+      </TouchableOpacity>
+    );
+
+    const chamberLabel =
+      logsChamberFilter === 'all' || logsChamberFilter === 'All'
+        ? 'All Chambers'
+        : chambersList.find((c) => Number(c.id) === Number(logsChamberFilter))?.name || 'All Chambers';
+    const clientLabel =
+      logsClientFilter === 'All' || logsClientFilter === 'all' ? 'All Clients' : logsClientFilter;
+    const typeLabel =
+      logsTypeFilter === 'all' || logsTypeFilter === 'All'
+        ? 'All Types'
+        : chamberZoneStyle(logsTypeFilter).type;
+
+    const isDockMode = logsReportsMode === 'inward' || logsReportsMode === 'outward';
+
+    return (
+      <View style={styles.logsWrap}>
+        <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 8, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Logs</Text>
+            <TouchableOpacity onPress={isDockMode ? clearAllFilters : clearLogsReportFilters} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#64748b' }}>Clear</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.reportsModeRow}>
+            {[
+              { id: 'temperature', label: 'Temperature' },
+              { id: 'inward', label: 'Inward' },
+              { id: 'outward', label: 'Outward' },
+            ].map((mode) => (
+              <TouchableOpacity
+                key={mode.id}
+                style={[styles.reportsModeChip, logsReportsMode === mode.id && styles.reportsModeChipActive]}
+                onPress={() => {
+                  setLogsReportsMode(mode.id);
+                  closeLogsReportDropdowns();
+                  if (mode.id === 'inward' || mode.id === 'outward') {
+                    setWarehouseFilter('All');
+                    setClientFilter('All');
+                    setLogSearch('');
+                    setLogPage(1);
+                    applyDateRange('All', 'All');
+                  }
+                }}
+              >
+                <Text style={[styles.reportsModeChipText, logsReportsMode === mode.id && styles.reportsModeChipTextActive]}>
+                  {mode.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {!isDockMode ? (
+          <View style={[styles.reportsContentArea, { overflow: 'visible' }]}>
+            <View style={[styles.doFilterPanel, { zIndex: 100, elevation: 5, overflow: 'visible' }]}>
+              <View style={[styles.doFilterRow, { overflow: 'visible', marginBottom: 0 }]}>
+                <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                  <TouchableOpacity
+                    style={reportDdBtn}
+                    onPress={() => {
+                      setShowLogsChamberDropdown(!showLogsChamberDropdown);
+                      setShowLogsClientDropdown(false);
+                      setShowLogsTypeDropdown(false);
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
+                      {chamberLabel}
+                    </Text>
+                    <Ionicons name={showLogsChamberDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
+                  </TouchableOpacity>
+                  {showLogsChamberDropdown ? (
+                    <View style={reportDdMenu}>
+                      <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                        {renderDdItem('ch-all', 'All Chambers', logsChamberFilter === 'all' || logsChamberFilter === 'All', () => {
+                          setLogsChamberFilter('all');
+                          setLogsClientFilter('All');
+                          setShowLogsChamberDropdown(false);
+                        })}
+                        {chambersList.map((ch) =>
+                          renderDdItem(`ch-${ch.id}`, ch.name, String(logsChamberFilter) === String(ch.id), () => {
+                            setLogsChamberFilter(ch.id);
+                            setLogsClientFilter('All');
+                            setShowLogsChamberDropdown(false);
+                          })
+                        )}
+                      </ScrollView>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                  <TouchableOpacity
+                    style={reportDdBtn}
+                    onPress={() => {
+                      setShowLogsClientDropdown(!showLogsClientDropdown);
+                      setShowLogsChamberDropdown(false);
+                      setShowLogsTypeDropdown(false);
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
+                      {clientLabel}
+                    </Text>
+                    <Ionicons name={showLogsClientDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
+                  </TouchableOpacity>
+                  {showLogsClientDropdown ? (
+                    <View style={reportDdMenu}>
+                      <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                        {renderDdItem('cl-all', 'All Clients', logsClientFilter === 'All' || logsClientFilter === 'all', () => {
+                          setLogsClientFilter('All');
+                          setShowLogsClientDropdown(false);
+                        })}
+                        {logsReportClientOptions.map((name) =>
+                          renderDdItem(`cl-${name}`, name, logsClientFilter === name, () => {
+                            setLogsClientFilter(name);
+                            setShowLogsClientDropdown(false);
+                          })
+                        )}
+                      </ScrollView>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                  <TouchableOpacity
+                    style={reportDdBtn}
+                    onPress={() => {
+                      setShowLogsTypeDropdown(!showLogsTypeDropdown);
+                      setShowLogsChamberDropdown(false);
+                      setShowLogsClientDropdown(false);
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
+                      {typeLabel}
+                    </Text>
+                    <Ionicons name={showLogsTypeDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
+                  </TouchableOpacity>
+                  {showLogsTypeDropdown ? (
+                    <View style={reportDdMenu}>
+                      <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                        {['all', 'Frozen', 'Chilled', 'Dry', 'Other'].map((zone) =>
+                          renderDdItem(
+                            `ty-${zone}`,
+                            zone === 'all' ? 'All Types' : chamberZoneStyle(zone).type,
+                            String(logsTypeFilter) === String(zone),
+                            () => {
+                              setLogsTypeFilter(zone);
+                              setShowLogsTypeDropdown(false);
+                            }
+                          )
+                        )}
+                      </ScrollView>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            </View>
+
+            {logsReportsMode === 'temperature' ? renderLogsDateSlider() : null}
+
+            {logsReportsMode === 'temperature' ? (
+              chamberReportsLoading && !refreshing ? (
+                <View style={styles.reportsCenterState}>
+                  <ActivityIndicator size="large" color="#003580" />
+                  <Text style={styles.reportsStateText}>Loading temperature logs…</Text>
+                </View>
+              ) : chamberReportsError && getFilteredLogsTemperature().length === 0 ? (
+                <View style={styles.reportsCenterState}>
+                  <Ionicons name="cloud-offline-outline" size={28} color="#dc2626" />
+                  <Text style={styles.reportsStateText}>{chamberReportsError}</Text>
+                  <TouchableOpacity style={styles.reportsRetryBtn} onPress={loadChamberReportLogs}>
+                    <Text style={styles.reportsRetryText}>Retry</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <FlatList
+                  data={getFilteredLogsTemperature()}
+                  keyExtractor={(item, idx) =>
+                    `${item.server_log_id || item.id || 'log'}-${item.entry_date || 'd'}-${idx}`
+                  }
+                  renderItem={({ item }) => {
+                    const temp =
+                      item.box_temp != null
+                        ? `${item.box_temp}°C`
+                        : item.chamber_temp != null
+                          ? `${item.chamber_temp}°C`
+                          : '—';
+                    return (
+                      <TouchableOpacity
+                        style={styles.dailyCard}
+                        onPress={() => setSelectedLog({ ...item, _logType: 'chambers' })}
+                        activeOpacity={0.85}
+                      >
+                        <View style={styles.dailyTop}>
+                          <View style={styles.dailyTextCol}>
+                            <Text style={styles.dailyChamber} numberOfLines={1}>
+                              {item.client_name || 'Client'}
+                            </Text>
+                            <Text style={styles.dailyMetaLine} numberOfLines={1}>
+                              {item.chamber_name || 'Chamber'}
+                              {item.shift ? ` · ${item.shift}` : ''}
+                              {` · ${chamberZoneStyle(resolveReportLotType(item)).type}`}
+                            </Text>
+                          </View>
+                          <View style={styles.totalBoxesCol}>
+                            <Text style={styles.totalBoxesValue}>{temp}</Text>
+                            <Text style={styles.totalBoxesLabel}>
+                              {item.formatted_date || item.entry_date || '—'}
+                            </Text>
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  }}
+                  contentContainerStyle={styles.reportsListBody}
+                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+                  ListEmptyComponent={
+                    <View style={styles.reportsCenterState}>
+                      <Ionicons name="thermometer-outline" size={28} color="#94a3b8" />
+                      <Text style={styles.reportsStateText}>No temperature logs for selected filters.</Text>
+                    </View>
+                  }
+                />
+              )
+            ) : null}
+          </View>
+        ) : (
+          <>
+            <View style={styles.filtersCard}>
+              <View style={styles.filterChipRow}>
+                {renderFilterDropdown('warehouse', 'Warehouse', warehouseOptions, warehouseFilter)}
+                {renderFilterDropdown('client', 'Client', clientOptions, clientFilter)}
+              </View>
+              <View style={styles.dockReportFilterBar}>
+                <View style={styles.dockReportSearchRow}>
+                  <Ionicons name="search-outline" size={18} color="#64748b" />
+                  <TextInput
+                    style={styles.dockReportSearchInput}
+                    placeholder="Search vehicle, client, ref…"
+                    placeholderTextColor="#94a3b8"
+                    value={logSearch}
+                    onChangeText={setLogSearch}
+                    onSubmitEditing={applyDockLogFilters}
+                    returnKeyType="search"
+                  />
+                </View>
+                <View style={styles.dockReportDateRow}>
+                  <TextInput
+                    style={styles.dockReportDateInput}
+                    placeholder="From YYYY-MM-DD"
+                    placeholderTextColor="#94a3b8"
+                    value={dateFrom === 'All' ? '' : dateFrom}
+                    onChangeText={(v) => setDateFrom(v || 'All')}
+                    autoCapitalize="none"
+                  />
+                  <TextInput
+                    style={styles.dockReportDateInput}
+                    placeholder="To YYYY-MM-DD"
+                    placeholderTextColor="#94a3b8"
+                    value={dateTo === 'All' ? '' : dateTo}
+                    onChangeText={(v) => setDateTo(v || 'All')}
+                    autoCapitalize="none"
+                  />
+                </View>
+                <View style={styles.dockReportFilterActions}>
+                  <TouchableOpacity style={styles.dockReportFilterBtnPrimary} onPress={applyDockLogFilters}>
+                    <Text style={styles.dockReportFilterBtnPrimaryText}>Apply</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.dockReportFilterBtnOutline} onPress={clearDockLogFilters}>
+                    <Text style={styles.dockReportFilterBtnOutlineText}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.dailyBanner}>
+              <Ionicons name="document-text-outline" size={14} color="#003580" />
+              <Text style={styles.dailyBannerText}>
+                {logsReportsMode === 'inward' ? 'Inward' : 'Outward'} reports · {logTotal} record
+                {logTotal === 1 ? '' : 's'} · Your data only
               </Text>
             </View>
-            <Text style={styles.dailyTemp}>{temp}</Text>
+
+            {logsLoading && !refreshing ? (
+              <View style={styles.centerState}>
+                <ActivityIndicator size="large" color="#003580" />
+                <Text style={styles.stateText}>
+                  Loading {logsReportsMode === 'inward' ? 'inward' : 'outward'} logs…
+                </Text>
+              </View>
+            ) : logsError ? (
+              <View style={styles.centerState}>
+                <Ionicons name="warning-outline" size={28} color="#dc2626" />
+                <Text style={styles.stateText}>{logsError}</Text>
+                <TouchableOpacity style={styles.retryBtn} onPress={loadLogs}>
+                  <Text style={styles.retryText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <FlatList
+                data={logs}
+                keyExtractor={(item, idx) =>
+                  String(item.id || item.inward_id || item.outward_id || item.reference_no || idx)
+                }
+                renderItem={renderLogItem}
+                contentContainerStyle={styles.listBodyCompact}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+                ListFooterComponent={
+                  logTotal > 0 ? (
+                    <View style={styles.dockReportPagination}>
+                      <TouchableOpacity
+                        style={[styles.dockReportPageBtn, logPage <= 1 && styles.dockReportPageBtnDisabled]}
+                        disabled={logPage <= 1}
+                        onPress={goLogPrevPage}
+                      >
+                        <Text style={styles.dockReportPageBtnText}>Previous</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.dockReportPageMeta}>
+                        {(logPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}–
+                        {Math.min(logPage * DOCK_REPORT_PAGE_SIZE, logTotal)} of {logTotal}
+                      </Text>
+                      <TouchableOpacity
+                        style={[styles.dockReportPageBtn, !logHasMore && styles.dockReportPageBtnDisabled]}
+                        disabled={!logHasMore}
+                        onPress={goLogNextPage}
+                      >
+                        <Text style={styles.dockReportPageBtnText}>Next</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null
+                }
+                ListEmptyComponent={
+                  <View style={styles.centerState}>
+                    <Ionicons name="document-text-outline" size={28} color="#94a3b8" />
+                    <Text style={styles.stateText}>
+                      {logSearch || dateFrom !== 'All' || dateTo !== 'All'
+                        ? 'No records match your filters.'
+                        : 'No records for your assigned clients yet.'}
+                    </Text>
+                  </View>
+                }
+              />
+            )}
+          </>
+        )}
+      </View>
+    );
+  };
+
+  const renderReportsInventoryView = () => {
+    const reportDdBtn = {
+      height: 36,
+      backgroundColor: '#fff',
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: '#e2e8f0',
+      paddingHorizontal: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    };
+    const reportDdMenu = {
+      position: 'absolute',
+      top: 40,
+      left: 0,
+      right: 0,
+      backgroundColor: '#fff',
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: '#e2e8f0',
+      maxHeight: 200,
+      zIndex: 220,
+      elevation: 8,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.12,
+      shadowRadius: 4,
+    };
+
+    const renderDdItem = (key, label, selected, onPress) => (
+      <TouchableOpacity
+        key={key}
+        style={{
+          paddingVertical: 10,
+          paddingHorizontal: 10,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: '#f1f5f9',
+        }}
+        onPress={onPress}
+      >
+        <Text style={{ fontSize: 12, color: '#0f172a', fontWeight: selected ? '800' : '500' }} numberOfLines={1}>
+          {label}
+        </Text>
+        {selected ? <Ionicons name="checkmark" size={14} color="#003580" /> : null}
+      </TouchableOpacity>
+    );
+
+    const chamberLabel =
+      logsChamberFilter === 'all' || logsChamberFilter === 'All'
+        ? 'All Chambers'
+        : chambersList.find((c) => Number(c.id) === Number(logsChamberFilter))?.name || 'All Chambers';
+    const clientLabel =
+      logsClientFilter === 'All' || logsClientFilter === 'all' ? 'All Clients' : logsClientFilter;
+    const typeLabel =
+      logsTypeFilter === 'all' || logsTypeFilter === 'All'
+        ? 'All Types'
+        : chamberZoneStyle(logsTypeFilter).type;
+
+    return (
+      <View style={styles.logsWrap}>
+        <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 8, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Reports</Text>
+            <TouchableOpacity onPress={clearLogsReportFilters} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#64748b' }}>Clear</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={[styles.reportsContentArea, { overflow: 'visible' }]}>
+          <View style={[styles.doFilterPanel, { zIndex: 100, elevation: 5, overflow: 'visible' }]}>
+            <View style={[styles.doFilterRow, { overflow: 'visible', marginBottom: 0 }]}>
+              <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                <TouchableOpacity
+                  style={reportDdBtn}
+                  onPress={() => {
+                    setShowLogsChamberDropdown(!showLogsChamberDropdown);
+                    setShowLogsClientDropdown(false);
+                    setShowLogsTypeDropdown(false);
+                  }}
+                >
+                  <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
+                    {chamberLabel}
+                  </Text>
+                  <Ionicons name={showLogsChamberDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
+                </TouchableOpacity>
+                {showLogsChamberDropdown ? (
+                  <View style={reportDdMenu}>
+                    <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {renderDdItem('ch-all', 'All Chambers', logsChamberFilter === 'all' || logsChamberFilter === 'All', () => {
+                        setLogsChamberFilter('all');
+                        setLogsClientFilter('All');
+                        setShowLogsChamberDropdown(false);
+                      })}
+                      {chambersList.map((ch) =>
+                        renderDdItem(`ch-${ch.id}`, ch.name, String(logsChamberFilter) === String(ch.id), () => {
+                          setLogsChamberFilter(ch.id);
+                          setLogsClientFilter('All');
+                          setShowLogsChamberDropdown(false);
+                        })
+                      )}
+                    </ScrollView>
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                <TouchableOpacity
+                  style={reportDdBtn}
+                  onPress={() => {
+                    setShowLogsClientDropdown(!showLogsClientDropdown);
+                    setShowLogsChamberDropdown(false);
+                    setShowLogsTypeDropdown(false);
+                  }}
+                >
+                  <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
+                    {clientLabel}
+                  </Text>
+                  <Ionicons name={showLogsClientDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
+                </TouchableOpacity>
+                {showLogsClientDropdown ? (
+                  <View style={reportDdMenu}>
+                    <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {renderDdItem('cl-all', 'All Clients', logsClientFilter === 'All' || logsClientFilter === 'all', () => {
+                        setLogsClientFilter('All');
+                        setShowLogsClientDropdown(false);
+                      })}
+                      {logsReportClientOptions.map((name) =>
+                        renderDdItem(`cl-${name}`, name, logsClientFilter === name, () => {
+                          setLogsClientFilter(name);
+                          setShowLogsClientDropdown(false);
+                        })
+                      )}
+                    </ScrollView>
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                <TouchableOpacity
+                  style={reportDdBtn}
+                  onPress={() => {
+                    setShowLogsTypeDropdown(!showLogsTypeDropdown);
+                    setShowLogsChamberDropdown(false);
+                    setShowLogsClientDropdown(false);
+                  }}
+                >
+                  <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
+                    {typeLabel}
+                  </Text>
+                  <Ionicons name={showLogsTypeDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
+                </TouchableOpacity>
+                {showLogsTypeDropdown ? (
+                  <View style={reportDdMenu}>
+                    <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {['all', 'Frozen', 'Chilled', 'Dry', 'Other'].map((zone) =>
+                        renderDdItem(
+                          `ty-${zone}`,
+                          zone === 'all' ? 'All Types' : chamberZoneStyle(zone).type,
+                          String(logsTypeFilter) === String(zone),
+                          () => {
+                            setLogsTypeFilter(zone);
+                            setShowLogsTypeDropdown(false);
+                          }
+                        )
+                      )}
+                    </ScrollView>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.dailyBanner}>
+            <Ionicons name="cube-outline" size={14} color="#003580" />
+            <Text style={styles.dailyBannerText}>
+              Inventory · {logsInventorySummary.lots} lot{logsInventorySummary.lots === 1 ? '' : 's'}
+              {` · ${logsInventorySummary.totalBoxes} boxes`}
+            </Text>
+          </View>
+
+          {reportsLoading && !reportsRefreshing ? (
+            <View style={styles.reportsCenterState}>
+              <ActivityIndicator size="large" color="#003580" />
+              <Text style={styles.reportsStateText}>Loading inventory…</Text>
+            </View>
+          ) : reportsError ? (
+            <View style={styles.reportsCenterState}>
+              <Ionicons name="warning-outline" size={28} color="#dc2626" />
+              <Text style={styles.reportsStateText}>{reportsError}</Text>
+              <TouchableOpacity style={styles.reportsRetryBtn} onPress={loadReports}>
+                <Text style={styles.reportsRetryText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredLogsInventoryRows}
+              keyExtractor={(item, idx) =>
+                `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${item.chamber_name || 'ch'}-${idx}`
+              }
+              renderItem={renderLogsInventoryItem}
+              contentContainerStyle={styles.reportsListBody}
+              refreshControl={<RefreshControl refreshing={reportsRefreshing} onRefresh={onRefresh} />}
+              ListEmptyComponent={
+                <View style={styles.reportsCenterState}>
+                  <Ionicons name="cube-outline" size={28} color="#94a3b8" />
+                  <Text style={styles.reportsStateText}>No inventory for selected filters.</Text>
+                </View>
+              }
+            />
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  const renderLogItem = ({ item }) => {
+    const typeLabel =
+      item._logType === 'inward' ? 'Inward' : item._logType === 'outward' ? 'Outward' : 'Chamber';
+
+    if (item._logType === 'inward') {
+      const shortQty = parseInt(item.inward_short_received_boxes_qty, 10) || 0;
+      const excessQty = parseInt(item.inward_excess_received_boxes_qty, 10) || 0;
+      const received = item.inward_received_boxes_qty ?? item.inward_received_qty;
+      return (
+        <TouchableOpacity
+          style={styles.inwardReportCard}
+          activeOpacity={0.88}
+          onPress={() => setSelectedLog(item)}
+        >
+          <View style={styles.inwardReportCardTop}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.inwardReportRef} numberOfLines={1}>
+                {item.reference_no || `INW-${item.inward_id}`}
+                <Text style={styles.inwardReportDateInline}>{`  ${item.inward_entry_date || ''}`}</Text>
+              </Text>
+              <Text style={styles.inwardReportClient} numberOfLines={1}>
+                {item.inward_client_name || item.client_name || '—'}
+                {item.inward_vehicle_no ? ` · ${item.inward_vehicle_no}` : ''}
+                {item.inward_dock_no ? ` · Dock ${item.inward_dock_no}` : ''}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+          </View>
+          <View style={styles.inwardReportStatsRow}>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>Veh °C</Text>
+              <Text style={styles.inwardReportStatValue}>{item.inward_vehicle_temp ?? '—'}</Text>
+            </View>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>Mat °C</Text>
+              <Text style={styles.inwardReportStatValue}>{item.inward_material_temp ?? '—'}</Text>
+            </View>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>Received</Text>
+              <Text style={styles.inwardReportStatValue}>{received ?? '—'}</Text>
+            </View>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>
+                {shortQty > 0 ? 'Short' : excessQty > 0 ? 'Excess' : 'Var'}
+              </Text>
+              <Text
+                style={[
+                  styles.inwardReportStatValue,
+                  shortQty > 0 && { color: '#dc2626' },
+                  excessQty > 0 && { color: '#16a34a' },
+                ]}
+              >
+                {shortQty > 0 ? shortQty : excessQty > 0 ? excessQty : '0'}
+              </Text>
+            </View>
           </View>
         </TouchableOpacity>
       );
     }
 
-    const typeLabel =
-      item._logType === 'inward' ? 'Inward' : item._logType === 'outward' ? 'Outward' : 'Chamber';
+    if (item._logType === 'outward') {
+      const shortQty = parseInt(item.outward_short_received_boxes_qty, 10) || 0;
+      const excessQty = parseInt(item.outward_excess_received_boxes_qty, 10) || 0;
+      const loaded = item.outward_received_boxes_qty ?? item.outward_received_qty;
+      return (
+        <TouchableOpacity
+          style={styles.inwardReportCard}
+          activeOpacity={0.88}
+          onPress={() => setSelectedLog(item)}
+        >
+          <View style={styles.inwardReportCardTop}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.inwardReportRef} numberOfLines={1}>
+                {item.reference_no || `OUT-${item.outward_id}`}
+                <Text style={styles.inwardReportDateInline}>{`  ${item.outward_entry_date || ''}`}</Text>
+              </Text>
+              <Text style={styles.inwardReportClient} numberOfLines={1}>
+                {item.outward_client_name || item.client_name || '—'}
+                {item.outward_vehicle_no ? ` · ${item.outward_vehicle_no}` : ''}
+                {item.outward_dock_no ? ` · Dock ${item.outward_dock_no}` : ''}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+          </View>
+          <View style={styles.inwardReportStatsRow}>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>Pre °C</Text>
+              <Text style={styles.inwardReportStatValue}>
+                {item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp ?? '—'}
+              </Text>
+            </View>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>Mat °C</Text>
+              <Text style={styles.inwardReportStatValue}>{item.outward_material_temp ?? '—'}</Text>
+            </View>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>Loaded</Text>
+              <Text style={styles.inwardReportStatValue}>{loaded ?? '—'}</Text>
+            </View>
+            <View style={styles.inwardReportStat}>
+              <Text style={styles.inwardReportStatLabel}>
+                {shortQty > 0 ? 'Short' : excessQty > 0 ? 'Excess' : 'Var'}
+              </Text>
+              <Text style={styles.inwardReportStatValue}>
+                {shortQty > 0 ? shortQty : excessQty > 0 ? excessQty : '0'}
+              </Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
     const rightValue =
       item.box_temp != null
         ? `${item.box_temp}°C`
@@ -1367,176 +2449,388 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     );
   };
 
+  const renderDockPhotoGrid = (photoItems, folderHint) => {
+    if (!photoItems.length) return null;
+    return (
+      <View style={styles.inwardDetailPhotoGrid}>
+        {photoItems.map((photo) => {
+          const uri =
+            resolveDockImageUrl(photo.path, apiUrl, PRODUCTION_API_URL, folderHint) ||
+            resolveImageUrl(photo.path, apiUrl, folderHint);
+          return (
+            <View key={photo.key} style={styles.inwardDetailPhotoCell}>
+              <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
+                {photo.label}
+              </Text>
+              <View style={styles.inwardDetailPhotoFrame}>
+                {uri ? (
+                  <Image source={{ uri }} style={styles.inwardDetailPhotoImage} resizeMode="cover" />
+                ) : (
+                  <View style={styles.inwardDetailPhotoPlaceholder}>
+                    <Ionicons name="image-outline" size={22} color="#94a3b8" />
+                  </View>
+                )}
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    );
+  };
+
+  const renderDoDetailRow = (label, value) => {
+    if (value == null || value === '') return null;
+    return (
+      <View style={styles.doLogDetailRow} key={label}>
+        <Text style={styles.doLogDetailLabel}>{label}</Text>
+        <Text style={styles.doLogDetailValue}>{String(value)}</Text>
+      </View>
+    );
+  };
+
   const renderLogDetailScreen = () => {
     if (!selectedLog) return null;
     const item = selectedLog;
     const logTypeKey = item._logType || 'chambers';
-    const imageFolder =
-      logTypeKey === 'inward'
-        ? 'inward_temp_monitor_images'
-        : logTypeKey === 'outward'
-          ? 'outward_temp_monitor_images'
-          : 'daily_temp_monitor_images';
-    const imagePath = pickLogImage(item);
 
-    const detailFields =
-      logTypeKey === 'inward'
-        ? [
-            ['Client', item.client_name],
-            ['Vehicle', item.inward_vehicle_no],
-            ['Warehouse', item.warehouse_name],
-            ['Date', String(item.formatted_date || item.entry_date || '').slice(0, 10)],
-            [
-              'Vehicle temp',
-              item.inward_vehicle_temp != null ? `${item.inward_vehicle_temp}°C` : null
-            ],
-            [
-              'Material temp',
-              item.inward_material_temp != null ? `${item.inward_material_temp}°C` : null
-            ],
-            ['Received boxes', item.inward_received_boxes_qty ?? item.box_count],
+    if (logTypeKey === 'inward') {
+      const shortQty = parseInt(item.inward_short_received_boxes_qty, 10) || 0;
+      const excessQty = parseInt(item.inward_excess_received_boxes_qty, 10) || 0;
+      const damageQty = parseInt(item.inward_damage_received_boxes_qty, 10) || 0;
+      const recordWarehouse = item.warehouse_name || '—';
+      const recordOperator = item.operator_email || '—';
+      const operatorLabel = recordOperator.includes('@') ? recordOperator.split('@')[0] : recordOperator;
+      const sections = [
+        {
+          title: 'Location & Operator',
+          rows: [
+            ['Warehouse', recordWarehouse],
+            ['Operator', recordOperator],
+          ],
+        },
+        {
+          title: 'Arrival',
+          rows: [
+            ['Reference', item.reference_no || `INW-${item.inward_id}`],
+            ['Entry date', item.inward_entry_date],
+            ['Client', item.inward_client_name || item.client_name],
             ['Dock', item.inward_dock_no],
-            ['Reference', item.reference_no],
+            ['Material', item.inward_material_type],
+            ['Vehicle no.', item.inward_vehicle_no],
+            ['Seal no.', item.inward_seal_no],
+            ['Transporter', item.inward_transporter_name],
+            ['Driver', item.inward_driver_name],
+            ['Driver phone', item.inward_driver_no],
+          ],
+        },
+        {
+          title: 'Timing',
+          rows: [
+            ['Reporting time', item.inward_vehicle_reporting_time],
+            ['Unload start', item.inward_unloading_start_time],
+            ['Unload end', item.inward_unloading_end_time],
             [
-              'DO name',
-              item.inward_unloading_supervisor_name ||
-                item.monitor_supervisor_name ||
-                (item.operator_email ? String(item.operator_email).split('@')[0] : null)
+              'Duration',
+              item.inward_unloading_duration_hours != null || item.inward_unloading_duration_mins != null
+                ? `${item.inward_unloading_duration_hours || 0}h ${item.inward_unloading_duration_mins || 0}m`
+                : null,
             ],
-            [
-              'Time',
-              item.inward_vehicle_reporting_time ||
-                item.inward_unloading_start_time ||
-                (item.inward_created_at
-                  ? String(item.inward_created_at).replace('T', ' ').slice(0, 19)
-                  : null) ||
-                (item.created_at ? String(item.created_at).replace('T', ' ').slice(0, 19) : null)
-            ]
-          ]
-        : logTypeKey === 'outward'
-          ? [
-              ['Client', item.client_name],
-              ['Vehicle', item.outward_vehicle_no],
-              ['Warehouse', item.warehouse_name],
-              ['Date', String(item.formatted_date || item.entry_date || '').slice(0, 10)],
-              [
-                'Vehicle temp',
-                item.outward_vehicle_temp != null ? `${item.outward_vehicle_temp}°C` : null
-              ],
-              [
-                'Material temp',
-                item.outward_material_temp != null ? `${item.outward_material_temp}°C` : null
-              ],
-              ['Boxes', item.box_count],
-              ['Dock', item.outward_dock_no],
-              ['Reference', item.reference_no],
-              [
-                'DO name',
-                item.outward_loading_supervisor_name ||
-                  item.monitor_supervisor_name ||
-                  (item.operator_email ? String(item.operator_email).split('@')[0] : null)
-              ],
-              [
-                'Time',
-                item.outward_vehicle_reporting_time ||
-                  item.outward_loading_start_time ||
-                  (item.outward_created_at
-                    ? String(item.outward_created_at).replace('T', ' ').slice(0, 19)
-                    : null) ||
-                  (item.created_at ? String(item.created_at).replace('T', ' ').slice(0, 19) : null)
-              ]
-            ]
-          : [
-              ['Client', item.client_name],
-              ['Warehouse', item.warehouse_name],
-              ['Chamber', item.chamber_name],
-              ['Chamber type', item.chamber_type],
-              ['Shift', item.shift],
-              ['Inspection time', item.inspection_time],
-              ['Date', item.formatted_date || item.entry_date],
-              [
-                'Temperature',
-                item.box_temp != null
-                  ? `${item.box_temp}°C`
-                  : item.chamber_temp != null
-                    ? `${item.chamber_temp}°C`
-                    : null
-              ],
-              [
-                'Box qty',
-                item.box_count != null && item.box_count !== '' ? `${item.box_count} boxes` : null
-              ],
-              ['Supervisor', item.monitor_supervisor_name],
-              ['Operator', item.operator_email],
-              ['Reference', item.reference_no],
-              ['Photo time', item.photo_capture_time],
-              [
-                'Time variance',
-                item.time_variance_minutes != null ? `${item.time_variance_minutes} min` : null
-              ],
-              ['Remarks', item.remarks],
-              [
-                'Updates',
-                item.update_count != null && Number(item.update_count) > 0
-                  ? String(item.update_count)
-                  : null
-              ],
-              ['Update details', item.update_details]
-            ];
+          ],
+        },
+        {
+          title: 'Temperature & Quantity',
+          rows: [
+            ['Vehicle temp', item.inward_vehicle_temp != null ? `${item.inward_vehicle_temp}°C` : null],
+            ['Material temp', item.inward_material_temp != null ? `${item.inward_material_temp}°C` : null],
+            ['Pallets in', item.inward_pallets_in_qty],
+            ['Invoice boxes', item.inward_invoice_qty],
+            ['Boxes received', item.inward_received_boxes_qty ?? item.inward_received_qty],
+            ['Short qty', shortQty > 0 ? String(shortQty) : '0'],
+            ['Excess qty', excessQty > 0 ? String(excessQty) : '0'],
+            ['Damage qty', damageQty > 0 ? String(damageQty) : '0'],
+            ['Supervisor', item.inward_unloading_supervisor_name],
+            ['Remarks', item.inward_remarks],
+          ],
+        },
+      ];
+      const photoGroups = [
+        { label: 'Invoice', paths: splitLogPhotoPaths(item.inward_invoice_photos) },
+        { label: 'Vehicle temp', paths: splitLogPhotoPaths(item.inward_vehicle_temp_photo) },
+        { label: 'Material temp', paths: splitLogPhotoPaths(item.inward_material_temp_photo) },
+        { label: 'Vehicle back', paths: splitLogPhotoPaths(item.inward_vehicle_back_side_photo) },
+        {
+          label: 'Back with material',
+          paths: splitLogPhotoPaths(item.inward_vehicle_back_side_photo_with_material),
+        },
+        { label: 'Count sheet', paths: splitLogPhotoPaths(item.inward_count_sheet_photo) },
+        { label: 'Seal', paths: splitLogPhotoPaths(item.inward_vehicle_seal_photo) },
+        { label: 'POD', paths: splitLogPhotoPaths(item.inward_pod_photo) },
+        { label: 'Damage boxes', paths: splitLogPhotoPaths(item.inward_damage_boxes_photo) },
+      ].filter((g) => g.paths.length > 0);
+      const photoItems = photoGroups.flatMap((group) =>
+        group.paths.map((path, idx) => ({
+          key: `${group.label}-${idx}`,
+          label: group.paths.length > 1 ? `${group.label} ${idx + 1}` : group.label,
+          path,
+        }))
+      );
+      const metaLines = formatPhotoCaptureMetadataLines(item.photo_capture_metadata);
 
+      return (
+        <Modal visible animationType="slide" onRequestClose={() => setSelectedLog(null)}>
+          <SafeAreaView style={styles.doDetailSafe}>
+            <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+            <View style={styles.doDetailHeader}>
+              <TouchableOpacity style={styles.doDetailBackBtn} onPress={() => setSelectedLog(null)} activeOpacity={0.85}>
+                <Ionicons name="arrow-back" size={22} color="#0f172a" />
+              </TouchableOpacity>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.doDetailTitle} numberOfLines={1}>Inward details</Text>
+                <Text style={styles.doDetailSub} numberOfLines={2}>
+                  {item.reference_no || `INW-${item.inward_id}`} · {item.inward_client_name || item.client_name || 'Client'}
+                  {'\n'}
+                  {recordWarehouse} · {operatorLabel}
+                </Text>
+              </View>
+            </View>
+            <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
+              <View style={styles.doDetailHeroCard}>
+                <Text style={styles.doDetailHeroTemp}>
+                  {item.inward_material_temp != null ? `${item.inward_material_temp}°C` : '—'}
+                </Text>
+                <Text style={styles.doDetailHeroMeta}>
+                  {recordWarehouse}
+                  {item.inward_entry_date ? ` · ${item.inward_entry_date}` : ''}
+                  {' · Material temp'}
+                </Text>
+              </View>
+              {sections.map((section) => (
+                <View style={styles.doDetailCard} key={section.title}>
+                  <Text style={styles.doDetailSectionTitle}>{section.title}</Text>
+                  {section.rows.map(([label, value]) => renderDoDetailRow(label, value))}
+                </View>
+              ))}
+              {metaLines.length > 0 ? (
+                <View style={styles.doDetailCard}>
+                  <Text style={styles.doDetailSectionTitle}>Photo capture time & location</Text>
+                  {metaLines.map((line) => (
+                    <Text key={line} style={styles.photoMetaLine}>{line}</Text>
+                  ))}
+                </View>
+              ) : null}
+              {photoItems.length > 0 ? (
+                <View style={styles.doDetailCard}>
+                  <Text style={styles.doDetailSectionTitle}>Photos</Text>
+                  {renderDockPhotoGrid(photoItems, 'inward_images')}
+                </View>
+              ) : null}
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
+      );
+    }
+
+    if (logTypeKey === 'outward') {
+      const shortQty = parseInt(item.outward_short_received_boxes_qty, 10) || 0;
+      const excessQty = parseInt(item.outward_excess_received_boxes_qty, 10) || 0;
+      const damageQty = parseInt(item.outward_damage_received_boxes_qty, 10) || 0;
+      const preVehicleTemp = item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp;
+      const recordWarehouse = item.warehouse_name || '—';
+      const recordOperator = item.operator_email || '—';
+      const operatorLabel = recordOperator.includes('@') ? recordOperator.split('@')[0] : recordOperator;
+      const sections = [
+        {
+          title: 'Location & Operator',
+          rows: [
+            ['Warehouse', recordWarehouse],
+            ['Operator', recordOperator],
+          ],
+        },
+        {
+          title: 'Dispatch',
+          rows: [
+            ['Reference', item.reference_no || `OUT-${item.outward_id}`],
+            ['Entry date', item.outward_entry_date],
+            ['Client', item.outward_client_name || item.client_name],
+            ['Dock', item.outward_dock_no],
+            ['Material', item.outward_material_type],
+            ['Vehicle no.', item.outward_vehicle_no],
+            ['Seal no.', item.outward_seal_no],
+            ['Transporter', item.outward_transporter_name],
+            ['Driver', item.outward_driver_name],
+            ['Driver phone', item.outward_driver_no],
+          ],
+        },
+        {
+          title: 'Timing',
+          rows: [
+            ['Reporting time', item.outward_vehicle_reporting_time],
+            ['Load start', item.outward_loading_start_time],
+            ['Load end', item.outward_loading_end_time],
+            [
+              'Duration',
+              item.outward_loading_duration_hours != null || item.outward_loading_duration_mins != null
+                ? `${item.outward_loading_duration_hours || 0}h ${item.outward_loading_duration_mins || 0}m`
+                : null,
+            ],
+          ],
+        },
+        {
+          title: 'Temperature & Quantity',
+          rows: [
+            ['Pre vehicle temp', preVehicleTemp != null ? `${preVehicleTemp}°C` : null],
+            ['Material temp', item.outward_material_temp != null ? `${item.outward_material_temp}°C` : null],
+            ['Pallets out', item.outward_pallets_in_qty],
+            ['Invoice boxes', item.outward_invoice_qty],
+            ['Boxes loaded', item.outward_received_boxes_qty ?? item.outward_received_qty],
+            ['Short qty', shortQty > 0 ? String(shortQty) : '0'],
+            ['Excess qty', excessQty > 0 ? String(excessQty) : '0'],
+            ['Damage qty', damageQty > 0 ? String(damageQty) : '0'],
+            ['Supervisor', item.outward_loading_supervisor_name],
+            ['Remarks', item.outward_remarks],
+          ],
+        },
+      ];
+      const photoGroups = [
+        { label: 'Invoice', paths: splitLogPhotoPaths(item.outward_invoice_photos) },
+        {
+          label: 'Pre vehicle temp',
+          paths: splitLogPhotoPaths(item.outward_pre_vehicle_temp_photo || item.outward_vehicle_temp_photo),
+        },
+        { label: 'Material temp', paths: splitLogPhotoPaths(item.outward_material_temp_photo) },
+        { label: 'Vehicle back', paths: splitLogPhotoPaths(item.outward_vehicle_back_side_photo) },
+        {
+          label: 'Back with material',
+          paths: splitLogPhotoPaths(item.outward_vehicle_back_side_photo_with_material),
+        },
+        { label: 'Count sheet', paths: splitLogPhotoPaths(item.outward_count_sheet_photo) },
+        { label: 'Seal', paths: splitLogPhotoPaths(item.outward_vehicle_seal_photo) },
+        { label: 'POD', paths: splitLogPhotoPaths(item.outward_pod_photo) },
+        { label: 'Damage boxes', paths: splitLogPhotoPaths(item.outward_damage_boxes_photo) },
+      ].filter((g) => g.paths.length > 0);
+      const photoItems = photoGroups.flatMap((group) =>
+        group.paths.map((path, idx) => ({
+          key: `${group.label}-${idx}`,
+          label: group.paths.length > 1 ? `${group.label} ${idx + 1}` : group.label,
+          path,
+        }))
+      );
+      const metaLines = formatPhotoCaptureMetadataLines(item.photo_capture_metadata);
+
+      return (
+        <Modal visible animationType="slide" onRequestClose={() => setSelectedLog(null)}>
+          <SafeAreaView style={styles.doDetailSafe}>
+            <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+            <View style={styles.doDetailHeader}>
+              <TouchableOpacity style={styles.doDetailBackBtn} onPress={() => setSelectedLog(null)} activeOpacity={0.85}>
+                <Ionicons name="arrow-back" size={22} color="#0f172a" />
+              </TouchableOpacity>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.doDetailTitle} numberOfLines={1}>Outward details</Text>
+                <Text style={styles.doDetailSub} numberOfLines={2}>
+                  {item.reference_no || `OUT-${item.outward_id}`} · {item.outward_client_name || item.client_name || 'Client'}
+                  {'\n'}
+                  {recordWarehouse} · {operatorLabel}
+                </Text>
+              </View>
+            </View>
+            <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
+              <View style={styles.doDetailHeroCard}>
+                <Text style={styles.doDetailHeroTemp}>
+                  {item.outward_material_temp != null ? `${item.outward_material_temp}°C` : '—'}
+                </Text>
+                <Text style={styles.doDetailHeroMeta}>
+                  {recordWarehouse}
+                  {item.outward_entry_date ? ` · ${item.outward_entry_date}` : ''}
+                  {' · Material temp'}
+                </Text>
+              </View>
+              {sections.map((section) => (
+                <View style={styles.doDetailCard} key={section.title}>
+                  <Text style={styles.doDetailSectionTitle}>{section.title}</Text>
+                  {section.rows.map(([label, value]) => renderDoDetailRow(label, value))}
+                </View>
+              ))}
+              {metaLines.length > 0 ? (
+                <View style={styles.doDetailCard}>
+                  <Text style={styles.doDetailSectionTitle}>Photo capture time & location</Text>
+                  {metaLines.map((line) => (
+                    <Text key={line} style={styles.photoMetaLine}>{line}</Text>
+                  ))}
+                </View>
+              ) : null}
+              {photoItems.length > 0 ? (
+                <View style={styles.doDetailCard}>
+                  <Text style={styles.doDetailSectionTitle}>Photos</Text>
+                  {renderDockPhotoGrid(photoItems, 'outward_images')}
+                </View>
+              ) : null}
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
+      );
+    }
+
+    const imagePath = pickLogImage(item);
     const tempText =
       item.box_temp != null
         ? `${item.box_temp}°C`
         : item.chamber_temp != null
           ? `${item.chamber_temp}°C`
           : '—';
+    const gpsLine =
+      item.photo_capture_latitude != null && item.photo_capture_longitude != null
+        ? `${parseFloat(item.photo_capture_latitude).toFixed(5)}, ${parseFloat(item.photo_capture_longitude).toFixed(5)}`
+        : null;
 
     return (
-      <Modal
-        visible={Boolean(selectedLog)}
-        animationType="slide"
-        onRequestClose={() => setSelectedLog(null)}
-      >
-        <SafeAreaView style={styles.detailSafe}>
+      <Modal visible animationType="slide" onRequestClose={() => setSelectedLog(null)}>
+        <SafeAreaView style={styles.doDetailSafe}>
           <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-          <View style={styles.detailHeader}>
-            <TouchableOpacity
-              style={styles.detailBackBtn}
-              onPress={() => setSelectedLog(null)}
-              activeOpacity={0.85}
-            >
+          <View style={styles.doDetailHeader}>
+            <TouchableOpacity style={styles.doDetailBackBtn} onPress={() => setSelectedLog(null)} activeOpacity={0.85}>
               <Ionicons name="arrow-back" size={22} color="#0f172a" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
-              <Text style={styles.detailTitle} numberOfLines={1}>
-                {logTypeKey === 'inward' ? 'Inward log' : logTypeKey === 'outward' ? 'Outward log' : 'Log details'}
-              </Text>
-              <Text style={styles.detailSub} numberOfLines={1}>
-                {item.client_name || 'Client'}
+              <Text style={styles.doDetailTitle} numberOfLines={1}>Chamber log</Text>
+              <Text style={styles.doDetailSub} numberOfLines={1}>
+                {item.chamber_name || 'Chamber'} · {item.client_name || 'Client'}
               </Text>
             </View>
           </View>
-
-          <ScrollView contentContainerStyle={styles.detailBody} showsVerticalScrollIndicator={false}>
-            {logTypeKey === 'chambers' ? (
-              <View style={styles.detailHeroCard}>
-                <Text style={styles.detailHeroTemp}>{tempText}</Text>
-                <Text style={styles.detailHeroMeta}>
-                  {item.box_count != null && item.box_count !== '' ? `${item.box_count} boxes` : 'Box qty —'}
-                  {item.shift ? ` · ${item.shift}` : ''}
-                </Text>
-              </View>
-            ) : null}
-
-            <View style={styles.detailCard}>
-              {detailFields.map(([label, value]) => renderDetailRow(label, value))}
-            </View>
-
-            <View style={styles.detailCard}>
-              <Text style={styles.detailSectionTitle}>
-                {logTypeKey === 'chambers' ? 'Sensor photo' : 'Log photo'}
+          <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
+            <View style={styles.doDetailHeroCard}>
+              <Text style={styles.doDetailHeroTemp}>{tempText}</Text>
+              <Text style={styles.doDetailHeroMeta}>
+                {item.box_count != null && item.box_count !== '' ? `${item.box_count} boxes` : 'Box qty —'}
+                {item.shift ? ` · ${item.shift}` : ''}
               </Text>
-              <SensorPhotoView rawPath={imagePath} apiUrl={apiUrl} folderHint={imageFolder} />
+            </View>
+            <View style={styles.doDetailCard}>
+              {renderDoDetailRow('Warehouse', item.warehouse_name)}
+              {renderDoDetailRow('Chamber type', item.chamber_type)}
+              {renderDoDetailRow('Shift', item.shift)}
+              {renderDoDetailRow('Inspection time', item.inspection_time)}
+              {renderDoDetailRow('Date', item.formatted_date || item.entry_date)}
+              {renderDoDetailRow('Supervisor', item.monitor_supervisor_name)}
+              {renderDoDetailRow('Operator', item.operator_email)}
+              {renderDoDetailRow('Reference', item.reference_no)}
+              {renderDoDetailRow('Photo time', item.photo_capture_time)}
+              {renderDoDetailRow('Photo location (GPS)', gpsLine)}
+              {renderDoDetailRow(
+                'Time variance',
+                item.time_variance_minutes != null ? `${item.time_variance_minutes} min` : null
+              )}
+              {renderDoDetailRow('Remarks', item.remarks)}
+              {renderDoDetailRow(
+                'Updates',
+                item.update_count != null && Number(item.update_count) > 0 ? String(item.update_count) : null
+              )}
+              {renderDoDetailRow('Update details', item.update_details)}
+            </View>
+            <View style={styles.doDetailCard}>
+              <Text style={styles.doDetailSectionTitle}>Sensor photo</Text>
+              <SensorPhotoView rawPath={imagePath} apiUrl={apiUrl} folderHint="daily_temp_monitor_images" />
             </View>
           </ScrollView>
         </SafeAreaView>
@@ -1689,380 +2983,47 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   );
   };
 
+  const applyCalendarRange = (from, to) => {
+    if (calendarContext === 'logsTemp') {
+      setLogsReportDateFrom(from);
+      setLogsReportDateTo(to);
+    } else {
+      applyDateRange(from, to);
+    }
+  };
+
+  const calendarRangeFrom =
+    calendarContext === 'logsTemp'
+      ? logsReportDateFrom
+      : dateFrom === 'All'
+        ? null
+        : dateFrom;
+  const calendarRangeTo =
+    calendarContext === 'logsTemp'
+      ? logsReportDateTo
+      : dateTo === 'All'
+        ? null
+        : dateTo;
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
       <View style={styles.header}>
+        <View style={styles.welcomeBlock}>
+          <Text style={styles.welcomeLine}>Welcome</Text>
+          <Text style={styles.welcomeName} numberOfLines={1}>
+            {displayName}
+          </Text>
+        </View>
         <Image
           source={require('../../assets/logo-transparent.png')}
           style={styles.headerLogo}
           resizeMode="contain"
         />
-        <View style={styles.welcomeBlock}>
-          <Text style={styles.welcomeLine} numberOfLines={1}>
-            Welcome, <Text style={styles.welcomeName}>{displayName}</Text>
-          </Text>
-        </View>
       </View>
 
       <View style={styles.contentArea}>
-        {activeTab === 'Logs' ? (
-          <View style={styles.logsWrap}>
-            <View style={styles.filtersCard}>
-              <View style={styles.logTypeRow}>
-                {[
-                  { id: 'chambers', label: 'Chambers' },
-                  { id: 'inward', label: 'Inward' },
-                  { id: 'outward', label: 'Outward' },
-                  { id: 'inventory', label: 'Inventory' }
-                ].map((t) => {
-                  const active = logType === t.id;
-                  return (
-                    <TouchableOpacity
-                      key={t.id}
-                      style={[styles.logTypeChip, active && styles.logTypeChipActive]}
-                      onPress={() => {
-                        setLogType(t.id);
-                        setWarehouseFilter('All');
-                        setClientFilter('All');
-                        setOpenFilter(null);
-                        if (t.id === 'chambers') {
-                          const today = toLocalYmd();
-                          applyDateRange(today, today);
-                        }
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={[styles.logTypeChipText, active && styles.logTypeChipTextActive]}>
-                        {t.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              <View style={styles.filterChipRow}>
-                {renderFilterDropdown('warehouse', 'Warehouse', warehouseOptions, warehouseFilter)}
-                {renderFilterDropdown('client', 'Client', clientOptions, clientFilter)}
-              </View>
-
-              {logType !== 'inventory' ? (
-                <View style={styles.dateFilterBlock}>
-                  <View style={styles.filterChipRow}>
-                    <TouchableOpacity
-                      style={[styles.dateChip, dateFrom !== 'All' && styles.filterChipActive]}
-                      onPress={() => openCalendar('from')}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="calendar-outline" size={14} color={dateFrom !== 'All' ? '#003580' : '#64748b'} />
-                      <View style={styles.filterChipTextWrap}>
-                        <Text style={styles.filterChipLabel}>From</Text>
-                        <Text
-                          style={[styles.filterChipValue, dateFrom !== 'All' && styles.filterChipValueActive]}
-                          numberOfLines={1}
-                        >
-                          {formatDateLabel(dateFrom)}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.dateChip, dateTo !== 'All' && styles.filterChipActive]}
-                      onPress={() => openCalendar('to')}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="calendar-outline" size={14} color={dateTo !== 'All' ? '#003580' : '#64748b'} />
-                      <View style={styles.filterChipTextWrap}>
-                        <Text style={styles.filterChipLabel}>To</Text>
-                        <Text
-                          style={[styles.filterChipValue, dateTo !== 'All' && styles.filterChipValueActive]}
-                          numberOfLines={1}
-                        >
-                          {formatDateLabel(dateTo)}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  </View>
-
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.dateSuggestRow}
-                  >
-                    <TouchableOpacity style={styles.dateSuggestChip} onPress={suggestToday} activeOpacity={0.85}>
-                      <Text style={styles.dateSuggestText}>Today</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.dateSuggestChip} onPress={suggestYesterday} activeOpacity={0.85}>
-                      <Text style={styles.dateSuggestText}>Yesterday</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.dateSuggestChip} onPress={suggestLast7} activeOpacity={0.85}>
-                      <Text style={styles.dateSuggestText}>Last 7 days</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.dateSuggestChip}
-                      onPress={clearAllFilters}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={styles.dateSuggestText}>Clear</Text>
-                    </TouchableOpacity>
-                  </ScrollView>
-                </View>
-              ) : null}
-            </View>
-
-            {logType === 'chambers' ? (
-              <View style={styles.dailyBanner}>
-                <Ionicons name="thermometer-outline" size={14} color="#003580" />
-                <Text style={styles.dailyBannerText}>
-                  Daily chamber data · {logs.length} entr{logs.length === 1 ? 'y' : 'ies'}
-                  {dateFrom !== 'All' && dateFrom === dateTo ? ` · ${formatDateLabel(dateFrom)}` : ''}
-                </Text>
-              </View>
-            ) : null}
-
-            {logType === 'inventory' ? (
-              <View style={styles.dailyBanner}>
-                <Ionicons name="cube-outline" size={14} color="#003580" />
-                <Text style={styles.dailyBannerText}>
-                  Inventory · {inventorySummary.lots} lot
-                  {inventorySummary.lots === 1 ? '' : 's'}
-                  {` · Total boxes ${inventorySummary.totalBoxes}`}
-                  {inventorySummary.totalBoxes === 0 ? ' · Out of stock' : ''}
-                </Text>
-              </View>
-            ) : null}
-
-            {logType === 'inventory' ? (
-              inventoryLoading && !refreshing ? (
-                <View style={styles.centerState}>
-                  <ActivityIndicator size="large" color="#003580" />
-                  <Text style={styles.stateText}>Loading inventory…</Text>
-                </View>
-              ) : inventoryError ? (
-                <View style={styles.centerState}>
-                  <Ionicons name="warning-outline" size={28} color="#dc2626" />
-                  <Text style={styles.stateText}>{inventoryError}</Text>
-                  <TouchableOpacity style={styles.retryBtn} onPress={loadInventory}>
-                    <Text style={styles.retryText}>Retry</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <FlatList
-                  data={filteredInventoryRows}
-                  keyExtractor={(item, idx) =>
-                    `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${item.chamber_name || 'ch'}-${idx}`
-                  }
-                  renderItem={renderReportItem}
-                  contentContainerStyle={styles.listBodyCompact}
-                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-                  ListEmptyComponent={
-                    <View style={styles.centerState}>
-                      <Ionicons name="cube-outline" size={28} color="#94a3b8" />
-                      <Text style={styles.stateText}>No inventory for selected filters.</Text>
-                    </View>
-                  }
-                />
-              )
-            ) : logsLoading && !refreshing ? (
-              <View style={styles.centerState}>
-                <ActivityIndicator size="large" color="#003580" />
-                <Text style={styles.stateText}>
-                  Loading {logType === 'inward' ? 'inward' : logType === 'outward' ? 'outward' : 'chamber'} logs…
-                </Text>
-              </View>
-            ) : logsError ? (
-              <View style={styles.centerState}>
-                <Ionicons name="warning-outline" size={28} color="#dc2626" />
-                <Text style={styles.stateText}>{logsError}</Text>
-                <TouchableOpacity style={styles.retryBtn} onPress={loadLogs}>
-                  <Text style={styles.retryText}>Retry</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <FlatList
-                data={logs}
-                keyExtractor={(item, idx) =>
-                  String(item.id || item.inward_id || item.outward_id || item.reference_no || idx)
-                }
-                renderItem={renderLogItem}
-                contentContainerStyle={styles.listBodyCompact}
-                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-                ListEmptyComponent={
-                  <View style={styles.centerState}>
-                    <Ionicons name="document-text-outline" size={28} color="#94a3b8" />
-                    <Text style={styles.stateText}>No logs for the selected filters.</Text>
-                  </View>
-                }
-              />
-            )}
-          </View>
-        ) : activeTab === 'Reports' ? (
-          <View style={styles.logsWrap}>
-            <View style={styles.filtersCard}>
-              <View style={styles.logTypeRow}>
-                {[
-                  { id: 'all', label: 'All lots' },
-                  { id: 'mismatch', label: 'Mismatch' }
-                ].map((t) => {
-                  const active = reportView === t.id;
-                  return (
-                    <TouchableOpacity
-                      key={t.id}
-                      style={[styles.logTypeChip, active && styles.logTypeChipActive]}
-                      onPress={() => setReportView(t.id)}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={[styles.logTypeChipText, active && styles.logTypeChipTextActive]}>
-                        {t.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              <View style={styles.filterChipRow}>
-                <TouchableOpacity
-                  style={[styles.filterChip, reportWarehouseFilter !== 'All' && styles.filterChipActive]}
-                  onPress={() => setOpenFilter(openFilter === 'reportWarehouse' ? null : 'reportWarehouse')}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons
-                    name="business-outline"
-                    size={14}
-                    color={reportWarehouseFilter !== 'All' ? '#003580' : '#64748b'}
-                  />
-                  <View style={styles.filterChipTextWrap}>
-                    <Text style={styles.filterChipLabel}>Warehouse</Text>
-                    <Text
-                      style={[
-                        styles.filterChipValue,
-                        reportWarehouseFilter !== 'All' && styles.filterChipValueActive
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {reportWarehouseFilter}
-                    </Text>
-                  </View>
-                  <Ionicons
-                    name="chevron-down"
-                    size={14}
-                    color={reportWarehouseFilter !== 'All' ? '#003580' : '#94a3b8'}
-                  />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.filterChip, reportClientFilter !== 'All' && styles.filterChipActive]}
-                  onPress={() => setOpenFilter(openFilter === 'reportClient' ? null : 'reportClient')}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons
-                    name="people-outline"
-                    size={14}
-                    color={reportClientFilter !== 'All' ? '#003580' : '#64748b'}
-                  />
-                  <View style={styles.filterChipTextWrap}>
-                    <Text style={styles.filterChipLabel}>Client</Text>
-                    <Text
-                      style={[
-                        styles.filterChipValue,
-                        reportClientFilter !== 'All' && styles.filterChipValueActive
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {reportClientFilter}
-                    </Text>
-                  </View>
-                  <Ionicons
-                    name="chevron-down"
-                    size={14}
-                    color={reportClientFilter !== 'All' ? '#003580' : '#94a3b8'}
-                  />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.dateSuggestRow}
-              >
-                <TouchableOpacity
-                  style={styles.dateSuggestChip}
-                  onPress={() => setReportView('all')}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.dateSuggestText}>All</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.dateSuggestChip}
-                  onPress={() => setReportView('mismatch')}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.dateSuggestText}>Mismatch only</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.dateSuggestChip}
-                  onPress={() => {
-                    setReportView('all');
-                    setReportWarehouseFilter('All');
-                    setReportClientFilter('All');
-                  }}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.dateSuggestText}>Clear</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </View>
-
-            <View style={styles.dailyBanner}>
-              <Ionicons name="cube-outline" size={14} color="#003580" />
-              <Text style={styles.dailyBannerText}>
-                Inventory · {reportSummary.lots} lot{reportSummary.lots === 1 ? '' : 's'}
-                {` · Total boxes ${reportSummary.totalBoxes}`}
-                {` · In ${reportSummary.inward} · Out ${reportSummary.outward}`}
-                {reportSummary.totalBoxes === 0 && reportSummary.lots > 0
-                  ? ' · Out of stock'
-                  : ''}
-              </Text>
-            </View>
-
-            {reportsLoading && !reportsRefreshing ? (
-              <View style={styles.centerState}>
-                <ActivityIndicator size="large" color="#003580" />
-                <Text style={styles.stateText}>Loading inventory…</Text>
-              </View>
-            ) : reportsError ? (
-              <View style={styles.centerState}>
-                <Ionicons name="warning-outline" size={28} color="#dc2626" />
-                <Text style={styles.stateText}>{reportsError}</Text>
-                <TouchableOpacity style={styles.retryBtn} onPress={loadReports}>
-                  <Text style={styles.retryText}>Retry</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <FlatList
-                data={filteredReportRows}
-                keyExtractor={(item, idx) =>
-                  `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${idx}`
-                }
-                renderItem={renderReportItem}
-                contentContainerStyle={styles.listBodyCompact}
-                refreshControl={
-                  <RefreshControl
-                    refreshing={reportsRefreshing}
-                    onRefresh={() => {
-                      setReportsRefreshing(true);
-                      loadReports();
-                    }}
-                  />
-                }
-                ListEmptyComponent={
-                  <View style={styles.centerState}>
-                    <Ionicons name="cube-outline" size={28} color="#94a3b8" />
-                    <Text style={styles.stateText}>No inventory for selected filters.</Text>
-                  </View>
-                }
-              />
-            )}
-          </View>
-        ) : (
+        {activeTab === 'Logs' ? renderLogsReportsView() : activeTab === 'Reports' ? renderReportsInventoryView() : (
           <ScrollView
             contentContainerStyle={[
               styles.body,
@@ -2438,7 +3399,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                     calendarPickMode === 'from' && styles.calendarModeChipTextActive
                   ]}
                 >
-                  From: {formatDateLabel(dateFrom)}
+                  From: {calendarContext === 'logsTemp' ? logsReportDateFrom : formatDateLabel(dateFrom)}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -2451,7 +3412,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                     calendarPickMode === 'to' && styles.calendarModeChipTextActive
                   ]}
                 >
-                  To: {formatDateLabel(dateTo)}
+                  To: {calendarContext === 'logsTemp' ? logsReportDateTo : formatDateLabel(dateTo)}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -2494,14 +3455,15 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                   return <View key={`empty-${index}`} style={styles.calendarDayCell} />;
                 }
                 const dateStr = toLocalYmd(d);
-                const effectiveFrom = dateFrom === 'All' ? null : dateFrom;
-                const effectiveTo = dateTo === 'All' ? null : dateTo;
+                const effectiveFrom = calendarRangeFrom;
+                const effectiveTo =
+                  calendarRangeTo && calendarRangeFrom
+                    ? calendarRangeTo < calendarRangeFrom
+                      ? calendarRangeFrom
+                      : calendarRangeTo
+                    : calendarRangeTo;
                 const rangeStart = effectiveFrom;
-                const rangeEnd = effectiveTo && effectiveFrom
-                  ? effectiveTo < effectiveFrom
-                    ? effectiveFrom
-                    : effectiveTo
-                  : effectiveTo;
+                const rangeEnd = effectiveTo;
                 const isStart = rangeStart && dateStr === rangeStart;
                 const isEnd = rangeEnd && dateStr === rangeEnd;
                 const inRange =
@@ -2524,13 +3486,19 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                     ]}
                     onPress={() => {
                       if (calendarPickMode === 'from') {
-                        // From changed: if To is older, bump To up to From
-                        applyDateRange(dateStr, dateTo === 'All' ? dateStr : dateTo);
+                        const nextTo =
+                          calendarContext === 'logsTemp'
+                            ? dateStr > logsReportDateTo
+                              ? dateStr
+                              : logsReportDateTo
+                            : dateTo === 'All'
+                              ? dateStr
+                              : dateTo;
+                        applyCalendarRange(dateStr, nextTo);
                         setCalendarPickMode('to');
                       } else {
-                        // To cannot be less than From
                         if (effectiveFrom && dateStr < effectiveFrom) return;
-                        applyDateRange(effectiveFrom || dateStr, dateStr);
+                        applyCalendarRange(effectiveFrom || dateStr, dateStr);
                         setCalendarPickMode('from');
                         setShowCalendarModal(false);
                       }
@@ -2554,7 +3522,13 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
               <TouchableOpacity
                 style={styles.dateSuggestChip}
                 onPress={() => {
-                  suggestToday();
+                  const t = toLocalYmd();
+                  if (calendarContext === 'logsTemp') {
+                    setLogsReportDateFrom(t);
+                    setLogsReportDateTo(t);
+                  } else {
+                    suggestToday();
+                  }
                   setShowCalendarModal(false);
                 }}
               >
@@ -2563,7 +3537,15 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
               <TouchableOpacity
                 style={styles.dateSuggestChip}
                 onPress={() => {
-                  suggestYesterday();
+                  const d = new Date();
+                  d.setDate(d.getDate() - 1);
+                  const y = toLocalYmd(d);
+                  if (calendarContext === 'logsTemp') {
+                    setLogsReportDateFrom(y);
+                    setLogsReportDateTo(y);
+                  } else {
+                    suggestYesterday();
+                  }
                   setShowCalendarModal(false);
                 }}
               >
@@ -2572,7 +3554,15 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
               <TouchableOpacity
                 style={styles.dateSuggestChip}
                 onPress={() => {
-                  suggestLast7();
+                  const end = new Date();
+                  const start = new Date();
+                  start.setDate(end.getDate() - 6);
+                  if (calendarContext === 'logsTemp') {
+                    setLogsReportDateFrom(toLocalYmd(start));
+                    setLogsReportDateTo(toLocalYmd(end));
+                  } else {
+                    suggestLast7();
+                  }
                   setShowCalendarModal(false);
                 }}
               >
@@ -2601,20 +3591,24 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#f8fafc' },
   header: {
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    justifyContent: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingLeft: 10,
     paddingRight: 14,
-    paddingTop: 6,
-    paddingBottom: 10,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 4 : 6,
+    paddingBottom: 14,
+    minHeight: Platform.OS === 'android' ? 64 : 58,
     backgroundColor: '#ffffff',
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0'
   },
   headerLogo: {
     width: 120,
-    height: 44
+    height: 44,
+    marginRight: -28,
+    marginTop: 6,
+    alignSelf: 'flex-end',
   },
   aboutLogoWrap: {
     alignSelf: 'center',
@@ -2625,19 +3619,25 @@ const styles = StyleSheet.create({
     height: 48
   },
   welcomeBlock: {
+    flex: 1,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    paddingRight: 8,
+    marginLeft: 14,
     marginTop: 6,
-    paddingRight: 4,
-    alignSelf: 'stretch'
   },
   welcomeLine: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#64748b'
+    color: '#64748b',
+    marginBottom: 2,
+    textAlign: 'left',
   },
   welcomeName: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
-    color: '#0f172a'
+    color: '#0f172a',
+    textAlign: 'left',
   },
   logoutBtn: {
     flexDirection: 'row',
@@ -3530,5 +4530,401 @@ const styles = StyleSheet.create({
   tabBarLabelActive: {
     color: '#003580',
     fontWeight: 'bold'
-  }
+  },
+  dockReportFilterBar: {
+    paddingBottom: 8,
+    gap: 8,
+  },
+  dockReportSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 6,
+    gap: 8,
+  },
+  dockReportSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#0f172a',
+    paddingVertical: 0,
+  },
+  dockReportDateRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  dockReportDateInput: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    fontSize: 13,
+    color: '#0f172a',
+  },
+  dockReportFilterActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  dockReportFilterBtnPrimary: {
+    flex: 1,
+    backgroundColor: '#003580',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  dockReportFilterBtnPrimaryText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  dockReportFilterBtnOutline: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#003580',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  dockReportFilterBtnOutlineText: {
+    color: '#003580',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  dockReportPagination: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    marginTop: 4,
+  },
+  dockReportPageBtn: {
+    backgroundColor: '#003580',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  dockReportPageBtnDisabled: {
+    backgroundColor: '#94a3b8',
+  },
+  dockReportPageBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  dockReportPageMeta: {
+    fontSize: 12,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  inwardReportCard: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  inwardReportCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  inwardReportRef: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#003580',
+  },
+  inwardReportDateInline: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#94a3b8',
+  },
+  inwardReportClient: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginTop: 2,
+  },
+  inwardReportStatsRow: {
+    flexDirection: 'row',
+    backgroundColor: '#f8fafc',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  inwardReportStat: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  inwardReportStatLabel: {
+    fontSize: 9,
+    color: '#94a3b8',
+    fontWeight: '600',
+    marginBottom: 1,
+  },
+  inwardReportStatValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  inwardDetailPhotoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  inwardDetailPhotoCell: {
+    width: '48%',
+    marginBottom: 14,
+  },
+  inwardDetailPhotoLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 6,
+    minHeight: 28,
+  },
+  inwardDetailPhotoFrame: {
+    width: '100%',
+    aspectRatio: 1,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#e2e8f0',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  inwardDetailPhotoImage: {
+    width: '100%',
+    height: '100%',
+  },
+  inwardDetailPhotoPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  doLogDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  doLogDetailLabel: {
+    fontSize: 12,
+    color: '#64748b',
+    fontWeight: '600',
+    flex: 1,
+  },
+  doLogDetailValue: {
+    fontSize: 12,
+    color: '#0f172a',
+    fontWeight: '700',
+    flex: 1.2,
+    textAlign: 'right',
+  },
+  doDetailSafe: { flex: 1, backgroundColor: '#f8fafc' },
+  doDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  doDetailBackBtn: {
+    padding: 8,
+    marginRight: 4,
+  },
+  doDetailTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  doDetailSub: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+    lineHeight: 17,
+  },
+  doDetailBody: {
+    padding: 12,
+    paddingBottom: 32,
+  },
+  doDetailHeroCard: {
+    backgroundColor: '#003580',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  doDetailHeroTemp: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  doDetailHeroMeta: {
+    fontSize: 12,
+    color: '#bfdbfe',
+    marginTop: 6,
+    lineHeight: 18,
+  },
+  doDetailCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  doDetailSectionTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#003580',
+    marginBottom: 8,
+  },
+  photoMetaLine: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 18,
+    marginBottom: 6,
+  },
+  reportsModeRow: {
+    flexDirection: 'row',
+    marginTop: 8,
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  reportsModeChip: {
+    flexGrow: 1,
+    flexBasis: '22%',
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+  },
+  reportsModeChipActive: {
+    backgroundColor: '#003580',
+  },
+  reportsModeChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  reportsModeChipTextActive: {
+    color: '#ffffff',
+  },
+  reportsContentArea: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+  },
+  doFilterPanel: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  doFilterRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reportsListBody: {
+    padding: 8,
+    paddingBottom: 88,
+    flexGrow: 1,
+  },
+  reportsCenterState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    gap: 8,
+  },
+  reportsStateText: {
+    fontSize: 13,
+    color: '#64748b',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  reportsRetryBtn: {
+    marginTop: 8,
+    backgroundColor: '#003580',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  reportsRetryText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  sliderOuterContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    marginHorizontal: 8,
+    marginBottom: 8,
+    marginTop: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 8,
+  },
+  sliderScroll: {
+    paddingRight: 10,
+  },
+  sliderCard: {
+    width: 50,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: '#f8fafc',
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  sliderCardActive: {
+    backgroundColor: '#003580',
+    borderColor: '#003580',
+  },
+  sliderDayName: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#64748b',
+    textTransform: 'uppercase',
+  },
+  sliderDayNum: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#0f172a',
+    marginTop: 2,
+  },
+  sliderTextActive: {
+    color: '#ffffff',
+  },
+  sliderCalendarBtn: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingLeft: 12,
+    borderLeftWidth: 1,
+    borderLeftColor: '#e2e8f0',
+    width: 55,
+  },
+  sliderCalendarBtnText: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#003580',
+    marginTop: 2,
+  },
 });

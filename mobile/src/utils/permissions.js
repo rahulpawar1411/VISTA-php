@@ -3,16 +3,13 @@
  */
 import { Alert, Linking, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 
 function openAppSettings() {
   Linking.openSettings().catch(() => {});
 }
 
-/**
- * Ask for camera access before DO temperature photo capture.
- * @returns {Promise<boolean>}
- */
 export async function ensureCameraPermission() {
   try {
     const current = await ImagePicker.getCameraPermissionsAsync();
@@ -41,6 +38,46 @@ export async function ensureCameraPermission() {
   } catch (err) {
     console.warn('ensureCameraPermission failed:', err?.message || err);
     Alert.alert('Camera Error', 'Could not request camera permission.');
+    return false;
+  }
+}
+
+/**
+ * Ask for location when capturing verification photos (optional — photo still saves without GPS).
+ * @param {{ required?: boolean }} [opts]
+ * @returns {Promise<boolean>}
+ */
+export async function ensureLocationPermission({ required = false } = {}) {
+  try {
+    const current = await Location.getForegroundPermissionsAsync();
+    if (current.granted) return true;
+
+    if (current.canAskAgain === false) {
+      if (required) {
+        Alert.alert(
+          'Location permission required',
+          'ReeferON needs location access to record where verification photos were taken. Please enable Location in Settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: openAppSettings },
+          ]
+        );
+      }
+      return false;
+    }
+
+    const requested = await Location.requestForegroundPermissionsAsync();
+    if (requested.granted) return true;
+
+    if (required) {
+      Alert.alert(
+        'Location permission denied',
+        'Without location access, photos will be saved without GPS coordinates.'
+      );
+    }
+    return false;
+  } catch (err) {
+    console.warn('ensureLocationPermission failed:', err?.message || err);
     return false;
   }
 }

@@ -4,6 +4,8 @@
 // Stores:
 //   local_assignments  → chamber/client master cache + pending add/delete
 //   local_inspections  → DO temperature logs waiting for upload
+//   local_inward_logs  → inward forms waiting for upload
+//   local_outward_logs → outward forms waiting for upload
 //   client_lot_master  → suggestion names for Add Client UI
 //
 // RULES FOR DEVELOPERS:
@@ -72,16 +74,20 @@ export const initDatabase = () => {
         chamber_name TEXT NOT NULL,
         client_name TEXT NOT NULL,
         remark TEXT,
+        chamber_type TEXT DEFAULT 'Frozen',
         status TEXT DEFAULT 'active',
         sync_status TEXT DEFAULT 'synced',
         action TEXT DEFAULT 'none',
+        warehouse_name TEXT,
         UNIQUE(chamber_id, client_name) ON CONFLICT REPLACE
       );
     `);
     ensureColumn('local_assignments', 'remark', 'remark TEXT');
+    ensureColumn('local_assignments', 'chamber_type', "chamber_type TEXT DEFAULT 'Frozen'");
     ensureColumn('local_assignments', 'status', "status TEXT DEFAULT 'active'");
     ensureColumn('local_assignments', 'sync_status', "sync_status TEXT DEFAULT 'synced'");
     ensureColumn('local_assignments', 'action', "action TEXT DEFAULT 'none'");
+    ensureColumn('local_assignments', 'warehouse_name', "warehouse_name TEXT");
 
     // ------------------------------------------------------------------
     // 2) Inspection upload queue (offline DO logs)
@@ -128,6 +134,11 @@ export const initDatabase = () => {
       ensureColumn('local_inspections', 'created_at', 'created_at TEXT DEFAULT NULL');
       ensureColumn('local_inspections', 'updated_at', 'updated_at TEXT DEFAULT NULL');
       ensureColumn('local_inspections', 'sync_status', "sync_status TEXT DEFAULT 'pending'");
+      ensureColumn('local_inspections', 'warehouse_name', 'warehouse_name TEXT');
+      ensureColumn('local_inspections', 'operator_email', 'operator_email TEXT');
+      ensureColumn('local_inspections', 'photo_capture_latitude', 'photo_capture_latitude REAL');
+      ensureColumn('local_inspections', 'photo_capture_longitude', 'photo_capture_longitude REAL');
+      ensureColumn('local_inspections', 'photo_capture_accuracy', 'photo_capture_accuracy REAL');
 
       try {
         if (hasColumn(inspCols, 'temperature')) {
@@ -156,7 +167,43 @@ export const initDatabase = () => {
     }
 
     // ------------------------------------------------------------------
-    // 3) Client lot name suggestions (UI picker only)
+    // 3) Inward / Outward upload queues (offline dock forms)
+    // ------------------------------------------------------------------
+    db.execSync(`
+      CREATE TABLE IF NOT EXISTS local_inward_logs (
+        id TEXT PRIMARY KEY,
+        form_json TEXT NOT NULL,
+        photos_json TEXT NOT NULL,
+        driver_country_code TEXT DEFAULT '+91',
+        warehouse_name TEXT,
+        operator_email TEXT,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        reference_no TEXT,
+        server_log_id INTEGER,
+        sync_error TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+    `);
+    db.execSync(`
+      CREATE TABLE IF NOT EXISTS local_outward_logs (
+        id TEXT PRIMARY KEY,
+        form_json TEXT NOT NULL,
+        photos_json TEXT NOT NULL,
+        driver_country_code TEXT DEFAULT '+91',
+        warehouse_name TEXT,
+        operator_email TEXT,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        reference_no TEXT,
+        server_log_id INTEGER,
+        sync_error TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+    `);
+
+    // ------------------------------------------------------------------
+    // 4) Client lot name suggestions (UI picker only)
     // ------------------------------------------------------------------
     db.execSync(`
       CREATE TABLE IF NOT EXISTS client_lot_master (
@@ -183,6 +230,22 @@ export const initDatabase = () => {
         );
       } catch (_) {}
     }
+
+    // ------------------------------------------------------------------
+    // 5) Operator activity / remark queue (flush to MySQL on sync)
+    // ------------------------------------------------------------------
+    db.execSync(`
+      CREATE TABLE IF NOT EXISTS local_activity_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL,
+        log_type TEXT DEFAULT 'DO_CHANGE',
+        description TEXT NOT NULL,
+        remark TEXT,
+        permission_req INTEGER,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
     console.log('✅ SQLite Database Tables initialized successfully.');
   } catch (error) {
@@ -249,9 +312,10 @@ export const addClientLotMaster = (clientName) => {
  * Caches the client assignments retrieved from the server.
  * @param {Array} assignments - Array of client assignments [{ chamber_id, chamber_name, client_name }]
  */
-export const cacheAssignments = (assignments) => {
+export const cacheAssignments = (assignments, warehouseName) => {
   if (!db) return;
   try {
+    const wh = String(warehouseName || '').trim();
     // Preserve pending assignments
     const pending = db.getAllSync("SELECT * FROM local_assignments WHERE sync_status = 'pending';");
     
@@ -260,8 +324,15 @@ export const cacheAssignments = (assignments) => {
     
     for (const item of assignments) {
       db.runSync(
-        "INSERT INTO local_assignments (chamber_id, chamber_name, client_name, sync_status, action) VALUES (?, ?, ?, 'synced', 'none');",
-        [item.chamber_id, item.chamber_name, item.client_name]
+        "INSERT INTO local_assignments (chamber_id, chamber_name, client_name, chamber_type, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, ?, 'synced', 'none', ?);",
+        [
+          item.chamber_id,
+          item.chamber_name,
+          item.client_name,
+          item.chamber_type || 'Frozen',
+          String(item.status || 'active').toLowerCase() === 'inactive' ? 'inactive' : 'active',
+          item.warehouse_name || wh
+        ]
       );
     }
 
@@ -281,13 +352,13 @@ export const cacheAssignments = (assignments) => {
       }
       if (item.action === 'add') {
         db.runSync(
-          "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, status, sync_status, action) VALUES (?, ?, ?, ?, 'active', 'pending', 'add');",
-          [item.chamber_id, item.chamber_name, item.client_name, item.remark]
+          "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, chamber_type, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'add', ?);",
+          [item.chamber_id, item.chamber_name, item.client_name, item.remark, item.chamber_type || 'Frozen', item.warehouse_name || wh]
         );
       } else if (item.action === 'delete') {
         db.runSync(
-          "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, status, sync_status, action) VALUES (?, ?, ?, ?, 'inactive', 'pending', 'delete');",
-          [item.chamber_id, item.chamber_name, item.client_name, item.remark]
+          "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, 'inactive', 'pending', 'delete', ?);",
+          [item.chamber_id, item.chamber_name, item.client_name, item.remark, item.warehouse_name || wh]
         );
       }
     }
@@ -301,10 +372,17 @@ export const cacheAssignments = (assignments) => {
  * Retrieves cached client assignments from the local SQLite database.
  * @returns {Array} List of local assignments
  */
-export const getLocalAssignments = () => {
+export const getLocalAssignments = (warehouseName) => {
   if (!db) return [];
   try {
-    return db.getAllSync("SELECT chamber_id, chamber_name, client_name, remark FROM local_assignments WHERE status IS NULL OR status = 'active' ORDER BY chamber_name ASC, client_name ASC;");
+    const wh = String(warehouseName || '').trim().toLowerCase();
+    const rows = db.getAllSync("SELECT chamber_id, chamber_name, client_name, remark, chamber_type, status, warehouse_name FROM local_assignments;");
+    return rows.filter((r) => {
+      if (r.status === 'inactive') return false;
+      if (!wh) return true;
+      const rowWh = String(r.warehouse_name || '').trim().toLowerCase();
+      return !rowWh || rowWh === wh;
+    });
   } catch (error) {
     console.error('❌ Failed to read local assignments:', error);
     return [];
@@ -320,8 +398,8 @@ export const saveInspectionLocally = (log) => {
   try {
     db.runSync(
       `INSERT INTO local_inspections 
-      (id, monitor_supervisor_name, chamber_id, chamber_name, client_name, box_temp, temp_sensor_image, entry_date, inspection_time, box_count, chamber_type, overdue_time, photo_capture_time, sync_status, shift, created_at) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      (id, monitor_supervisor_name, chamber_id, chamber_name, client_name, box_temp, temp_sensor_image, entry_date, inspection_time, box_count, chamber_type, overdue_time, photo_capture_time, photo_capture_latitude, photo_capture_longitude, photo_capture_accuracy, sync_status, shift, created_at, warehouse_name, operator_email) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?);`,
       [
         log.id,
         log.monitor_supervisor_name,
@@ -336,8 +414,13 @@ export const saveInspectionLocally = (log) => {
         log.chamber_type || 'Frozen',
         log.overdue_time || 'same day',
         log.photo_capture_time || null,
+        log.photo_capture_latitude != null ? parseFloat(log.photo_capture_latitude) : null,
+        log.photo_capture_longitude != null ? parseFloat(log.photo_capture_longitude) : null,
+        log.photo_capture_accuracy != null ? parseFloat(log.photo_capture_accuracy) : null,
         log.shift || 'Morning',
-        log.created_at || null
+        log.created_at || null,
+        log.warehouse_name || null,
+        log.operator_email || null
       ]
     );
     console.log(`💾 Saved inspection locally in SQLite queue: ${log.client_name} - ${log.chamber_name} (${log.chamber_type || 'Frozen'}, Overdue: ${log.overdue_time || 'same day'})`);
@@ -388,20 +471,40 @@ export const getPendingInspections = (operatorName) => {
 };
 
 /**
- * Fetches all local inspections logged for today.
+ * Fetches local inspections for a date (optionally scoped to operator name and/or email).
+ * Email match lets live DO data show after server→phone pull even if supervisor label differs.
  */
-export const getTodaysInspections = (date, operatorName) => {
+export const getTodaysInspections = (date, operatorName, operatorEmail) => {
   if (!db) return [];
   try {
-    if (operatorName) {
+    const day = String(date || '').slice(0, 10);
+    const name = String(operatorName || '').trim();
+    const email = String(operatorEmail || '').trim();
+    const dateClause = 'substr(entry_date, 1, 10) = ?';
+    if (name && email) {
       return db.getAllSync(
-        "SELECT * FROM local_inspections WHERE entry_date = ? AND monitor_supervisor_name = ? ORDER BY COALESCE(updated_at, created_at) DESC, id DESC;",
-        [date, operatorName]
+        `SELECT * FROM local_inspections
+         WHERE ${dateClause}
+           AND (monitor_supervisor_name = ? OR LOWER(IFNULL(operator_email, '')) = LOWER(?))
+         ORDER BY COALESCE(updated_at, created_at) DESC, id DESC;`,
+        [day, name, email]
+      );
+    }
+    if (name) {
+      return db.getAllSync(
+        `SELECT * FROM local_inspections WHERE ${dateClause} AND monitor_supervisor_name = ? ORDER BY COALESCE(updated_at, created_at) DESC, id DESC;`,
+        [day, name]
+      );
+    }
+    if (email) {
+      return db.getAllSync(
+        `SELECT * FROM local_inspections WHERE ${dateClause} AND LOWER(IFNULL(operator_email, '')) = LOWER(?) ORDER BY COALESCE(updated_at, created_at) DESC, id DESC;`,
+        [day, email]
       );
     }
     return db.getAllSync(
-      "SELECT * FROM local_inspections WHERE entry_date = ? ORDER BY COALESCE(updated_at, created_at) DESC, id DESC;",
-      [date]
+      `SELECT * FROM local_inspections WHERE ${dateClause} ORDER BY COALESCE(updated_at, created_at) DESC, id DESC;`,
+      [day]
     );
   } catch (error) {
     console.error('❌ Failed to fetch today\'s inspections:', error);
@@ -412,13 +515,29 @@ export const getTodaysInspections = (date, operatorName) => {
 /**
  * Fetches all local inspections logged on the device.
  */
-export const getAllLocalInspections = (operatorName) => {
+export const getAllLocalInspections = (operatorName, operatorEmail) => {
   if (!db) return [];
   try {
-    if (operatorName) {
+    const name = String(operatorName || '').trim();
+    const email = String(operatorEmail || '').trim();
+    if (name && email) {
+      return db.getAllSync(
+        `SELECT * FROM local_inspections
+         WHERE monitor_supervisor_name = ? OR LOWER(IFNULL(operator_email, '')) = LOWER(?)
+         ORDER BY entry_date DESC, COALESCE(updated_at, created_at) DESC, id DESC;`,
+        [name, email]
+      );
+    }
+    if (name) {
       return db.getAllSync(
         "SELECT * FROM local_inspections WHERE monitor_supervisor_name = ? ORDER BY entry_date DESC, COALESCE(updated_at, created_at) DESC, id DESC;",
-        [operatorName]
+        [name]
+      );
+    }
+    if (email) {
+      return db.getAllSync(
+        "SELECT * FROM local_inspections WHERE LOWER(IFNULL(operator_email, '')) = LOWER(?) ORDER BY entry_date DESC, COALESCE(updated_at, created_at) DESC, id DESC;",
+        [email]
       );
     }
     return db.getAllSync(
@@ -427,6 +546,232 @@ export const getAllLocalInspections = (operatorName) => {
   } catch (error) {
     console.error('❌ Failed to fetch all inspections:', error);
     return [];
+  }
+};
+
+const toLocalYmd = (value) => {
+  if (value == null || value === '') return '';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const s = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const parsed = new Date(s);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return s.slice(0, 10);
+};
+
+const resolveShiftFromServerLog = (log) => {
+  const s = String(log?.shift || '').trim();
+  if (s === 'Morning' || s === 'Evening') return s;
+  const t = String(log?.inspection_time || '').trim();
+  if (t.startsWith('10:00')) return 'Morning';
+  if (t.startsWith('16:00') || t.startsWith('18:00')) return 'Evening';
+  const hm = t.match(/^(\d{1,2}):(\d{2})/);
+  if (hm) {
+    const h = parseInt(hm[1], 10);
+    return h < 14 ? 'Morning' : 'Evening';
+  }
+  return 'Morning';
+};
+
+/**
+ * Mirror a server chamber-temp row into local SQLite as synced (does not touch pending uploads).
+ * Used so live DO completed tasks appear on a new/local device after login sync.
+ * @returns {boolean} true if inserted or updated
+ */
+export const upsertSyncedInspectionFromServer = (serverLog, opts = {}) => {
+  if (!db || !serverLog) return false;
+  try {
+    const formatted = String(serverLog.formatted_date || '').trim().slice(0, 10);
+    const entryDate = /^\d{4}-\d{2}-\d{2}$/.test(formatted)
+      ? formatted
+      : toLocalYmd(serverLog.entry_date);
+    const clientName = String(serverLog.client_name || '').trim();
+    if (!entryDate || !clientName) return false;
+
+    const shift = resolveShiftFromServerLog(serverLog);
+    const inspectionTime =
+      String(serverLog.inspection_time || '').trim() ||
+      (shift === 'Evening' ? '16:00' : '10:00');
+
+    let chamberId = parseInt(serverLog.chamber_id, 10);
+    if (!Number.isFinite(chamberId) || chamberId <= 0) {
+      const chamberName = String(serverLog.chamber_name || '').trim();
+      if (chamberName) {
+        const row = db.getFirstSync(
+          `SELECT chamber_id FROM local_assignments
+           WHERE LOWER(chamber_name) = LOWER(?) AND (status IS NULL OR status = 'active')
+           LIMIT 1;`,
+          [chamberName]
+        );
+        chamberId = row?.chamber_id != null ? parseInt(row.chamber_id, 10) : NaN;
+      }
+    }
+    if (!Number.isFinite(chamberId) || chamberId <= 0) {
+      const m = String(serverLog.chamber_name || '').match(/(\d+)/);
+      chamberId = m ? parseInt(m[1], 10) : NaN;
+    }
+    if (!Number.isFinite(chamberId) || chamberId <= 0) return false;
+
+    const pending = db.getFirstSync(
+      `SELECT id FROM local_inspections
+       WHERE entry_date = ? AND chamber_id = ? AND client_name = ? AND shift = ?
+         AND sync_status = 'pending'
+       LIMIT 1;`,
+      [entryDate, chamberId, clientName, shift]
+    );
+    // Never overwrite a pending local upload queue row
+    if (pending) return false;
+
+    const serverLogId =
+      serverLog.id != null && serverLog.id !== ''
+        ? parseInt(serverLog.id, 10)
+        : null;
+    const localId =
+      Number.isFinite(serverLogId) && serverLogId > 0
+        ? `srv_${serverLogId}`
+        : `srv_${entryDate}_${chamberId}_${clientName.replace(/\s+/g, '')}_${shift}`;
+
+    const displayName = String(opts.displayName || '').trim();
+    const operatorEmail = String(
+      serverLog.operator_email || opts.operatorEmail || ''
+    ).trim();
+    const monitorName =
+      String(serverLog.monitor_supervisor_name || '').trim() ||
+      displayName ||
+      operatorEmail ||
+      'Data Operator';
+    const nowIso = new Date().toISOString();
+    const boxTemp = parseFloat(serverLog.box_temp ?? serverLog.chamber_temp);
+    const tempImage = String(
+      serverLog.temp_sensor_image || serverLog.photo_url || ''
+    ).trim() || 'server';
+
+    const existing =
+      (Number.isFinite(serverLogId) &&
+        db.getFirstSync(
+          'SELECT id FROM local_inspections WHERE server_log_id = ? LIMIT 1;',
+          [serverLogId]
+        )) ||
+      db.getFirstSync(
+        `SELECT id FROM local_inspections
+         WHERE entry_date = ? AND chamber_id = ? AND client_name = ? AND shift = ?
+         LIMIT 1;`,
+        [entryDate, chamberId, clientName, shift]
+      ) ||
+      db.getFirstSync('SELECT id FROM local_inspections WHERE id = ? LIMIT 1;', [
+        localId,
+      ]);
+
+    if (existing?.id) {
+      db.runSync(
+        `UPDATE local_inspections SET
+          monitor_supervisor_name = ?,
+          chamber_id = ?,
+          chamber_name = ?,
+          client_name = ?,
+          box_temp = ?,
+          temp_sensor_image = CASE
+            WHEN temp_sensor_image IS NOT NULL AND temp_sensor_image != '' AND temp_sensor_image != 'server'
+              THEN temp_sensor_image
+            ELSE ?
+          END,
+          entry_date = ?,
+          inspection_time = ?,
+          box_count = ?,
+          chamber_type = ?,
+          overdue_time = ?,
+          photo_capture_time = ?,
+          photo_capture_latitude = COALESCE(?, photo_capture_latitude),
+          photo_capture_longitude = COALESCE(?, photo_capture_longitude),
+          photo_capture_accuracy = COALESCE(?, photo_capture_accuracy),
+          sync_status = 'synced',
+          shift = ?,
+          reference_no = COALESCE(?, reference_no),
+          server_log_id = COALESCE(?, server_log_id),
+          warehouse_name = COALESCE(?, warehouse_name),
+          operator_email = COALESCE(?, operator_email),
+          updated_at = ?
+         WHERE id = ?;`,
+        [
+          monitorName,
+          chamberId,
+          serverLog.chamber_name || `Chamber ${chamberId}`,
+          clientName,
+          Number.isFinite(boxTemp) ? boxTemp : 0,
+          tempImage,
+          entryDate,
+          inspectionTime,
+          serverLog.box_count != null ? parseInt(serverLog.box_count, 10) : null,
+          serverLog.chamber_type || 'Frozen',
+          serverLog.overdue_time || 'same day',
+          serverLog.photo_capture_time || null,
+          serverLog.photo_capture_latitude != null ? parseFloat(serverLog.photo_capture_latitude) : null,
+          serverLog.photo_capture_longitude != null ? parseFloat(serverLog.photo_capture_longitude) : null,
+          serverLog.photo_capture_accuracy != null ? parseFloat(serverLog.photo_capture_accuracy) : null,
+          shift,
+          serverLog.reference_no || null,
+          Number.isFinite(serverLogId) ? serverLogId : null,
+          serverLog.warehouse_name || opts.warehouseName || null,
+          operatorEmail || null,
+          nowIso,
+          existing.id,
+        ]
+      );
+      return true;
+    }
+
+    db.runSync(
+      `INSERT INTO local_inspections
+      (id, monitor_supervisor_name, chamber_id, chamber_name, client_name, box_temp, temp_sensor_image,
+       entry_date, inspection_time, box_count, chamber_type, overdue_time, photo_capture_time,
+       photo_capture_latitude, photo_capture_longitude, photo_capture_accuracy,
+       sync_status, shift, reference_no, server_log_id, created_at, updated_at, warehouse_name, operator_email)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, ?, ?, ?);`,
+      [
+        localId,
+        monitorName,
+        chamberId,
+        serverLog.chamber_name || `Chamber ${chamberId}`,
+        clientName,
+        Number.isFinite(boxTemp) ? boxTemp : 0,
+        tempImage,
+        entryDate,
+        inspectionTime,
+        serverLog.box_count != null ? parseInt(serverLog.box_count, 10) : null,
+        serverLog.chamber_type || 'Frozen',
+        serverLog.overdue_time || 'same day',
+        serverLog.photo_capture_time || null,
+        serverLog.photo_capture_latitude != null ? parseFloat(serverLog.photo_capture_latitude) : null,
+        serverLog.photo_capture_longitude != null ? parseFloat(serverLog.photo_capture_longitude) : null,
+        serverLog.photo_capture_accuracy != null ? parseFloat(serverLog.photo_capture_accuracy) : null,
+        shift,
+        serverLog.reference_no || null,
+        Number.isFinite(serverLogId) ? serverLogId : null,
+        serverLog.created_at || nowIso,
+        nowIso,
+        serverLog.warehouse_name || opts.warehouseName || null,
+        operatorEmail || null,
+      ]
+    );
+    return true;
+  } catch (error) {
+    if (!/UNIQUE|constraint/i.test(String(error?.message || error))) {
+      console.warn(
+        '⚠️ upsertSyncedInspectionFromServer:',
+        error?.message || error
+      );
+    }
+    return false;
   }
 };
 
@@ -462,6 +807,9 @@ export const updateInspectionLocally = (localId, updates = {}) => {
         box_count = COALESCE(?, box_count),
         temp_sensor_image = COALESCE(?, temp_sensor_image),
         photo_capture_time = COALESCE(?, photo_capture_time),
+        photo_capture_latitude = COALESCE(?, photo_capture_latitude),
+        photo_capture_longitude = COALESCE(?, photo_capture_longitude),
+        photo_capture_accuracy = COALESCE(?, photo_capture_accuracy),
         chamber_type = COALESCE(?, chamber_type),
         inspection_time = COALESCE(?, inspection_time),
         updated_at = COALESCE(?, updated_at),
@@ -472,6 +820,9 @@ export const updateInspectionLocally = (localId, updates = {}) => {
         updates.box_count != null ? parseInt(updates.box_count, 10) : null,
         updates.temp_sensor_image || null,
         updates.photo_capture_time || null,
+        updates.photo_capture_latitude != null ? parseFloat(updates.photo_capture_latitude) : null,
+        updates.photo_capture_longitude != null ? parseFloat(updates.photo_capture_longitude) : null,
+        updates.photo_capture_accuracy != null ? parseFloat(updates.photo_capture_accuracy) : null,
         updates.chamber_type || null,
         updates.inspection_time || null,
         updates.updated_at || null,
@@ -507,14 +858,15 @@ export const deleteInspectionLocally = (date, chamberId, clientName, shift) => {
 /**
  * Adds a new client assignment locally with a remark/reason.
  */
-export const addLocalAssignment = (chamberId, chamberName, clientName, remark) => {
+export const addLocalAssignment = (chamberId, chamberName, clientName, remark, chamberType, warehouseName) => {
   if (!db) return false;
   try {
+    const wh = String(warehouseName || '').trim();
     db.runSync(
-      "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, status, sync_status, action) VALUES (?, ?, ?, ?, 'active', 'pending', 'add');",
-      [parseInt(chamberId), chamberName, clientName, remark || '']
+      "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, chamber_type, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'add', ?);",
+      [parseInt(chamberId), chamberName, clientName, remark || '', chamberType || 'Frozen', wh]
     );
-    console.log(`➕ Added local client assignment: ${clientName} in ${chamberName} with remark: ${remark}`);
+    console.log(`➕ Added local client assignment: ${clientName} in ${chamberName} with type: ${chamberType}, remark: ${remark}, warehouse: ${wh}`);
     return true;
   } catch (error) {
     console.error('❌ Failed to add local assignment:', error);
@@ -548,9 +900,9 @@ export const seedDefaultClientsForEmptyChambers = (chambers) => {
         try {
           db.runSync(
             `INSERT OR REPLACE INTO local_assignments
-             (chamber_id, chamber_name, client_name, remark, status, sync_status, action)
-             VALUES (?, ?, ?, ?, 'active', 'pending', 'add');`,
-            [cid, chamberName, name, 'Default client master']
+             (chamber_id, chamber_name, client_name, remark, chamber_type, status, sync_status, action)
+             VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'add');`,
+            [cid, chamberName, name, 'Default client master', 'Frozen']
           );
           added += 1;
         } catch (_) {}
@@ -599,11 +951,13 @@ export const purgeAutoSeededMasterLotsOnce = () => {
 
 /**
  * Renames a client assignment on one chamber only (edit client master for that chamber).
+ * User remark is stored on both rows so MySQL chamber_client_assignments.remark is updated on sync.
  */
-export const renameLocalAssignment = (chamberId, chamberName, oldClientName, newClientName) => {
+export const renameLocalAssignment = (chamberId, chamberName, oldClientName, newClientName, remark = '') => {
   if (!db) return false;
   const oldName = String(oldClientName || '').trim();
   const newName = String(newClientName || '').trim();
+  const note = String(remark || '').trim();
   if (!oldName || !newName) return false;
   if (oldName.toLowerCase() === newName.toLowerCase()) return true;
   try {
@@ -620,26 +974,60 @@ export const renameLocalAssignment = (chamberId, chamberName, oldClientName, new
     );
     if (!row) return false;
 
-    if (row.sync_status === 'pending' && row.action === 'add') {
+    const deleteRemark = note || `Renamed to ${newName}`;
+    const addRemark = note || `Renamed from ${oldName}`;
+
+    if (row.sync_status === 'pending' && (row.action === 'add' || row.action === 'rename_add')) {
       db.runSync(
-        "UPDATE local_assignments SET client_name = ?, chamber_name = COALESCE(?, chamber_name) WHERE chamber_id = ? AND LOWER(client_name) = LOWER(?);",
-        [newName, chamberName || null, cid, oldName]
+        "UPDATE local_assignments SET client_name = ?, chamber_name = COALESCE(?, chamber_name), remark = COALESCE(?, remark) WHERE chamber_id = ? AND LOWER(client_name) = LOWER(?);",
+        [newName, chamberName || null, note || null, cid, oldName]
       );
     } else {
       // Soft-delete old + pending add new (sync-friendly rename)
       db.runSync(
-        "UPDATE local_assignments SET status = 'inactive', remark = ?, sync_status = 'pending', action = 'delete' WHERE chamber_id = ? AND LOWER(client_name) = LOWER(?);",
-        [`Renamed to ${newName}`, cid, oldName]
+        "UPDATE local_assignments SET status = 'inactive', remark = ?, sync_status = 'pending', action = 'rename_delete' WHERE chamber_id = ? AND LOWER(client_name) = LOWER(?);",
+        [deleteRemark, cid, oldName]
       );
       db.runSync(
-        "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, status, sync_status, action) VALUES (?, ?, ?, ?, 'active', 'pending', 'add');",
-        [cid, chamberName || row.chamber_name, newName, `Renamed from ${oldName}`]
+        `INSERT OR REPLACE INTO local_assignments
+          (chamber_id, chamber_name, client_name, remark, chamber_type, status, sync_status, action, warehouse_name)
+         VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'rename_add', ?);`,
+        [
+          cid,
+          chamberName || row.chamber_name,
+          newName,
+          addRemark,
+          row.chamber_type || 'Frozen',
+          row.warehouse_name || ''
+        ]
       );
     }
     console.log(`✏️ Renamed client on chamber ${cid}: "${oldName}" → "${newName}"`);
     return true;
   } catch (error) {
     console.error('❌ Failed to rename local assignment:', error);
+    return false;
+  }
+};
+
+/**
+ * Updates the chamber_type for all active assignments of a specific chamber.
+ */
+export const updateLocalChamberType = (chamberId, chamberType) => {
+  if (!db) return false;
+  try {
+    const cid = parseInt(chamberId, 10);
+    const type = String(chamberType || 'Frozen').trim();
+
+    db.runSync(
+      "UPDATE local_assignments SET chamber_type = ?, sync_status = 'pending', action = 'add' WHERE chamber_id = ? AND (status IS NULL OR status = 'active');",
+      [type, cid]
+    );
+
+    console.log(`✏️ Updated chamber ${cid} assignments type to: ${type}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to update local chamber type:', error);
     return false;
   }
 };
@@ -675,13 +1063,16 @@ export const deleteLocalAssignment = (chamberId, clientName, remark) => {
   }
 };
 
-/**
- * Fetches all local client assignments pending sync.
- */
-export const getPendingAssignments = () => {
+export const getPendingAssignments = (warehouseName) => {
   if (!db) return [];
   try {
-    return db.getAllSync("SELECT * FROM local_assignments WHERE sync_status = 'pending';");
+    const wh = String(warehouseName || '').trim().toLowerCase();
+    const rows = db.getAllSync("SELECT * FROM local_assignments WHERE sync_status = 'pending';");
+    return rows.filter((r) => {
+      if (!wh) return true;
+      const rowWh = String(r.warehouse_name || '').trim().toLowerCase();
+      return !rowWh || rowWh === wh;
+    });
   } catch (error) {
     console.error('❌ Failed to fetch pending assignments:', error);
     return [];
@@ -694,7 +1085,7 @@ export const getPendingAssignments = () => {
 export const markAssignmentSynced = (chamberId, clientName, action) => {
   if (!db) return;
   try {
-    if (action === 'delete') {
+    if (action === 'delete' || action === 'rename_delete') {
       db.runSync(
         "DELETE FROM local_assignments WHERE chamber_id = ? AND client_name = ?;",
         [parseInt(chamberId), clientName]
@@ -710,4 +1101,239 @@ export const markAssignmentSynced = (chamberId, clientName, action) => {
   } catch (error) {
     console.error('❌ Failed to mark assignment synced:', error);
   }
+};
+
+// ------------------------------------------------------------------
+// Inward / Outward offline queue
+// ------------------------------------------------------------------
+
+export const saveInwardLocally = ({
+  form,
+  photos,
+  driverCountryCode = '+91',
+  warehouse_name = null,
+  operator_email = null,
+}) => {
+  if (!db) return null;
+  try {
+    const id = `in_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const now = new Date().toISOString();
+    db.runSync(
+      `INSERT INTO local_inward_logs
+      (id, form_json, photos_json, driver_country_code, warehouse_name, operator_email, sync_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      [
+        id,
+        JSON.stringify(form || {}),
+        JSON.stringify(photos || {}),
+        driverCountryCode,
+        warehouse_name,
+        operator_email,
+        now,
+        now,
+      ]
+    );
+    console.log(`💾 Saved inward log locally: ${id}`);
+    return id;
+  } catch (error) {
+    console.error('❌ Failed to save inward locally:', error);
+    return null;
+  }
+};
+
+export const saveOutwardLocally = ({
+  form,
+  photos,
+  driverCountryCode = '+91',
+  warehouse_name = null,
+  operator_email = null,
+}) => {
+  if (!db) return null;
+  try {
+    const id = `out_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const now = new Date().toISOString();
+    db.runSync(
+      `INSERT INTO local_outward_logs
+      (id, form_json, photos_json, driver_country_code, warehouse_name, operator_email, sync_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      [
+        id,
+        JSON.stringify(form || {}),
+        JSON.stringify(photos || {}),
+        driverCountryCode,
+        warehouse_name,
+        operator_email,
+        now,
+        now,
+      ]
+    );
+    console.log(`💾 Saved outward log locally: ${id}`);
+    return id;
+  } catch (error) {
+    console.error('❌ Failed to save outward locally:', error);
+    return null;
+  }
+};
+
+export const getPendingInwardLogs = (operatorEmail = null) => {
+  if (!db) return [];
+  try {
+    if (operatorEmail) {
+      return db.getAllSync(
+        "SELECT * FROM local_inward_logs WHERE sync_status = 'pending' AND LOWER(operator_email) = LOWER(?) ORDER BY created_at ASC;",
+        [operatorEmail]
+      );
+    }
+    return db.getAllSync(
+      "SELECT * FROM local_inward_logs WHERE sync_status = 'pending' ORDER BY created_at ASC;"
+    );
+  } catch (error) {
+    console.error('❌ Failed to fetch pending inward logs:', error);
+    return [];
+  }
+};
+
+export const getPendingOutwardLogs = (operatorEmail = null) => {
+  if (!db) return [];
+  try {
+    if (operatorEmail) {
+      return db.getAllSync(
+        "SELECT * FROM local_outward_logs WHERE sync_status = 'pending' AND LOWER(operator_email) = LOWER(?) ORDER BY created_at ASC;",
+        [operatorEmail]
+      );
+    }
+    return db.getAllSync(
+      "SELECT * FROM local_outward_logs WHERE sync_status = 'pending' ORDER BY created_at ASC;"
+    );
+  } catch (error) {
+    console.error('❌ Failed to fetch pending outward logs:', error);
+    return [];
+  }
+};
+
+export const getPendingSyncFailures = (operatorEmail = null) => {
+  if (!db) return [];
+  try {
+    const inward = operatorEmail
+      ? db.getAllSync(
+          "SELECT id, sync_error, created_at, 'inward' AS queue_type FROM local_inward_logs WHERE sync_status = 'pending' AND sync_error IS NOT NULL AND sync_error != '' AND LOWER(operator_email) = LOWER(?) ORDER BY updated_at DESC LIMIT 10;",
+          [operatorEmail]
+        )
+      : db.getAllSync(
+          "SELECT id, sync_error, created_at, 'inward' AS queue_type FROM local_inward_logs WHERE sync_status = 'pending' AND sync_error IS NOT NULL AND sync_error != '' ORDER BY updated_at DESC LIMIT 10;"
+        );
+    const outward = operatorEmail
+      ? db.getAllSync(
+          "SELECT id, sync_error, created_at, 'outward' AS queue_type FROM local_outward_logs WHERE sync_status = 'pending' AND sync_error IS NOT NULL AND sync_error != '' AND LOWER(operator_email) = LOWER(?) ORDER BY updated_at DESC LIMIT 10;",
+          [operatorEmail]
+        )
+      : db.getAllSync(
+          "SELECT id, sync_error, created_at, 'outward' AS queue_type FROM local_outward_logs WHERE sync_status = 'pending' AND sync_error IS NOT NULL AND sync_error != '' ORDER BY updated_at DESC LIMIT 10;"
+        );
+    return [...inward, ...outward];
+  } catch (error) {
+    console.error('❌ Failed to fetch sync failures:', error);
+    return [];
+  }
+};
+
+export const markInwardAsSynced = (id, referenceNo, serverLogId = null) => {
+  if (!db || !id) return;
+  try {
+    db.runSync(
+      "UPDATE local_inward_logs SET sync_status = 'synced', reference_no = ?, server_log_id = COALESCE(?, server_log_id), sync_error = NULL, updated_at = ? WHERE id = ?;",
+      [referenceNo || null, serverLogId != null ? parseInt(serverLogId, 10) : null, new Date().toISOString(), id]
+    );
+  } catch (error) {
+    console.error('❌ Failed to mark inward as synced:', error);
+  }
+};
+
+export const markOutwardAsSynced = (id, referenceNo, serverLogId = null) => {
+  if (!db || !id) return;
+  try {
+    db.runSync(
+      "UPDATE local_outward_logs SET sync_status = 'synced', reference_no = ?, server_log_id = COALESCE(?, server_log_id), sync_error = NULL, updated_at = ? WHERE id = ?;",
+      [referenceNo || null, serverLogId != null ? parseInt(serverLogId, 10) : null, new Date().toISOString(), id]
+    );
+  } catch (error) {
+    console.error('❌ Failed to mark outward as synced:', error);
+  }
+};
+
+export const markInwardSyncError = (id, message) => {
+  if (!db || !id) return;
+  try {
+    db.runSync(
+      "UPDATE local_inward_logs SET sync_error = ?, updated_at = ? WHERE id = ?;",
+      [String(message || 'Upload failed').slice(0, 500), new Date().toISOString(), id]
+    );
+  } catch (error) {
+    console.error('❌ Failed to record inward sync error:', error);
+  }
+};
+
+export const markOutwardSyncError = (id, message) => {
+  if (!db || !id) return;
+  try {
+    db.runSync(
+      "UPDATE local_outward_logs SET sync_error = ?, updated_at = ? WHERE id = ?;",
+      [String(message || 'Upload failed').slice(0, 500), new Date().toISOString(), id]
+    );
+  } catch (error) {
+    console.error('❌ Failed to record outward sync error:', error);
+  }
+};
+
+export const queueLocalActivity = ({ action, logType, description, remark, permissionReq } = {}) => {
+  if (!db) return null;
+  const act = String(action || '').trim();
+  const desc = String(description || '').trim();
+  if (!act || !desc) return null;
+  try {
+    const result = db.runSync(
+      `INSERT INTO local_activity_queue (action, log_type, description, remark, permission_req, sync_status)
+       VALUES (?, ?, ?, ?, ?, 'pending');`,
+      [
+        act,
+        String(logType || 'DO_CHANGE'),
+        desc,
+        String(remark || '').trim() || null,
+        permissionReq != null && Number.isFinite(Number(permissionReq)) ? Number(permissionReq) : null
+      ]
+    );
+    return result?.lastInsertRowId || result?.lastInsertRowid || null;
+  } catch (error) {
+    console.error('❌ Failed to queue operator activity:', error);
+    return null;
+  }
+};
+
+export const getPendingActivities = () => {
+  if (!db) return [];
+  try {
+    return db.getAllSync("SELECT * FROM local_activity_queue WHERE sync_status = 'pending' ORDER BY id ASC;") || [];
+  } catch (error) {
+    console.error('❌ Failed to fetch pending activities:', error);
+    return [];
+  }
+};
+
+export const markActivitySynced = (id) => {
+  if (!db || id == null) return;
+  try {
+    db.runSync("DELETE FROM local_activity_queue WHERE id = ?;", [id]);
+  } catch (error) {
+    console.error('❌ Failed to mark activity synced:', error);
+  }
+};
+
+export const countPendingSyncItems = (warehouseName, operatorName, operatorEmail) => {
+  return (
+    getPendingAssignments(warehouseName).length +
+    getPendingInspections(operatorName).length +
+    getPendingInwardLogs(operatorEmail).length +
+    getPendingOutwardLogs(operatorEmail).length +
+    getPendingActivities().length
+  );
 };

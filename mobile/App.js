@@ -108,34 +108,69 @@ export default function App() {
   useEffect(() => {
     const restoreSession = async () => {
       const startedAt = Date.now();
+      let resolvedApiUrl = PRODUCTION_API_URL;
       try {
         const storedToken = await AsyncStorage.getItem('user_token');
         const storedUser = await AsyncStorage.getItem('user_profile');
         const storedApiUrl = await AsyncStorage.getItem('api_url');
-        if (storedToken && storedUser) {
-          const parsed = JSON.parse(storedUser);
-          const role = parsed?.role;
-          // Mobile roles only — keep each role as-is (do not remap sub_admin → customer)
-          if (role === 'do_operator' || role === 'customer' || role === 'sub_admin') {
-            setToken(storedToken);
-            setUser(parsed);
-          } else {
-            await AsyncStorage.multiRemove(['user_token', 'user_profile']);
-          }
-        }
+
         // Restore last chosen server (production or local)
         if (storedApiUrl && storedApiUrl.trim()) {
           let nextApi = storedApiUrl.replace(/\/$/, '');
-          // LAN IP changes often — refresh local URL from Metro host
           if (isLocalApiUrl(nextApi)) {
             nextApi = getLocalApiUrl();
             await AsyncStorage.setItem('api_url', nextApi);
             console.log('[api] refreshed local server URL →', nextApi);
           }
+          resolvedApiUrl = nextApi;
           setApiUrl(nextApi);
         } else {
           setApiUrl(PRODUCTION_API_URL);
           await AsyncStorage.setItem('api_url', PRODUCTION_API_URL);
+        }
+
+        if (storedToken && storedUser) {
+          const parsed = JSON.parse(storedUser);
+          const role = parsed?.role;
+          const isMobileRole =
+            role === 'do_operator' || role === 'customer' || role === 'sub_admin';
+
+          if (!isMobileRole) {
+            await AsyncStorage.multiRemove(['user_token', 'user_profile']);
+          } else {
+            let nextUser = parsed;
+            let keepSession = true;
+            try {
+              const meRes = await fetch(`${resolvedApiUrl}/api/auth/me`, {
+                headers: {
+                  Authorization: `Bearer ${storedToken}`,
+                  Accept: 'application/json'
+                }
+              });
+              if (meRes.status === 401 || meRes.status === 403) {
+                keepSession = false;
+                await AsyncStorage.multiRemove(['user_token', 'user_profile']);
+                console.warn('[auth] Stored session expired or revoked — login required.');
+              } else if (meRes.ok) {
+                const meData = await meRes.json().catch(() => ({}));
+                if (meData?.user) {
+                  nextUser = {
+                    ...parsed,
+                    ...meData.user,
+                    role: meData.user.role || parsed.role
+                  };
+                  await AsyncStorage.setItem('user_profile', JSON.stringify(nextUser));
+                }
+              }
+            } catch (networkErr) {
+              console.warn('[auth] Session check skipped (offline):', networkErr.message);
+            }
+
+            if (keepSession) {
+              setToken(storedToken);
+              setUser(nextUser);
+            }
+          }
         }
       } catch (err) {
         console.warn('Failed to restore session:', err);
@@ -157,7 +192,7 @@ export default function App() {
       console.log('[deep-link]', url);
     };
 
-    Linking.getInitialURL().then(handleUrl).catch(() => {});
+    Linking.getInitialURL().then(handleUrl).catch(() => { });
     const sub = Linking.addEventListener('url', ({ url }) => handleUrl(url));
     return () => sub.remove();
   }, []);

@@ -20,7 +20,8 @@
         "NSCameraUsageDescription": "ReeferON needs camera access to capture temperature sensor photos for daily chamber logs.",
         "NSPhotoLibraryUsageDescription": "ReeferON needs photo library access when you choose or save verification images.",
         "NSPhotoLibraryAddUsageDescription": "ReeferON may save captured temperature photos to your library when you export or share them.",
-        "NSUserNotificationsUsageDescription": "ReeferON sends reminders for morning and evening chamber inspection tasks."
+        "NSUserNotificationsUsageDescription": "ReeferON sends reminders for morning and evening chamber inspection tasks.",
+        "NSLocationWhenInUseUsageDescription": "ReeferON records GPS coordinates when you capture verification photos so supervisors can verify where photos were taken."
       }
     },
     "android": {
@@ -34,6 +35,8 @@
       "versionCode": 1,
       "permissions": [
         "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.VIBRATE",
         "android.permission.RECEIVE_BOOT_COMPLETED"
@@ -70,6 +73,12 @@
           "color": "#003580",
           "defaultChannel": "task-reminders",
           "sounds": []
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "ReeferON records GPS when you capture verification photos to verify where they were taken."
         }
       ]
     ],
