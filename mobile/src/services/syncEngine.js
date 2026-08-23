@@ -152,6 +152,8 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           body: JSON.stringify({
             chamber_id: item.chamber_id,
             client_name: item.client_name,
+            client_code: item.client_code || null,
+            warehouse_code: item.warehouse_code || userProfile?.warehouse_code || null,
             remark: item.remark,
             chamber_type: item.chamber_type,
             skip_activity: isRename,
@@ -163,7 +165,24 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           syncedCount += 1;
         } else {
           const resData = await response.json().catch(() => ({}));
-          throw new Error(resData.message || resData.error || `Sync failed (${response.status})`);
+          const msg = String(resData.message || resData.error || `Sync failed (${response.status})`);
+          // Client master needs SA approval — remove local pending add so we stop 403 spam.
+          if (
+            response.status === 403 &&
+            /super admin approval|approval is required/i.test(msg)
+          ) {
+            if (isDelete) {
+              // Keep local inactive row; SA must approve delete first.
+              markAssignmentSynced(item.chamber_id, item.client_name, 'add');
+            } else {
+              markAssignmentSynced(item.chamber_id, item.client_name, 'delete');
+            }
+            console.warn(
+              `⚠️ Cleared pending client sync (needs SA approval): ${item.client_name}`
+            );
+            continue;
+          }
+          throw new Error(msg);
         }
       } catch (assignErr) {
         recordFailure(
@@ -182,7 +201,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
       if (assignRes.status === 200) {
         const assignData = await assignRes.json().catch(() => ({}));
         const rows = Array.isArray(assignData?.data) ? assignData.data : [];
-        cacheAssignments(rows, warehouseName);
+        cacheAssignments(rows, warehouseName, userProfile?.warehouse_code);
         assignmentsUpdated = true;
         console.log(`⬇️ Sync Engine: cached ${rows.length} chamber assignment(s) from server`);
       }
@@ -200,6 +219,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
         formData.append('operator_name', log.monitor_supervisor_name);
         formData.append('chamber_id', log.chamber_id.toString());
         formData.append('client_name', log.client_name);
+        if (log.client_code) formData.append('client_code', String(log.client_code).trim());
         formData.append('entry_date', log.entry_date);
         formData.append('entry_time', log.inspection_time);
         formData.append('box_temp', String(log.box_temp));
@@ -224,6 +244,8 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
         const wh = log.warehouse_name || warehouseName;
         const opEmail = log.operator_email || operatorEmail;
         if (wh) formData.append('warehouse_name', String(wh).trim());
+        const whCode = log.warehouse_code || userProfile?.warehouse_code;
+        if (whCode) formData.append('warehouse_code', String(whCode).trim());
         if (opEmail) formData.append('operator_email', String(opEmail).trim());
 
         if (log.temp_sensor_image) {

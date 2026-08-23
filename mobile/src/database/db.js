@@ -88,6 +88,8 @@ export const initDatabase = () => {
     ensureColumn('local_assignments', 'sync_status', "sync_status TEXT DEFAULT 'synced'");
     ensureColumn('local_assignments', 'action', "action TEXT DEFAULT 'none'");
     ensureColumn('local_assignments', 'warehouse_name', "warehouse_name TEXT");
+    ensureColumn('local_assignments', 'warehouse_code', 'warehouse_code TEXT');
+    ensureColumn('local_assignments', 'client_code', 'client_code TEXT');
 
     // ------------------------------------------------------------------
     // 2) Inspection upload queue (offline DO logs)
@@ -135,6 +137,8 @@ export const initDatabase = () => {
       ensureColumn('local_inspections', 'updated_at', 'updated_at TEXT DEFAULT NULL');
       ensureColumn('local_inspections', 'sync_status', "sync_status TEXT DEFAULT 'pending'");
       ensureColumn('local_inspections', 'warehouse_name', 'warehouse_name TEXT');
+      ensureColumn('local_inspections', 'warehouse_code', 'warehouse_code TEXT');
+      ensureColumn('local_inspections', 'client_code', 'client_code TEXT');
       ensureColumn('local_inspections', 'operator_email', 'operator_email TEXT');
       ensureColumn('local_inspections', 'photo_capture_latitude', 'photo_capture_latitude REAL');
       ensureColumn('local_inspections', 'photo_capture_longitude', 'photo_capture_longitude REAL');
@@ -201,6 +205,8 @@ export const initDatabase = () => {
         updated_at TEXT
       );
     `);
+    ensureColumn('local_inward_logs', 'warehouse_code', 'warehouse_code TEXT');
+    ensureColumn('local_outward_logs', 'warehouse_code', 'warehouse_code TEXT');
 
     // ------------------------------------------------------------------
     // 4) Client lot name suggestions (UI picker only)
@@ -312,10 +318,11 @@ export const addClientLotMaster = (clientName) => {
  * Caches the client assignments retrieved from the server.
  * @param {Array} assignments - Array of client assignments [{ chamber_id, chamber_name, client_name }]
  */
-export const cacheAssignments = (assignments, warehouseName) => {
+export const cacheAssignments = (assignments, warehouseName, warehouseCode = null) => {
   if (!db) return;
   try {
     const wh = String(warehouseName || '').trim();
+    const whCode = String(warehouseCode || '').trim();
     // Preserve pending assignments
     const pending = db.getAllSync("SELECT * FROM local_assignments WHERE sync_status = 'pending';");
     
@@ -324,14 +331,16 @@ export const cacheAssignments = (assignments, warehouseName) => {
     
     for (const item of assignments) {
       db.runSync(
-        "INSERT INTO local_assignments (chamber_id, chamber_name, client_name, chamber_type, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, ?, 'synced', 'none', ?);",
+        "INSERT INTO local_assignments (chamber_id, chamber_name, client_name, client_code, chamber_type, status, sync_status, action, warehouse_name, warehouse_code) VALUES (?, ?, ?, ?, ?, ?, 'synced', 'none', ?, ?);",
         [
           item.chamber_id,
           item.chamber_name,
           item.client_name,
+          item.client_code || null,
           item.chamber_type || 'Frozen',
           String(item.status || 'active').toLowerCase() === 'inactive' ? 'inactive' : 'active',
-          item.warehouse_name || wh
+          item.warehouse_name || wh,
+          item.warehouse_code || whCode || null
         ]
       );
     }
@@ -352,8 +361,8 @@ export const cacheAssignments = (assignments, warehouseName) => {
       }
       if (item.action === 'add') {
         db.runSync(
-          "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, chamber_type, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'add', ?);",
-          [item.chamber_id, item.chamber_name, item.client_name, item.remark, item.chamber_type || 'Frozen', item.warehouse_name || wh]
+          "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, client_code, remark, chamber_type, status, sync_status, action, warehouse_name, warehouse_code) VALUES (?, ?, ?, ?, ?, ?, 'active', 'pending', 'add', ?, ?);",
+          [item.chamber_id, item.chamber_name, item.client_name, item.client_code || null, item.remark, item.chamber_type || 'Frozen', item.warehouse_name || wh, item.warehouse_code || whCode || null]
         );
       } else if (item.action === 'delete') {
         db.runSync(
@@ -372,16 +381,20 @@ export const cacheAssignments = (assignments, warehouseName) => {
  * Retrieves cached client assignments from the local SQLite database.
  * @returns {Array} List of local assignments
  */
-export const getLocalAssignments = (warehouseName) => {
+export const getLocalAssignments = (warehouseName, warehouseCode = null) => {
   if (!db) return [];
   try {
     const wh = String(warehouseName || '').trim().toLowerCase();
-    const rows = db.getAllSync("SELECT chamber_id, chamber_name, client_name, remark, chamber_type, status, warehouse_name FROM local_assignments;");
+    const code = String(warehouseCode || '').trim().toLowerCase();
+    const rows = db.getAllSync("SELECT chamber_id, chamber_name, client_name, client_code, remark, chamber_type, status, warehouse_name, warehouse_code FROM local_assignments;");
     return rows.filter((r) => {
       if (r.status === 'inactive') return false;
-      if (!wh) return true;
+      if (!wh && !code) return true;
       const rowWh = String(r.warehouse_name || '').trim().toLowerCase();
-      return !rowWh || rowWh === wh;
+      const rowCode = String(r.warehouse_code || '').trim().toLowerCase();
+      if (code && rowCode) return rowCode === code;
+      if (wh) return !rowWh || rowWh === wh;
+      return true;
     });
   } catch (error) {
     console.error('❌ Failed to read local assignments:', error);
@@ -398,14 +411,15 @@ export const saveInspectionLocally = (log) => {
   try {
     db.runSync(
       `INSERT INTO local_inspections 
-      (id, monitor_supervisor_name, chamber_id, chamber_name, client_name, box_temp, temp_sensor_image, entry_date, inspection_time, box_count, chamber_type, overdue_time, photo_capture_time, photo_capture_latitude, photo_capture_longitude, photo_capture_accuracy, sync_status, shift, created_at, warehouse_name, operator_email) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?);`,
+      (id, monitor_supervisor_name, chamber_id, chamber_name, client_name, client_code, box_temp, temp_sensor_image, entry_date, inspection_time, box_count, chamber_type, overdue_time, photo_capture_time, photo_capture_latitude, photo_capture_longitude, photo_capture_accuracy, sync_status, shift, created_at, warehouse_name, warehouse_code, operator_email) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?);`,
       [
         log.id,
         log.monitor_supervisor_name,
         parseInt(log.chamber_id),
         log.chamber_name,
         log.client_name,
+        log.client_code || null,
         parseFloat(log.box_temp),
         log.temp_sensor_image,
         log.entry_date,
@@ -420,6 +434,7 @@ export const saveInspectionLocally = (log) => {
         log.shift || 'Morning',
         log.created_at || null,
         log.warehouse_name || null,
+        log.warehouse_code || null,
         log.operator_email || null
       ]
     );
@@ -858,13 +873,13 @@ export const deleteInspectionLocally = (date, chamberId, clientName, shift) => {
 /**
  * Adds a new client assignment locally with a remark/reason.
  */
-export const addLocalAssignment = (chamberId, chamberName, clientName, remark, chamberType, warehouseName) => {
+export const addLocalAssignment = (chamberId, chamberName, clientName, remark, chamberType, warehouseName, warehouseCode = null, clientCode = null) => {
   if (!db) return false;
   try {
     const wh = String(warehouseName || '').trim();
     db.runSync(
-      "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, chamber_type, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'add', ?);",
-      [parseInt(chamberId), chamberName, clientName, remark || '', chamberType || 'Frozen', wh]
+      "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, client_code, remark, chamber_type, status, sync_status, action, warehouse_name, warehouse_code) VALUES (?, ?, ?, ?, ?, ?, 'active', 'pending', 'add', ?, ?);",
+      [parseInt(chamberId), chamberName, clientName, clientCode || null, remark || '', chamberType || 'Frozen', wh, warehouseCode || null]
     );
     console.log(`➕ Added local client assignment: ${clientName} in ${chamberName} with type: ${chamberType}, remark: ${remark}, warehouse: ${wh}`);
     return true;
@@ -1112,6 +1127,7 @@ export const saveInwardLocally = ({
   photos,
   driverCountryCode = '+91',
   warehouse_name = null,
+  warehouse_code = null,
   operator_email = null,
 }) => {
   if (!db) return null;
@@ -1120,14 +1136,15 @@ export const saveInwardLocally = ({
     const now = new Date().toISOString();
     db.runSync(
       `INSERT INTO local_inward_logs
-      (id, form_json, photos_json, driver_country_code, warehouse_name, operator_email, sync_status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      (id, form_json, photos_json, driver_country_code, warehouse_name, warehouse_code, operator_email, sync_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?);`,
       [
         id,
         JSON.stringify(form || {}),
         JSON.stringify(photos || {}),
         driverCountryCode,
         warehouse_name,
+        warehouse_code,
         operator_email,
         now,
         now,
@@ -1146,6 +1163,7 @@ export const saveOutwardLocally = ({
   photos,
   driverCountryCode = '+91',
   warehouse_name = null,
+  warehouse_code = null,
   operator_email = null,
 }) => {
   if (!db) return null;
@@ -1154,14 +1172,15 @@ export const saveOutwardLocally = ({
     const now = new Date().toISOString();
     db.runSync(
       `INSERT INTO local_outward_logs
-      (id, form_json, photos_json, driver_country_code, warehouse_name, operator_email, sync_status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      (id, form_json, photos_json, driver_country_code, warehouse_name, warehouse_code, operator_email, sync_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?);`,
       [
         id,
         JSON.stringify(form || {}),
         JSON.stringify(photos || {}),
         driverCountryCode,
         warehouse_name,
+        warehouse_code,
         operator_email,
         now,
         now,

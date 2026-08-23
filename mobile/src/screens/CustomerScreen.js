@@ -16,7 +16,8 @@ import {
   TextInput,
   Alert,
   Platform,
-  BackHandler
+  BackHandler,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import FastTouchable from '../components/FastTouchable';
@@ -29,14 +30,24 @@ import {
 import { buildReportReadingRows, latestReadingQty } from '../utils/buildReportReadingRows';
 import {
   DOCK_REPORT_PAGE_SIZE,
-  splitLogPhotoPaths,
-  formatPhotoCaptureMetadataLines,
-  resolveDockImageUrl,
+  resolveLogImageUrl,
+  buildInwardOutwardPhotoItems,
 } from '../utils/customerLogReportHelpers';
+import { formatUserError } from '../utils/userFacingError';
+import { ImagePreviewModal, GpsDetailRow, PhotoGridWithLocation } from '../components/LogDetailPhotoLocation';
+import ListLoadingOverlay from '../components/ListLoadingOverlay';
+import InlineErrorState from '../components/InlineErrorState';
+import {
+  FLATLIST_PERF_PROPS,
+  isBlockingListLoad,
+  isSoftListLoad,
+} from '../utils/listPerf';
 
 const TouchableOpacity = FastTouchable;
 
 const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
+const BOTTOM_SHEET_MAX_H = Math.round(Dimensions.get('window').height * 0.5);
+const BOTTOM_SHEET_SCROLL_H = Math.max(180, BOTTOM_SHEET_MAX_H - 130);
 
 /**
  * Build absolute / data URI for chamber sensor photos.
@@ -65,43 +76,7 @@ function pickLogImage(log) {
 }
 
 function resolveImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
-  if (raw == null) return null;
-  let value = String(raw).trim();
-  if (!value || value === 'null' || value === 'undefined') return null;
-
-  // Already a usable URI
-  if (/^https?:\/\//i.test(value) || value.startsWith('file://') || value.startsWith('content://')) {
-    return value;
-  }
-  if (value.startsWith('data:')) return value;
-
-  // Raw base64 (common when stored without data: prefix)
-  if (/^data:image\//i.test(value)) return value;
-  const looksBase64 =
-    value.length > 200 &&
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
-  if (looksBase64 || value.startsWith('/9j/') || value.startsWith('iVBOR')) {
-    const mime = value.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-    return `data:${mime};base64,${value.replace(/\s/g, '')}`;
-  }
-
-  const base = String(baseUrl || '').replace(/\/$/, '');
-  if (!base) return null;
-
-  // Normalize Windows / leading slashes
-  value = value.replace(/\\/g, '/').replace(/^\/+/, '');
-
-  // Path already includes uploads/...
-  if (value.startsWith('uploads/')) return `${base}/${value}`;
-
-  // Filename only → default sensor folder
-  if (!value.includes('/')) {
-    return `${base}/uploads/${folderHint}/${value}`;
-  }
-
-  return `${base}/${value}`;
+  return resolveLogImageUrl(raw, baseUrl, folderHint);
 }
 
 function buildImageCandidates(raw, apiUrl, folderHint = 'daily_temp_monitor_images') {
@@ -130,11 +105,13 @@ function SensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_ima
   const [idx, setIdx] = useState(0);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
     setIdx(0);
     setFailed(false);
     setLoading(true);
+    setPreviewOpen(false);
   }, [rawPath, apiUrl]);
 
   if (!candidates.length) {
@@ -161,29 +138,48 @@ function SensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_ima
   const uri = candidates[Math.min(idx, candidates.length - 1)];
 
   return (
-    <View>
-      {loading ? (
-        <View style={styles.detailImageLoading}>
-          <ActivityIndicator color="#003580" />
-        </View>
-      ) : null}
-      <Image
-        source={{ uri }}
-        style={[styles.detailImage, loading && { opacity: 0.2 }]}
-        resizeMode="contain"
-        onLoadStart={() => setLoading(true)}
-        onLoad={() => setLoading(false)}
-        onError={() => {
-          if (idx + 1 < candidates.length) {
-            setIdx((v) => v + 1);
-            setLoading(true);
-          } else {
-            setLoading(false);
-            setFailed(true);
-          }
-        }}
+    <>
+      <TouchableOpacity
+        activeOpacity={0.9}
+        onPress={() => setPreviewOpen(true)}
+        disabled={loading}
+        style={{ position: 'relative' }}
+      >
+        {loading ? (
+          <View style={styles.detailImageLoading}>
+            <ActivityIndicator color="#003580" />
+          </View>
+        ) : null}
+        <Image
+          source={{ uri }}
+          style={[styles.detailImage, loading && { opacity: 0.2 }]}
+          resizeMode="contain"
+          onLoadStart={() => setLoading(true)}
+          onLoad={() => setLoading(false)}
+          onError={() => {
+            if (idx + 1 < candidates.length) {
+              setIdx((v) => v + 1);
+              setLoading(true);
+            } else {
+              setLoading(false);
+              setFailed(true);
+            }
+          }}
+        />
+        {!loading ? (
+          <View style={styles.detailImageViewHint}>
+            <Ionicons name="expand-outline" size={14} color="#fff" />
+            <Text style={styles.detailImageViewHintText}>Tap to view</Text>
+          </View>
+        ) : null}
+      </TouchableOpacity>
+      <ImagePreviewModal
+        visible={previewOpen}
+        uri={uri}
+        label="Sensor photo"
+        onClose={() => setPreviewOpen(false)}
       />
-    </View>
+    </>
   );
 }
 
@@ -224,6 +220,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [dateTo, setDateTo] = useState('All');
   const [openFilter, setOpenFilter] = useState(null); // 'warehouse' | 'client' | null
   const [selectedLog, setSelectedLog] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null); // { uri, label } | null
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [calendarPickMode, setCalendarPickMode] = useState('from'); // 'from' | 'to'
   const [calendarMonth, setCalendarMonth] = useState(new Date());
@@ -233,6 +230,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [refreshing, setRefreshing] = useState(false);
   const [dynamicWarehouses, setDynamicWarehouses] = useState([]);
   const [dynamicClients, setDynamicClients] = useState([]);
+  const [warehouseClientsMap, setWarehouseClientsMap] = useState({});
   const [todayLogItems, setTodayLogItems] = useState([]);
   const [homeUpdates, setHomeUpdates] = useState([]);
   const [homeLoading, setHomeLoading] = useState(false);
@@ -290,6 +288,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       .filter(Boolean);
   }, [user?.allowed_warehouses]);
 
+  const normName = (v) => String(v || '').trim().toLowerCase();
+
   const warehouseOptions = useMemo(() => {
     // Customer must only see assigned warehouses when scope is set
     if (allowedWarehouses.length) return ['All', ...allowedWarehouses];
@@ -297,9 +297,38 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   }, [allowedWarehouses, dynamicWarehouses]);
 
   const clientOptions = useMemo(() => {
-    if (allowedClients.length) return ['All', ...allowedClients];
-    return ['All', ...dynamicClients];
-  }, [allowedClients, dynamicClients]);
+    const base = allowedClients.length ? allowedClients : dynamicClients;
+    if (warehouseFilter === 'All') {
+      return ['All', ...base];
+    }
+    const whKey = Object.keys(warehouseClientsMap).find(
+      (k) => normName(k) === normName(warehouseFilter)
+    );
+    let scoped = whKey ? warehouseClientsMap[whKey] || [] : [];
+    if (allowedClients.length) {
+      scoped = scoped.filter((c) => allowedClients.some((a) => normName(a) === normName(c)));
+    }
+    const list = scoped.length ? scoped : base;
+    return ['All', ...list];
+  }, [allowedClients, dynamicClients, warehouseFilter, warehouseClientsMap]);
+
+  const warehouseFilterSelected = warehouseFilter !== 'All';
+
+  const reportClientOptions = useMemo(() => {
+    const base = allowedClients.length ? allowedClients : reportClients;
+    if (reportWarehouseFilter === 'All') {
+      return ['All', ...base];
+    }
+    const whKey = Object.keys(warehouseClientsMap).find(
+      (k) => normName(k) === normName(reportWarehouseFilter)
+    );
+    let scoped = whKey ? warehouseClientsMap[whKey] || [] : [];
+    if (allowedClients.length) {
+      scoped = scoped.filter((c) => allowedClients.some((a) => normName(a) === normName(c)));
+    }
+    const list = scoped.length ? scoped : base;
+    return ['All', ...list];
+  }, [allowedClients, reportClients, reportWarehouseFilter, warehouseClientsMap]);
 
   const toLocalYmd = (d = new Date()) => {
     const y = d.getFullYear();
@@ -362,7 +391,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     setLogSearch('');
     setLogPage(1);
     if (logsReportsMode === 'inward' || logsReportsMode === 'outward') {
-      applyDateRange('All', 'All');
+      const today = toLocalYmd();
+      applyDateRange(today, today);
     } else {
       clearLogsReportFilters();
     }
@@ -412,6 +442,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
 
   const openCalendar = (mode = 'from') => {
     setOpenFilter(null);
+    setCalendarContext('dock');
     const seed =
       mode === 'to' && dateTo !== 'All'
         ? dateTo
@@ -437,8 +468,6 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     return days;
   };
 
-  const normName = (v) => String(v || '').trim().toLowerCase();
-
   const applyScope = useCallback(
     (items, whFilter = 'All', clFilter = 'All') => {
       return (items || []).filter((row) => {
@@ -449,14 +478,18 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         const clientOk =
           allowedClients.length === 0
             ? true
-            : !!rowClient && allowedClients.some((c) => normName(c) === rowClient);
+            : allowedClients.some((c) => {
+                const token = normName(c);
+                return token && (token === rowClient || token === normName(row.client_code) || token === normName(row.inward_client_code) || token === normName(row.outward_client_code));
+              });
 
-        // Strict: if customer has assigned warehouses, row must match one of them
-        // (no bypass for missing warehouse_name)
         const whOk =
           allowedWarehouses.length === 0
             ? true
-            : !!rowWh && allowedWarehouses.some((w) => normName(w) === rowWh);
+            : allowedWarehouses.some((w) => {
+                const token = normName(w);
+                return token && (token === rowWh || token === normName(row.warehouse_code));
+              });
 
         // UI filter chips (must also stay inside assigned scope)
         const whFilterOk =
@@ -519,6 +552,65 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       setClientFilter('All');
     }
   }, [allowedWarehouses, allowedClients, warehouseFilter, clientFilter]);
+
+  const loadFilterScope = useCallback(async () => {
+    if (!apiUrl || !token) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/dashboard/inventory-filter-options`, {
+        headers: authHeaders
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      const map = {};
+      const whNames = [];
+      (Array.isArray(data?.warehouses) ? data.warehouses : []).forEach((w) => {
+        const name = String(w.name || w.warehouse_name || '').trim();
+        if (!name) return;
+        whNames.push(name);
+        const clients = (Array.isArray(w.clients) ? w.clients : [])
+          .map((c) => String(c || '').trim())
+          .filter(Boolean);
+        map[name] = [...new Set(clients)].sort((a, b) => a.localeCompare(b));
+      });
+      setWarehouseClientsMap(map);
+      if (allowedWarehouses.length === 0 && whNames.length) {
+        setDynamicWarehouses((prev) => {
+          const merged = [...new Set([...prev, ...whNames])].sort((a, b) => a.localeCompare(b));
+          return merged;
+        });
+      }
+    } catch (_) {
+      // keep last map if offline
+    }
+  }, [apiUrl, token, authHeaders, allowedWarehouses.length]);
+
+  useEffect(() => {
+    loadFilterScope();
+  }, [loadFilterScope]);
+
+  useEffect(() => {
+    if (warehouseFilter === 'All') {
+      if (clientFilter !== 'All') setClientFilter('All');
+      return;
+    }
+    if (clientFilter === 'All') return;
+    const opts = clientOptions.filter((o) => o !== 'All');
+    if (opts.length && !opts.some((o) => normName(o) === normName(clientFilter))) {
+      setClientFilter('All');
+    }
+  }, [warehouseFilter, clientOptions, clientFilter]);
+
+  useEffect(() => {
+    if (reportWarehouseFilter === 'All') {
+      if (reportClientFilter !== 'All') setReportClientFilter('All');
+      return;
+    }
+    if (reportClientFilter === 'All') return;
+    const opts = reportClientOptions.filter((o) => o !== 'All');
+    if (opts.length && !opts.some((o) => normName(o) === normName(reportClientFilter))) {
+      setReportClientFilter('All');
+    }
+  }, [reportWarehouseFilter, reportClientOptions, reportClientFilter]);
 
   useEffect(() => {
     if (
@@ -638,14 +730,9 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         .slice(0, 12);
       setHomeUpdates(scopedUpdates);
     } catch (err) {
-      const msg =
-        err?.message === 'Network request failed'
-          ? `Cannot reach server: ${apiUrl}. Open Login settings → Local server, or use Production.`
-          : err.message || 'Failed to load overview.';
-      console.warn('Customer home overview failed:', msg);
       setTodayLogItems([]);
       setHomeUpdates([]);
-      setHomeError(msg);
+      setHomeError(formatUserError(err, { apiUrl, context: 'Failed to load overview' }));
     } finally {
       setHomeLoading(false);
       setHomeRefreshing(false);
@@ -741,10 +828,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         setDynamicClients(cl);
       }
     } catch (err) {
-      const msg =
-        err?.message === 'Network request failed'
-          ? `Cannot reach server: ${apiUrl}. Open Login settings → Local server, or use Production.`
-          : err.message || 'Failed to load logs.';
+      const msg = formatUserError(err, { apiUrl, context: 'Failed to load logs' });
       console.warn('Customer logs load failed:', msg);
       setLogs([]);
       setLogsError(msg);
@@ -774,10 +858,11 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   }, [loadLogs]);
 
   const clearDockLogFilters = useCallback(() => {
+    const today = toLocalYmd();
     setLogSearch('');
     setLogPage(1);
-    applyDateRange('All', 'All');
-    loadLogs({ page: 1, search: '', fromDate: '', toDate: '' });
+    applyDateRange(today, today);
+    loadLogs({ page: 1, search: '', fromDate: today, toDate: today });
   }, [loadLogs]);
 
   const goLogPrevPage = useCallback(() => {
@@ -817,10 +902,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       // Double-scope on client (backend also scopes for customer role)
       setInventoryRows(applyScope(rows, warehouseFilter, clientFilter));
     } catch (err) {
-      const msg =
-        err?.message === 'Network request failed'
-          ? `Cannot reach server: ${apiUrl}. Open Login settings → Local server, or use Production.`
-          : err.message || 'Failed to load inventory.';
+      const msg = formatUserError(err, { apiUrl, context: 'Failed to load inventory' });
       console.warn('Customer inventory load failed:', msg);
       setInventoryRows([]);
       setInventoryError(msg);
@@ -860,12 +942,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       setReportClients(Array.from(clientSet).sort((a, b) => a.localeCompare(b)));
       setReportRows(scoped);
     } catch (err) {
-      const msg =
-        err?.message === 'Network request failed'
-          ? `Cannot reach server: ${apiUrl}. Open Login settings → Local server, or use Production.`
-          : err.message || 'Failed to load inventory reports.';
+      setReportsError(formatUserError(err, { apiUrl, context: 'Failed to load inventory reports' }));
       setReportRows([]);
-      setReportsError(msg);
     } finally {
       setReportsLoading(false);
       setReportsRefreshing(false);
@@ -1137,7 +1215,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         logsReportDateFrom <= logsReportDateTo ? logsReportDateTo : logsReportDateFrom;
       const qs = new URLSearchParams({
         page: '1',
-        limit: '500',
+        limit: '150',
         fromDate: from,
         toDate: to,
       });
@@ -1199,10 +1277,6 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const reportWarehouseOptions = useMemo(
     () => ['All', ...(allowedWarehouses.length ? allowedWarehouses : reportWarehouses)],
     [allowedWarehouses, reportWarehouses]
-  );
-  const reportClientOptions = useMemo(
-    () => ['All', ...(allowedClients.length ? allowedClients : reportClients)],
-    [allowedClients, reportClients]
   );
 
   const to24hTime = (value) => {
@@ -1433,6 +1507,60 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     }
   }, [queryMessage, apiUrl, token, authHeaders]);
 
+  const selectWarehouseFilter = (opt) => {
+    setWarehouseFilter(opt);
+    setClientFilter('All');
+  };
+
+  const pickFilterOption = (opt) => {
+    if (openFilter === 'warehouse') {
+      selectWarehouseFilter(opt);
+      if (opt === 'All') {
+        setOpenFilter(null);
+        return;
+      }
+      const whKey = Object.keys(warehouseClientsMap).find(
+        (k) => normName(k) === normName(opt)
+      );
+      const clientList = whKey ? warehouseClientsMap[whKey] || [] : [];
+      setOpenFilter(clientList.length ? 'client' : null);
+      return;
+    }
+    if (openFilter === 'client') {
+      setClientFilter(opt);
+      setOpenFilter(null);
+      return;
+    }
+    if (openFilter === 'reportWarehouse') {
+      setReportWarehouseFilter(opt);
+      setReportClientFilter('All');
+      if (opt === 'All') {
+        setOpenFilter(null);
+        return;
+      }
+      const whKey = Object.keys(warehouseClientsMap).find(
+        (k) => normName(k) === normName(opt)
+      );
+      const clientList = whKey ? warehouseClientsMap[whKey] || [] : [];
+      setOpenFilter(clientList.length ? 'reportClient' : null);
+      return;
+    }
+    if (openFilter === 'reportClient') {
+      setReportClientFilter(opt);
+      setOpenFilter(null);
+    }
+  };
+
+  const resolveDockPhotoUri = useCallback((path, hint) => {
+    const local =
+      resolveImageUrl(path, apiUrl, hint) ||
+      resolveImageUrl(path, PRODUCTION_API_URL, hint);
+    if (local && /^https?:\/\/res\.cloudinary\.com\//i.test(String(path || ''))) {
+      return [local, String(path).trim()];
+    }
+    return local;
+  }, [apiUrl]);
+
   const renderFilterDropdown = (key, label, options, selected, onSelect, formatOption) => {
     const open = openFilter === key;
     const selectedLabel = formatOption ? formatOption(selected) : selected;
@@ -1482,11 +1610,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
           ? reportWarehouseFilter
           : reportClientFilter;
     const onSelect = (v) => {
-      if (isWarehouse) setWarehouseFilter(v);
-      else if (isClient) setClientFilter(v);
-      else if (isReportWarehouse) setReportWarehouseFilter(v);
-      else setReportClientFilter(v);
-      setOpenFilter(null);
+      pickFilterOption(v);
     };
 
     return (
@@ -1775,7 +1899,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                     setClientFilter('All');
                     setLogSearch('');
                     setLogPage(1);
-                    applyDateRange('All', 'All');
+                    const today = toLocalYmd();
+                    applyDateRange(today, today);
                   }
                 }}
               >
@@ -1895,7 +2020,11 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
             {logsReportsMode === 'temperature' ? renderLogsDateSlider() : null}
 
             {logsReportsMode === 'temperature' ? (
-              chamberReportsLoading && !refreshing ? (
+              isBlockingListLoad(
+                chamberReportsLoading,
+                refreshing,
+                getFilteredLogsTemperature().length
+              ) ? (
                 <View style={styles.reportsCenterState}>
                   <ActivityIndicator size="large" color="#003580" />
                   <Text style={styles.reportsStateText}>Loading temperature logs…</Text>
@@ -1909,54 +2038,67 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                   </TouchableOpacity>
                 </View>
               ) : (
-                <FlatList
-                  data={getFilteredLogsTemperature()}
-                  keyExtractor={(item, idx) =>
-                    `${item.server_log_id || item.id || 'log'}-${item.entry_date || 'd'}-${idx}`
-                  }
-                  renderItem={({ item }) => {
-                    const temp =
-                      item.box_temp != null
-                        ? `${item.box_temp}°C`
-                        : item.chamber_temp != null
-                          ? `${item.chamber_temp}°C`
-                          : '—';
-                    return (
-                      <TouchableOpacity
-                        style={styles.dailyCard}
-                        onPress={() => setSelectedLog({ ...item, _logType: 'chambers' })}
-                        activeOpacity={0.85}
-                      >
-                        <View style={styles.dailyTop}>
-                          <View style={styles.dailyTextCol}>
-                            <Text style={styles.dailyChamber} numberOfLines={1}>
-                              {item.client_name || 'Client'}
-                            </Text>
-                            <Text style={styles.dailyMetaLine} numberOfLines={1}>
-                              {item.chamber_name || 'Chamber'}
-                              {item.shift ? ` · ${item.shift}` : ''}
-                              {` · ${chamberZoneStyle(resolveReportLotType(item)).type}`}
-                            </Text>
+                <View style={{ flex: 1 }}>
+                  <FlatList
+                    data={getFilteredLogsTemperature()}
+                    keyExtractor={(item, idx) =>
+                      `${item.server_log_id || item.id || 'log'}-${item.entry_date || 'd'}-${idx}`
+                    }
+                    renderItem={({ item }) => {
+                      const temp =
+                        item.box_temp != null
+                          ? `${item.box_temp}°C`
+                          : item.chamber_temp != null
+                            ? `${item.chamber_temp}°C`
+                            : '—';
+                      return (
+                        <TouchableOpacity
+                          style={styles.dailyCard}
+                          onPress={() => setSelectedLog({ ...item, _logType: 'chambers' })}
+                          activeOpacity={0.85}
+                        >
+                          <View style={styles.dailyTop}>
+                            <View style={styles.dailyTextCol}>
+                              <Text style={styles.dailyChamber} numberOfLines={1}>
+                                {item.client_name || 'Client'}
+                              </Text>
+                              <Text style={styles.dailyMetaLine} numberOfLines={1}>
+                                {item.chamber_name || 'Chamber'}
+                                {item.shift ? ` · ${item.shift}` : ''}
+                                {` · ${chamberZoneStyle(resolveReportLotType(item)).type}`}
+                              </Text>
+                            </View>
+                            <View style={styles.totalBoxesCol}>
+                              <Text style={styles.totalBoxesValue}>{temp}</Text>
+                              <Text style={styles.totalBoxesLabel}>
+                                {item.formatted_date || item.entry_date || '—'}
+                              </Text>
+                            </View>
                           </View>
-                          <View style={styles.totalBoxesCol}>
-                            <Text style={styles.totalBoxesValue}>{temp}</Text>
-                            <Text style={styles.totalBoxesLabel}>
-                              {item.formatted_date || item.entry_date || '—'}
-                            </Text>
-                          </View>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  }}
-                  contentContainerStyle={styles.reportsListBody}
-                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-                  ListEmptyComponent={
-                    <View style={styles.reportsCenterState}>
-                      <Ionicons name="thermometer-outline" size={28} color="#94a3b8" />
-                      <Text style={styles.reportsStateText}>No temperature logs for selected filters.</Text>
-                    </View>
-                  }
-                />
+                        </TouchableOpacity>
+                      );
+                    }}
+                    contentContainerStyle={styles.reportsListBody}
+                    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+                    ListEmptyComponent={
+                      <View style={styles.reportsCenterState}>
+                        <Ionicons name="thermometer-outline" size={28} color="#94a3b8" />
+                        <Text style={styles.reportsStateText}>
+                          No temperature logs for selected filters.
+                        </Text>
+                      </View>
+                    }
+                    {...FLATLIST_PERF_PROPS}
+                  />
+                  <ListLoadingOverlay
+                    visible={isSoftListLoad(
+                      chamberReportsLoading,
+                      refreshing,
+                      getFilteredLogsTemperature().length
+                    )}
+                    label="Updating logs…"
+                  />
+                </View>
               )
             ) : null}
           </View>
@@ -1965,7 +2107,9 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
             <View style={styles.filtersCard}>
               <View style={styles.filterChipRow}>
                 {renderFilterDropdown('warehouse', 'Warehouse', warehouseOptions, warehouseFilter)}
-                {renderFilterDropdown('client', 'Client', clientOptions, clientFilter)}
+                {warehouseFilterSelected
+                  ? renderFilterDropdown('client', 'Client', clientOptions, clientFilter)
+                  : null}
               </View>
               <View style={styles.dockReportFilterBar}>
                 <View style={styles.dockReportSearchRow}>
@@ -1981,22 +2125,50 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                   />
                 </View>
                 <View style={styles.dockReportDateRow}>
-                  <TextInput
-                    style={styles.dockReportDateInput}
-                    placeholder="From YYYY-MM-DD"
-                    placeholderTextColor="#94a3b8"
-                    value={dateFrom === 'All' ? '' : dateFrom}
-                    onChangeText={(v) => setDateFrom(v || 'All')}
-                    autoCapitalize="none"
-                  />
-                  <TextInput
-                    style={styles.dockReportDateInput}
-                    placeholder="To YYYY-MM-DD"
-                    placeholderTextColor="#94a3b8"
-                    value={dateTo === 'All' ? '' : dateTo}
-                    onChangeText={(v) => setDateTo(v || 'All')}
-                    autoCapitalize="none"
-                  />
+                  <TouchableOpacity
+                    style={[
+                      styles.filterChip,
+                      dateFrom !== 'All' && styles.filterChipActive,
+                      { flex: 1 },
+                    ]}
+                    onPress={() => openCalendar('from')}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.filterChipTextWrap}>
+                      <Text style={styles.filterChipLabel}>From</Text>
+                      <Text
+                        style={[
+                          styles.filterChipValue,
+                          dateFrom !== 'All' && styles.filterChipValueActive,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {dateFrom === 'All' ? 'All' : formatDateLabel(dateFrom)}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.filterChip,
+                      dateTo !== 'All' && styles.filterChipActive,
+                      { flex: 1 },
+                    ]}
+                    onPress={() => openCalendar('to')}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.filterChipTextWrap}>
+                      <Text style={styles.filterChipLabel}>To</Text>
+                      <Text
+                        style={[
+                          styles.filterChipValue,
+                          dateTo !== 'All' && styles.filterChipValueActive,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {dateTo === 'All' ? 'All' : formatDateLabel(dateTo)}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
                 </View>
                 <View style={styles.dockReportFilterActions}>
                   <TouchableOpacity style={styles.dockReportFilterBtnPrimary} onPress={applyDockLogFilters}>
@@ -2017,65 +2189,66 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
               </Text>
             </View>
 
-            {logsLoading && !refreshing ? (
+            {isBlockingListLoad(logsLoading, refreshing, logs.length) ? (
               <View style={styles.centerState}>
                 <ActivityIndicator size="large" color="#003580" />
                 <Text style={styles.stateText}>
                   Loading {logsReportsMode === 'inward' ? 'inward' : 'outward'} logs…
                 </Text>
               </View>
-            ) : logsError ? (
-              <View style={styles.centerState}>
-                <Ionicons name="warning-outline" size={28} color="#dc2626" />
-                <Text style={styles.stateText}>{logsError}</Text>
-                <TouchableOpacity style={styles.retryBtn} onPress={loadLogs}>
-                  <Text style={styles.retryText}>Retry</Text>
-                </TouchableOpacity>
-              </View>
+            ) : logsError && logs.length === 0 ? (
+              <InlineErrorState message={logsError} onRetry={loadLogs} icon="warning-outline" />
             ) : (
-              <FlatList
-                data={logs}
-                keyExtractor={(item, idx) =>
-                  String(item.id || item.inward_id || item.outward_id || item.reference_no || idx)
-                }
-                renderItem={renderLogItem}
-                contentContainerStyle={styles.listBodyCompact}
-                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-                ListFooterComponent={
-                  logTotal > 0 ? (
-                    <View style={styles.dockReportPagination}>
-                      <TouchableOpacity
-                        style={[styles.dockReportPageBtn, logPage <= 1 && styles.dockReportPageBtnDisabled]}
-                        disabled={logPage <= 1}
-                        onPress={goLogPrevPage}
-                      >
-                        <Text style={styles.dockReportPageBtnText}>Previous</Text>
-                      </TouchableOpacity>
-                      <Text style={styles.dockReportPageMeta}>
-                        {(logPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}–
-                        {Math.min(logPage * DOCK_REPORT_PAGE_SIZE, logTotal)} of {logTotal}
+              <View style={{ flex: 1 }}>
+                <FlatList
+                  data={logs}
+                  keyExtractor={(item, idx) =>
+                    String(item.id || item.inward_id || item.outward_id || item.reference_no || idx)
+                  }
+                  renderItem={renderLogItem}
+                  contentContainerStyle={styles.listBodyCompact}
+                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+                  ListFooterComponent={
+                    logTotal > 0 ? (
+                      <View style={styles.dockReportPagination}>
+                        <TouchableOpacity
+                          style={[styles.dockReportPageBtn, logPage <= 1 && styles.dockReportPageBtnDisabled]}
+                          disabled={logPage <= 1 || logsLoading}
+                          onPress={goLogPrevPage}
+                        >
+                          <Text style={styles.dockReportPageBtnText}>Previous</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.dockReportPageMeta}>
+                          {(logPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}–
+                          {Math.min(logPage * DOCK_REPORT_PAGE_SIZE, logTotal)} of {logTotal}
+                        </Text>
+                        <TouchableOpacity
+                          style={[styles.dockReportPageBtn, !logHasMore && styles.dockReportPageBtnDisabled]}
+                          disabled={!logHasMore || logsLoading}
+                          onPress={goLogNextPage}
+                        >
+                          <Text style={styles.dockReportPageBtnText}>Next</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null
+                  }
+                  ListEmptyComponent={
+                    <View style={styles.centerState}>
+                      <Ionicons name="document-text-outline" size={28} color="#94a3b8" />
+                      <Text style={styles.stateText}>
+                        {logSearch || dateFrom !== 'All' || dateTo !== 'All'
+                          ? 'No records match your filters.'
+                          : 'No records for your assigned clients yet.'}
                       </Text>
-                      <TouchableOpacity
-                        style={[styles.dockReportPageBtn, !logHasMore && styles.dockReportPageBtnDisabled]}
-                        disabled={!logHasMore}
-                        onPress={goLogNextPage}
-                      >
-                        <Text style={styles.dockReportPageBtnText}>Next</Text>
-                      </TouchableOpacity>
                     </View>
-                  ) : null
-                }
-                ListEmptyComponent={
-                  <View style={styles.centerState}>
-                    <Ionicons name="document-text-outline" size={28} color="#94a3b8" />
-                    <Text style={styles.stateText}>
-                      {logSearch || dateFrom !== 'All' || dateTo !== 'All'
-                        ? 'No records match your filters.'
-                        : 'No records for your assigned clients yet.'}
-                    </Text>
-                  </View>
-                }
-              />
+                  }
+                  {...FLATLIST_PERF_PROPS}
+                />
+                <ListLoadingOverlay
+                  visible={isSoftListLoad(logsLoading, refreshing, logs.length)}
+                  label="Loading page…"
+                />
+              </View>
             )}
           </>
         )}
@@ -2268,35 +2441,40 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
             </Text>
           </View>
 
-          {reportsLoading && !reportsRefreshing ? (
+          {isBlockingListLoad(reportsLoading, reportsRefreshing, filteredLogsInventoryRows.length) ? (
             <View style={styles.reportsCenterState}>
               <ActivityIndicator size="large" color="#003580" />
               <Text style={styles.reportsStateText}>Loading inventory…</Text>
             </View>
-          ) : reportsError ? (
-            <View style={styles.reportsCenterState}>
-              <Ionicons name="warning-outline" size={28} color="#dc2626" />
-              <Text style={styles.reportsStateText}>{reportsError}</Text>
-              <TouchableOpacity style={styles.reportsRetryBtn} onPress={loadReports}>
-                <Text style={styles.reportsRetryText}>Retry</Text>
-              </TouchableOpacity>
-            </View>
+          ) : reportsError && filteredLogsInventoryRows.length === 0 ? (
+            <InlineErrorState message={reportsError} onRetry={loadReports} icon="warning-outline" />
           ) : (
-            <FlatList
-              data={filteredLogsInventoryRows}
-              keyExtractor={(item, idx) =>
-                `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${item.chamber_name || 'ch'}-${idx}`
-              }
-              renderItem={renderLogsInventoryItem}
-              contentContainerStyle={styles.reportsListBody}
-              refreshControl={<RefreshControl refreshing={reportsRefreshing} onRefresh={onRefresh} />}
-              ListEmptyComponent={
-                <View style={styles.reportsCenterState}>
-                  <Ionicons name="cube-outline" size={28} color="#94a3b8" />
-                  <Text style={styles.reportsStateText}>No inventory for selected filters.</Text>
-                </View>
-              }
-            />
+            <View style={{ flex: 1 }}>
+              <FlatList
+                data={filteredLogsInventoryRows}
+                keyExtractor={(item, idx) =>
+                  `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${item.chamber_name || 'ch'}-${idx}`
+                }
+                renderItem={renderLogsInventoryItem}
+                contentContainerStyle={styles.reportsListBody}
+                refreshControl={<RefreshControl refreshing={reportsRefreshing} onRefresh={onRefresh} />}
+                ListEmptyComponent={
+                  <View style={styles.reportsCenterState}>
+                    <Ionicons name="cube-outline" size={28} color="#94a3b8" />
+                    <Text style={styles.reportsStateText}>No inventory for selected filters.</Text>
+                  </View>
+                }
+                {...FLATLIST_PERF_PROPS}
+              />
+              <ListLoadingOverlay
+                visible={isSoftListLoad(
+                  reportsLoading,
+                  reportsRefreshing,
+                  filteredLogsInventoryRows.length
+                )}
+                label="Updating inventory…"
+              />
+            </View>
           )}
         </View>
       </View>
@@ -2449,35 +2627,6 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     );
   };
 
-  const renderDockPhotoGrid = (photoItems, folderHint) => {
-    if (!photoItems.length) return null;
-    return (
-      <View style={styles.inwardDetailPhotoGrid}>
-        {photoItems.map((photo) => {
-          const uri =
-            resolveDockImageUrl(photo.path, apiUrl, PRODUCTION_API_URL, folderHint) ||
-            resolveImageUrl(photo.path, apiUrl, folderHint);
-          return (
-            <View key={photo.key} style={styles.inwardDetailPhotoCell}>
-              <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
-                {photo.label}
-              </Text>
-              <View style={styles.inwardDetailPhotoFrame}>
-                {uri ? (
-                  <Image source={{ uri }} style={styles.inwardDetailPhotoImage} resizeMode="cover" />
-                ) : (
-                  <View style={styles.inwardDetailPhotoPlaceholder}>
-                    <Ionicons name="image-outline" size={22} color="#94a3b8" />
-                  </View>
-                )}
-              </View>
-            </View>
-          );
-        })}
-      </View>
-    );
-  };
-
   const renderDoDetailRow = (label, value) => {
     if (value == null || value === '') return null;
     return (
@@ -2553,28 +2702,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
           ],
         },
       ];
-      const photoGroups = [
-        { label: 'Invoice', paths: splitLogPhotoPaths(item.inward_invoice_photos) },
-        { label: 'Vehicle temp', paths: splitLogPhotoPaths(item.inward_vehicle_temp_photo) },
-        { label: 'Material temp', paths: splitLogPhotoPaths(item.inward_material_temp_photo) },
-        { label: 'Vehicle back', paths: splitLogPhotoPaths(item.inward_vehicle_back_side_photo) },
-        {
-          label: 'Back with material',
-          paths: splitLogPhotoPaths(item.inward_vehicle_back_side_photo_with_material),
-        },
-        { label: 'Count sheet', paths: splitLogPhotoPaths(item.inward_count_sheet_photo) },
-        { label: 'Seal', paths: splitLogPhotoPaths(item.inward_vehicle_seal_photo) },
-        { label: 'POD', paths: splitLogPhotoPaths(item.inward_pod_photo) },
-        { label: 'Damage boxes', paths: splitLogPhotoPaths(item.inward_damage_boxes_photo) },
-      ].filter((g) => g.paths.length > 0);
-      const photoItems = photoGroups.flatMap((group) =>
-        group.paths.map((path, idx) => ({
-          key: `${group.label}-${idx}`,
-          label: group.paths.length > 1 ? `${group.label} ${idx + 1}` : group.label,
-          path,
-        }))
-      );
-      const metaLines = formatPhotoCaptureMetadataLines(item.photo_capture_metadata);
+      const photoItems = buildInwardOutwardPhotoItems({ ...item, _logType: 'inward' });
 
       return (
         <Modal visible animationType="slide" onRequestClose={() => setSelectedLog(null)}>
@@ -2610,18 +2738,15 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                   {section.rows.map(([label, value]) => renderDoDetailRow(label, value))}
                 </View>
               ))}
-              {metaLines.length > 0 ? (
-                <View style={styles.doDetailCard}>
-                  <Text style={styles.doDetailSectionTitle}>Photo capture time & location</Text>
-                  {metaLines.map((line) => (
-                    <Text key={line} style={styles.photoMetaLine}>{line}</Text>
-                  ))}
-                </View>
-              ) : null}
               {photoItems.length > 0 ? (
                 <View style={styles.doDetailCard}>
                   <Text style={styles.doDetailSectionTitle}>Photos</Text>
-                  {renderDockPhotoGrid(photoItems, 'inward_images')}
+                  <PhotoGridWithLocation
+                    photoItems={photoItems}
+                    folderHint="inward_images"
+                    photoMeta={item.photo_capture_metadata}
+                    resolveUri={resolveDockPhotoUri}
+                  />
                 </View>
               ) : null}
             </ScrollView>
@@ -2691,31 +2816,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
           ],
         },
       ];
-      const photoGroups = [
-        { label: 'Invoice', paths: splitLogPhotoPaths(item.outward_invoice_photos) },
-        {
-          label: 'Pre vehicle temp',
-          paths: splitLogPhotoPaths(item.outward_pre_vehicle_temp_photo || item.outward_vehicle_temp_photo),
-        },
-        { label: 'Material temp', paths: splitLogPhotoPaths(item.outward_material_temp_photo) },
-        { label: 'Vehicle back', paths: splitLogPhotoPaths(item.outward_vehicle_back_side_photo) },
-        {
-          label: 'Back with material',
-          paths: splitLogPhotoPaths(item.outward_vehicle_back_side_photo_with_material),
-        },
-        { label: 'Count sheet', paths: splitLogPhotoPaths(item.outward_count_sheet_photo) },
-        { label: 'Seal', paths: splitLogPhotoPaths(item.outward_vehicle_seal_photo) },
-        { label: 'POD', paths: splitLogPhotoPaths(item.outward_pod_photo) },
-        { label: 'Damage boxes', paths: splitLogPhotoPaths(item.outward_damage_boxes_photo) },
-      ].filter((g) => g.paths.length > 0);
-      const photoItems = photoGroups.flatMap((group) =>
-        group.paths.map((path, idx) => ({
-          key: `${group.label}-${idx}`,
-          label: group.paths.length > 1 ? `${group.label} ${idx + 1}` : group.label,
-          path,
-        }))
-      );
-      const metaLines = formatPhotoCaptureMetadataLines(item.photo_capture_metadata);
+      const photoItems = buildInwardOutwardPhotoItems({ ...item, _logType: 'outward' });
 
       return (
         <Modal visible animationType="slide" onRequestClose={() => setSelectedLog(null)}>
@@ -2751,18 +2852,15 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                   {section.rows.map(([label, value]) => renderDoDetailRow(label, value))}
                 </View>
               ))}
-              {metaLines.length > 0 ? (
-                <View style={styles.doDetailCard}>
-                  <Text style={styles.doDetailSectionTitle}>Photo capture time & location</Text>
-                  {metaLines.map((line) => (
-                    <Text key={line} style={styles.photoMetaLine}>{line}</Text>
-                  ))}
-                </View>
-              ) : null}
               {photoItems.length > 0 ? (
                 <View style={styles.doDetailCard}>
                   <Text style={styles.doDetailSectionTitle}>Photos</Text>
-                  {renderDockPhotoGrid(photoItems, 'outward_images')}
+                  <PhotoGridWithLocation
+                    photoItems={photoItems}
+                    folderHint="outward_images"
+                    photoMeta={item.photo_capture_metadata}
+                    resolveUri={resolveDockPhotoUri}
+                  />
                 </View>
               ) : null}
             </ScrollView>
@@ -2778,10 +2876,6 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         : item.chamber_temp != null
           ? `${item.chamber_temp}°C`
           : '—';
-    const gpsLine =
-      item.photo_capture_latitude != null && item.photo_capture_longitude != null
-        ? `${parseFloat(item.photo_capture_latitude).toFixed(5)}, ${parseFloat(item.photo_capture_longitude).toFixed(5)}`
-        : null;
 
     return (
       <Modal visible animationType="slide" onRequestClose={() => setSelectedLog(null)}>
@@ -2815,8 +2909,6 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
               {renderDoDetailRow('Supervisor', item.monitor_supervisor_name)}
               {renderDoDetailRow('Operator', item.operator_email)}
               {renderDoDetailRow('Reference', item.reference_no)}
-              {renderDoDetailRow('Photo time', item.photo_capture_time)}
-              {renderDoDetailRow('Photo location (GPS)', gpsLine)}
               {renderDoDetailRow(
                 'Time variance',
                 item.time_variance_minutes != null ? `${item.time_variance_minutes} min` : null
@@ -2831,6 +2923,15 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
             <View style={styles.doDetailCard}>
               <Text style={styles.doDetailSectionTitle}>Sensor photo</Text>
               <SensorPhotoView rawPath={imagePath} apiUrl={apiUrl} folderHint="daily_temp_monitor_images" />
+              <GpsDetailRow
+                label="Photo location (GPS)"
+                lat={item.photo_capture_latitude}
+                lng={item.photo_capture_longitude}
+                accuracy={item.photo_capture_accuracy}
+              />
+              {item.photo_capture_time
+                ? renderDoDetailRow('Photo capture time', item.photo_capture_time)
+                : null}
             </View>
           </ScrollView>
         </SafeAreaView>
@@ -3057,19 +3158,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                     <Text style={styles.stateText}>Loading today logs…</Text>
                   </View>
                 ) : homeError ? (
-                  <View style={styles.centerState}>
-                    <Ionicons name="cloud-offline-outline" size={28} color="#dc2626" />
-                    <Text style={styles.stateText}>{homeError}</Text>
-                    <TouchableOpacity style={styles.retryBtn} onPress={loadHomeOverview}>
-                      <Text style={styles.retryText}>Retry</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.retryBtn, { backgroundColor: '#64748b', marginTop: 8 }]}
-                      onPress={() => onLogout?.()}
-                    >
-                      <Text style={styles.retryText}>Logout & fix server</Text>
-                    </TouchableOpacity>
-                  </View>
+                  <InlineErrorState message={homeError} onRetry={loadHomeOverview} />
                 ) : (
                   <>
                     <View style={[styles.card, styles.adminNotesHomeCard]}>
@@ -3378,11 +3467,17 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       <Modal
         visible={showCalendarModal}
         transparent
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setShowCalendarModal(false)}
       >
         <View style={styles.calendarOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setShowCalendarModal(false)}
+          />
           <View style={styles.calendarCard}>
+            <View style={styles.calendarSheetHandle} />
             <Text style={styles.calendarTitle}>Select date range</Text>
             <Text style={styles.calendarHint}>
               {calendarPickMode === 'from' ? 'Tap start date, then end date' : 'Tap end date to finish'}
@@ -3584,6 +3679,12 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       {renderLogDetailScreen()}
       {renderInventoryDetailModal()}
       {renderFilterPickerModal()}
+      <ImagePreviewModal
+        visible={!!imagePreview}
+        uri={imagePreview?.uri}
+        label={imagePreview?.label}
+        onClose={() => setImagePreview(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -4027,7 +4128,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 20,
-    maxHeight: '70%'
+    maxHeight: BOTTOM_SHEET_MAX_H,
   },
   filterModalHandle: {
     alignSelf: 'center',
@@ -4044,7 +4145,7 @@ const styles = StyleSheet.create({
     marginBottom: 10
   },
   filterModalList: {
-    maxHeight: 360
+    maxHeight: BOTTOM_SHEET_SCROLL_H,
   },
   filterModalItem: {
     flexDirection: 'row',
@@ -4105,20 +4206,28 @@ const styles = StyleSheet.create({
   calendarOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.45)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20
+    justifyContent: 'flex-end',
   },
   calendarCard: {
     width: '100%',
-    maxWidth: 340,
     backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 14,
   },
-  calendarTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
-  calendarHint: { fontSize: 11, color: '#64748b', marginTop: 4, marginBottom: 12 },
-  calendarChipRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  calendarSheetHandle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#cbd5e1',
+    marginBottom: 8,
+  },
+  calendarTitle: { fontSize: 14, fontWeight: '800', color: '#0f172a', marginBottom: 2 },
+  calendarHint: { fontSize: 10, color: '#64748b', marginBottom: 8, fontWeight: '600' },
+  calendarChipRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   calendarModeChip: {
     flex: 1,
     borderRadius: 10,
@@ -4129,7 +4238,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8
   },
   calendarModeChipActive: {
-    borderColor: '#003580',
+    borderColor: '#93c5fd',
     backgroundColor: '#eff6ff'
   },
   calendarModeChipText: { fontSize: 11, fontWeight: '700', color: '#64748b', textAlign: 'center' },
@@ -4138,28 +4247,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12
+    marginBottom: 8
   },
-  calendarMonthText: { fontSize: 14, fontWeight: '800', color: '#0f172a' },
-  calendarWeekRow: { flexDirection: 'row', marginBottom: 6 },
+  calendarMonthText: { fontSize: 13, fontWeight: '800', color: '#0f172a' },
+  calendarWeekRow: { flexDirection: 'row', marginBottom: 4 },
   calendarWeekDay: {
     width: '14.28%',
     textAlign: 'center',
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '800',
     color: '#94a3b8'
   },
   calendarDaysWrap: { flexDirection: 'row', flexWrap: 'wrap' },
   calendarDayCell: {
     width: '14.28%',
-    height: 36,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 18
+    borderRadius: 16
   },
   calendarDaySelected: { backgroundColor: '#003580' },
   calendarDayInRange: { backgroundColor: '#dbeafe' },
-  calendarDayToday: { borderWidth: 1, borderColor: '#003580' },
+  calendarDayToday: { borderWidth: 1, borderColor: '#93c5fd' },
   calendarDayDisabled: { opacity: 0.35 },
   calendarDayText: { fontSize: 12, fontWeight: '600', color: '#0f172a' },
   calendarDayTextSelected: { color: '#ffffff', fontWeight: '800' },
@@ -4167,17 +4276,17 @@ const styles = StyleSheet.create({
   calendarSuggestRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 14
+    gap: 6,
+    marginTop: 10
   },
   calendarDoneBtn: {
-    marginTop: 14,
-    backgroundColor: '#003580',
+    marginTop: 12,
+    alignItems: 'center',
+    paddingVertical: 10,
     borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: 'center'
+    backgroundColor: '#f1f5f9',
   },
-  calendarDoneText: { color: '#ffffff', fontWeight: '800', fontSize: 13 },
+  calendarDoneText: { color: '#334155', fontWeight: '700', fontSize: 13 },
   listBody: { padding: 16, paddingBottom: 40, flexGrow: 1 },
   listBodyCompact: { padding: 8, paddingBottom: 88, flexGrow: 1 },
   logTypeRow: { flexDirection: 'row', gap: 6, marginBottom: 6 },
@@ -4456,6 +4565,23 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: '#e2e8f0'
   },
+  detailImageViewHint: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(15,23,42,0.62)',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  detailImageViewHintText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   detailImageLoading: {
     position: 'absolute',
     top: 0,
@@ -4556,6 +4682,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  reportListClearBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#fee2e2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
   dockReportDateInput: {
     flex: 1,
     backgroundColor: '#fff',
@@ -4566,6 +4703,29 @@ const styles = StyleSheet.create({
     paddingVertical: Platform.OS === 'ios' ? 10 : 8,
     fontSize: 13,
     color: '#0f172a',
+  },
+  dockReportDateBtn: {
+    justifyContent: 'center',
+    minHeight: 40,
+  },
+  dockReportDateBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  dockReportDateBtnPlaceholder: {
+    color: '#94a3b8',
+    fontWeight: '500',
+  },
+  dockReportCalendarBtn: {
+    width: 40,
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dockReportFilterActions: {
     flexDirection: 'row',
@@ -4711,6 +4871,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  inwardDetailPhotoMeta: {
+    fontSize: 10,
+    color: '#64748b',
+    lineHeight: 14,
+    marginTop: 4,
+    fontWeight: '600',
+  },
+  inwardDetailPhotoGps: {
+    color: '#0369a1',
+    fontWeight: '700',
+  },
   doLogDetailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -4731,6 +4902,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     flex: 1.2,
     textAlign: 'right',
+  },
+  doLogDetailLinkWrap: {
+    flex: 1.2,
+    alignItems: 'flex-end',
+  },
+  doLogDetailLinkText: {
+    textAlign: 'right',
+  },
+  doLogDetailLinkActive: {
+    color: '#0369a1',
+    textDecorationLine: 'underline',
   },
   doDetailSafe: { flex: 1, backgroundColor: '#f8fafc' },
   doDetailHeader: {

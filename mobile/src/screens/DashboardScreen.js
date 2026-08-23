@@ -16,7 +16,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   Animated,
-  BackHandler
+  BackHandler,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -24,10 +25,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import FastTouchable from '../components/FastTouchable';
 
+const BOTTOM_SHEET_MAX_H = Math.round(Dimensions.get('window').height * 0.5);
+const BOTTOM_SHEET_SCROLL_H = Math.max(180, BOTTOM_SHEET_MAX_H - 130);
+
 const TouchableOpacity = FastTouchable;
 
 const DOCK_REPORT_PAGE_SIZE = 20;
 const PENDING_CHAMBER_TYPE_KEY = 'pending_chamber_type_updates';
+const PENDING_CLIENT_MASTER_KEY = 'pending_client_master_ops';
 
 /** Local calendar date YYYY-MM-DD (not UTC). */
 function getLocalDateStr(d = new Date()) {
@@ -66,9 +71,6 @@ import {
   getAllLocalInspections,
   deleteInspectionLocally,
   updateInspectionLocally,
-  addLocalAssignment,
-  deleteLocalAssignment,
-  renameLocalAssignment,
   updateLocalChamberType,
   purgeAutoSeededMasterLotsOnce,
   getClientLotMaster,
@@ -85,11 +87,23 @@ import { compressImageOnly } from '../utils/compressImage';
 import { buildPhotoCaptureMeta, beginPhotoLocationCapture } from '../utils/photoCaptureMeta';
 import SplashScreen from './SplashScreen';
 import { dedupeInventoryLots, chamberZoneStyle, normalizeChamberZone, pickComplianceZone } from '../utils/dedupeInventoryLots';
+import { resolveLogImageUrl, splitLogPhotoPaths } from '../utils/customerLogReportHelpers';
 import { buildReportReadingRows, latestReadingQty } from '../utils/buildReportReadingRows';
 import { mergeChamberReportLogs } from '../utils/mergeChamberReportLogs';
 import { refreshTaskReminders } from '../utils/taskNotifications';
 import InwardFormView from '../components/InwardFormView';
 import OutwardFormView from '../components/OutwardFormView';
+import {
+  PhotoGridWithLocation,
+  ImagePreviewModal,
+  GpsDetailRow,
+} from '../components/LogDetailPhotoLocation';
+import ListLoadingOverlay from '../components/ListLoadingOverlay';
+import {
+  FLATLIST_PERF_PROPS,
+  isBlockingListLoad,
+  isSoftListLoad,
+} from '../utils/listPerf';
 
 const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
 
@@ -99,28 +113,7 @@ function pickDoLogImage(log) {
 }
 
 function resolveDoImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
-  if (raw == null) return null;
-  let value = String(raw).trim();
-  if (!value || value === 'null' || value === 'undefined') return null;
-  if (/^https?:\/\//i.test(value) || value.startsWith('file://') || value.startsWith('content://')) {
-    return value;
-  }
-  if (value.startsWith('data:')) return value;
-  const looksBase64 =
-    value.length > 200 &&
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
-  if (looksBase64 || value.startsWith('/9j/') || value.startsWith('iVBOR')) {
-    const mime = value.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-    return `data:${mime};base64,${value.replace(/\s/g, '')}`;
-  }
-  const base = String(baseUrl || '').replace(/\/$/, '');
-  if (!base) return null;
-  value = value.replace(/\\/g, '/').replace(/^\/+/, '');
-  if (value.startsWith('uploads/')) return `${base}/${value}`;
-  if (!value.includes('/')) return `${base}/uploads/${folderHint}/${value}`;
-  return `${base}/${value}`;
+  return resolveLogImageUrl(raw, baseUrl, folderHint);
 }
 
 function DoSensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_images' }) {
@@ -131,10 +124,12 @@ function DoSensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_i
   }, [rawPath, apiUrl, folderHint]);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
     setFailed(false);
     setLoading(true);
+    setPreviewOpen(false);
   }, [uri]);
 
   if (!uri) {
@@ -154,24 +149,43 @@ function DoSensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_i
     );
   }
   return (
-    <View>
-      {loading ? (
-        <View style={styles.doDetailImageLoading}>
-          <ActivityIndicator color="#003580" />
-        </View>
-      ) : null}
-      <Image
-        source={{ uri }}
-        style={[styles.doDetailImage, loading && { opacity: 0.2 }]}
-        resizeMode="contain"
-        onLoadStart={() => setLoading(true)}
-        onLoad={() => setLoading(false)}
-        onError={() => {
-          setLoading(false);
-          setFailed(true);
-        }}
+    <>
+      <TouchableOpacity
+        activeOpacity={0.9}
+        onPress={() => setPreviewOpen(true)}
+        disabled={loading}
+        style={{ position: 'relative' }}
+      >
+        {loading ? (
+          <View style={styles.doDetailImageLoading}>
+            <ActivityIndicator color="#003580" />
+          </View>
+        ) : null}
+        <Image
+          source={{ uri }}
+          style={[styles.doDetailImage, loading && { opacity: 0.2 }]}
+          resizeMode="contain"
+          onLoadStart={() => setLoading(true)}
+          onLoad={() => setLoading(false)}
+          onError={() => {
+            setLoading(false);
+            setFailed(true);
+          }}
+        />
+        {!loading ? (
+          <View style={styles.doDetailImageViewHint}>
+            <Ionicons name="expand-outline" size={14} color="#fff" />
+            <Text style={styles.doDetailImageViewHintText}>Tap to view</Text>
+          </View>
+        ) : null}
+      </TouchableOpacity>
+      <ImagePreviewModal
+        visible={previewOpen}
+        uri={uri}
+        label="Sensor photo"
+        onClose={() => setPreviewOpen(false)}
       />
-    </View>
+    </>
   );
 }
 
@@ -603,11 +617,15 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [inwardReportsRefreshing, setInwardReportsRefreshing] = useState(false);
   const [selectedInwardReport, setSelectedInwardReport] = useState(null);
   const [inwardReportSearch, setInwardReportSearch] = useState('');
-  const [inwardReportDateFrom, setInwardReportDateFrom] = useState('');
-  const [inwardReportDateTo, setInwardReportDateTo] = useState('');
+  const [inwardReportDateFrom, setInwardReportDateFrom] = useState(() => getLocalDateStr());
+  const [inwardReportDateTo, setInwardReportDateTo] = useState(() => getLocalDateStr());
   const [inwardReportPage, setInwardReportPage] = useState(1);
   const [inwardReportTotal, setInwardReportTotal] = useState(0);
   const [inwardReportHasMore, setInwardReportHasMore] = useState(false);
+  const [dockReportCalendarOpen, setDockReportCalendarOpen] = useState(false);
+  const [dockReportCalendarKind, setDockReportCalendarKind] = useState('inward'); // 'inward' | 'outward'
+  const [dockReportCalendarPickMode, setDockReportCalendarPickMode] = useState('from');
+  const [dockReportCalendarMonth, setDockReportCalendarMonth] = useState(new Date());
 
   // Outward Reports
   const [outwardReportRows, setOutwardReportRows] = useState([]);
@@ -616,12 +634,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [outwardReportsRefreshing, setOutwardReportsRefreshing] = useState(false);
   const [selectedOutwardReport, setSelectedOutwardReport] = useState(null);
   const [outwardReportSearch, setOutwardReportSearch] = useState('');
-  const [outwardReportDateFrom, setOutwardReportDateFrom] = useState('');
-  const [outwardReportDateTo, setOutwardReportDateTo] = useState('');
+  const [outwardReportDateFrom, setOutwardReportDateFrom] = useState(() => getLocalDateStr());
+  const [outwardReportDateTo, setOutwardReportDateTo] = useState(() => getLocalDateStr());
   const [outwardReportPage, setOutwardReportPage] = useState(1);
   const [outwardReportTotal, setOutwardReportTotal] = useState(0);
   const [outwardReportHasMore, setOutwardReportHasMore] = useState(false);
   const [podUploadBusy, setPodUploadBusy] = useState(false);
+  const [imagePreview, setImagePreview] = useState(null); // { uri, label } | null
 
   // Sub-filter tabs inside Dashboard / Tasks: 'All' | 'Pending' | 'Completed' | 'Failed'
   const [activeTab, setActiveTab] = useState('All'); 
@@ -629,8 +648,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   // Tasks Tab Filters
   const [taskChamberFilter, setTaskChamberFilter] = useState('All');
   const [taskClientFilter, setTaskClientFilter] = useState('All');
-  const [showTaskChamberDropdown, setShowTaskChamberDropdown] = useState(false);
-  const [showTaskClientDropdown, setShowTaskClientDropdown] = useState(false);
+  const [taskOpenFilter, setTaskOpenFilter] = useState(null); // 'chamber' | 'client' | null
+  const [taskPickerQuery, setTaskPickerQuery] = useState('');
 
   // DateTime Display States
   const [currentTime, setCurrentTime] = useState('');
@@ -1001,6 +1020,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         setShowNotificationsModal(false);
         return true;
       }
+      if (dockReportCalendarOpen) {
+        setDockReportCalendarOpen(false);
+        return true;
+      }
       if (showCalendarModal) {
         setShowCalendarModal(false);
         return true;
@@ -1019,6 +1042,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }
       if (editingExistingLog) {
         setEditingExistingLog(null);
+        return true;
+      }
+      if (taskOpenFilter) {
+        setTaskOpenFilter(null);
+        setTaskPickerQuery('');
         return true;
       }
       if (dailyReportOpenFilter) {
@@ -1055,10 +1083,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     showHistoryModal,
     showNotificationsModal,
     showCalendarModal,
+    dockReportCalendarOpen,
     showDailyReportCalendar,
     selectedReportLog,
     selectedInwardReport,
     editingExistingLog,
+    taskOpenFilter,
     dailyReportOpenFilter,
     reportDrillChamber,
     currentNavTab
@@ -1209,6 +1239,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
     setNavSection(nextSection);
     setCurrentNavTab(nextTab);
+    if (nextTab !== 'Tasks') {
+      setTaskOpenFilter(null);
+      setTaskPickerQuery('');
+    }
     if (nextTab !== 'Reports') {
       setReportDrillChamber(null);
       setDailyReportChamberFilter('all');
@@ -1438,6 +1472,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     openMasterManager();
   };
 
+  /** Stable INT for ClientMaster permission (must match backend). */
+  const clientMasterPermissionId = (chamberId, action, clientName, extra = '') => {
+    const s = `client|${chamberId}|${action}|${String(clientName || '').trim().toLowerCase()}|${String(extra || '').trim().toLowerCase()}`;
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0) % 2000000000 || 1;
+  };
+
   /** Stable INT for ChamberMaster ADD permission (must match backend). */
   const chamberAddPermissionId = (name) => {
     const s = `add|${String(name || '').trim().toLowerCase()}`;
@@ -1541,7 +1586,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   useEffect(() => {
     if (!apiUrl || !token) return undefined;
     const approvedAdds = (permissionNotifications || []).filter((n) => {
-      if (n.record_type !== 'ChamberMaster' || n.status !== 'Approved' || n.do_action_completed_at) {
+      // Even if do_action_completed_at is already set (e.g. user tapped notification),
+      // we still want the chamber list / tasks to reflect the Super Admin approval.
+      if (n.record_type !== 'ChamberMaster' || n.status !== 'Approved') {
         return false;
       }
       const text = `${n.request_description || ''} ${n.description || ''}`;
@@ -1605,6 +1652,68 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       delete map[String(chamberId)];
       await AsyncStorage.setItem(PENDING_CHAMBER_TYPE_KEY, JSON.stringify(map));
     } catch (_) {}
+  };
+
+  const persistPendingClientMasterOp = async (recordId, payload) => {
+    try {
+      const raw = await AsyncStorage.getItem(PENDING_CLIENT_MASTER_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      map[String(recordId)] = payload;
+      await AsyncStorage.setItem(PENDING_CLIENT_MASTER_KEY, JSON.stringify(map));
+    } catch (_) {}
+  };
+
+  const clearPendingClientMasterOp = async (recordId) => {
+    try {
+      const raw = await AsyncStorage.getItem(PENDING_CLIENT_MASTER_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      delete map[String(recordId)];
+      await AsyncStorage.setItem(PENDING_CLIENT_MASTER_KEY, JSON.stringify(map));
+    } catch (_) {}
+  };
+
+  const applyApprovedClientMasterOnDevice = async (recordId, pendingMeta = null) => {
+    // Safety fallback: if backend approval row exists but server-side apply missed,
+    // replay the add via assignment API using already-approved permission.
+    if (
+      pendingMeta?.action === 'add' &&
+      apiUrl &&
+      token &&
+      pendingMeta?.chamberId &&
+      pendingMeta?.clientName
+    ) {
+      try {
+        await fetch(`${apiUrl}/api/chambers/assignments`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          body: JSON.stringify({
+            chamber_id: pendingMeta.chamberId,
+            client_name: pendingMeta.clientName,
+            chamber_type: pendingMeta.chamberType || 'Frozen',
+            remark: pendingMeta.remark || 'Approved by Super Admin'
+          })
+        });
+      } catch (_) {
+        // keep flowing to fetch latest snapshot from server/cache
+      }
+    }
+    await fetchAndLoadAssignments();
+    await clearPendingClientMasterOp(recordId);
+    loadLocalAssignmentsData(chambersList);
+    if (pendingMeta?.action === 'add' && pendingMeta?.clientName && pendingMeta?.chamberId) {
+      const onChamber = Number(selectedChamber?.id) === Number(pendingMeta.chamberId);
+      if (onChamber) {
+        setSelectedClient(pendingMeta.clientName);
+        setTempInput('');
+        setBoxCountInput('');
+        setCapturedImage(null);
+        setCapturedImageTimestamp(null);
+      }
+    }
   };
 
   const applyApprovedChamberTypeOnDevice = async (chamberId, nextType, remark = '') => {
@@ -1675,6 +1784,47 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           Alert.alert(
             'Chamber Type Updated',
             `"${chamberName}" is now ${normalizeChamberTypeValue(nextType)} after Super Admin approval.`
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [permissionNotifications, apiUrl, token]);
+
+  const autoSyncedClientMasterRef = React.useRef(new Set());
+  useEffect(() => {
+    if (!apiUrl || !token) return undefined;
+    const approvedClients = (permissionNotifications || []).filter((n) => {
+      // Even if do_action_completed_at is already set, ensure assignments are synced.
+      if (n.status !== 'Approved') return false;
+      return n.record_type === 'ClientMaster';
+    });
+    if (!approvedClients.length) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      for (const notif of approvedClients) {
+        if (cancelled || autoSyncedClientMasterRef.current.has(notif.id)) continue;
+        autoSyncedClientMasterRef.current.add(notif.id);
+        let pendingMeta = null;
+        try {
+          const raw = await AsyncStorage.getItem(PENDING_CLIENT_MASTER_KEY);
+          const map = raw ? JSON.parse(raw) : {};
+          pendingMeta = map[String(notif.record_id)] || null;
+        } catch (_) {}
+        await applyApprovedClientMasterOnDevice(notif.record_id, pendingMeta);
+        await markPermissionNotificationComplete(notif.id);
+        if (!cancelled) {
+          const label =
+            pendingMeta?.action === 'edit'
+              ? `"${pendingMeta.clientName}" → "${pendingMeta.newName}" on ${pendingMeta.chamberName || 'chamber'}`
+              : `"${pendingMeta?.clientName || 'Client'}" on ${pendingMeta?.chamberName || 'chamber'}`;
+          Alert.alert(
+            pendingMeta?.action === 'add' ? 'Client Added' : 'Client Master Updated',
+            `${label} ${pendingMeta?.action === 'add' ? 'added' : 'updated'} after Super Admin approval.`
           );
         }
       }
@@ -2010,6 +2160,137 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return true;
     } catch (err) {
       Alert.alert('Chamber Type', err.message || 'Could not send type change request.');
+      return false;
+    }
+  };
+
+  const requestClientMasterPermission = async ({
+    chamber,
+    action,
+    clientName,
+    newName = '',
+    chamberType = 'Frozen',
+    remark = '',
+    silent = false
+  }) => {
+    if (!apiUrl || !token || !chamber?.id || !clientName) {
+      Alert.alert('Offline', 'Connect to server to request client master change.');
+      return false;
+    }
+    const resolvedRemark = String(remark || '').trim();
+    if (!resolvedRemark) {
+      Alert.alert('Remark required', 'Please enter a remark for this client change.');
+      return false;
+    }
+    const permAction = action === 'delete' ? 'delete' : action === 'edit' ? 'edit' : 'add';
+    const apiAction = permAction === 'delete' ? 'Delete' : 'Edit';
+    const recordId =
+      permAction === 'edit'
+        ? clientMasterPermissionId(chamber.id, 'edit', clientName, newName)
+        : clientMasterPermissionId(chamber.id, permAction, clientName);
+
+    const pendingPayload = {
+      chamberId: chamber.id,
+      chamberName: chamber.name,
+      action: permAction,
+      clientName,
+      newName: newName || null,
+      chamberType: normalizeChamberTypeValue(chamberType),
+      remark: resolvedRemark
+    };
+
+    let description = '';
+    if (permAction === 'add') {
+      description =
+        `${displayName} requested Super Admin allow to ADD client "${clientName}" (${pendingPayload.chamberType}) on chamber "${chamber.name}" (id: ${chamber.id}). Remark: ${resolvedRemark}`;
+    } else if (permAction === 'delete') {
+      description =
+        `${displayName} requested Super Admin allow to DELETE client "${clientName}" from chamber "${chamber.name}" (id: ${chamber.id}). Remark: ${resolvedRemark}`;
+    } else {
+      description =
+        `${displayName} requested Super Admin allow to EDIT client "${clientName}" → "${newName}" on chamber "${chamber.name}" (id: ${chamber.id}). Remark: ${resolvedRemark}`;
+    }
+
+    try {
+      const checkRes = await fetch(
+        `${apiUrl}/api/permission-requests/check?record_type=${encodeURIComponent('ClientMaster')}&record_id=${encodeURIComponent(recordId)}&action=${encodeURIComponent(apiAction)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+      );
+      const checkData = await checkRes.json().catch(() => ({}));
+      if (checkRes.ok && checkData.approved) {
+        let pendingMeta = null;
+        try {
+          const raw = await AsyncStorage.getItem(PENDING_CLIENT_MASTER_KEY);
+          const map = raw ? JSON.parse(raw) : {};
+          pendingMeta = map[String(recordId)] || pendingPayload;
+        } catch (_) {
+          pendingMeta = pendingPayload;
+        }
+        await applyApprovedClientMasterOnDevice(recordId, pendingMeta);
+        if (checkData.request?.id) {
+          await markPermissionNotificationComplete(checkData.request.id);
+        }
+        if (!silent) {
+          Alert.alert(
+            'Client Updated',
+            `"${clientName}"${permAction === 'edit' ? ` renamed to "${newName}"` : ''} on ${chamber.name} after Super Admin approval.`
+          );
+        }
+        return true;
+      }
+      if (checkRes.ok && checkData.status === 'Pending') {
+        await persistPendingClientMasterOp(recordId, pendingPayload);
+        if (!silent) {
+          Alert.alert(
+            'Waiting for Super Admin',
+            `Client change for "${clientName}" on ${chamber.name} is already pending approval.`
+          );
+        }
+        return false;
+      }
+
+      const res = await fetch(`${apiUrl}/api/permission-requests`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: JSON.stringify({
+          record_type: 'ClientMaster',
+          record_id: recordId,
+          action: apiAction,
+          remark: resolvedRemark,
+          description
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.request?.status === 'Approved') {
+          await applyApprovedClientMasterOnDevice(recordId);
+          return true;
+        }
+        if (data.request?.status === 'Pending') {
+          await persistPendingClientMasterOp(recordId, pendingPayload);
+          if (!silent) {
+            Alert.alert('Waiting for Super Admin', 'This client change is already pending approval.');
+          }
+          return false;
+        }
+        throw new Error(data.error || data.message || 'Failed to request client master permission.');
+      }
+
+      await persistPendingClientMasterOp(recordId, pendingPayload);
+      refreshPermissionNotifications();
+      if (!silent) {
+        Alert.alert(
+          'Request sent to Super Admin',
+          `"${clientName}" on ${chamber.name} will update automatically after Super Admin allows.`
+        );
+      }
+      return true;
+    } catch (err) {
+      Alert.alert('Client Master', err.message || 'Could not send client change request.');
       return false;
     }
   };
@@ -2367,16 +2648,38 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return;
     }
 
-    // Client master — notify only (already applied locally). No SA allow apply step.
+    // Client master — apply after Super Admin approval (same as chamber type)
     if (notif.record_type === 'ClientMaster') {
-      Alert.alert(
-        'Client Master',
-        'Client master changes are saved immediately. Super Admin has been notified; approval is not required.'
-      );
-      await markPermissionNotificationComplete(notif.id);
-      try {
-        await AsyncStorage.removeItem('pending_client_master_edits');
-      } catch (_) {}
+      const desc = `${notif.request_description || ''} ${notif.description || ''}`;
+      const clientMatch =
+        desc.match(/ADD client "([^"]+)"/i) ||
+        desc.match(/DELETE client "([^"]+)"/i) ||
+        desc.match(/EDIT client "([^"]+)"/i);
+      const chamberMatch = desc.match(/on chamber "([^"]+)"/i);
+      const clientLabel = clientMatch?.[1] || 'Client';
+      const chamberLabel = chamberMatch?.[1] || getPermissionChamberLabel(notif) || 'Chamber';
+
+      if (notif.status === 'Approved') {
+        let pendingMeta = null;
+        try {
+          const raw = await AsyncStorage.getItem(PENDING_CLIENT_MASTER_KEY);
+          const map = raw ? JSON.parse(raw) : {};
+          pendingMeta = map[String(notif.record_id)] || null;
+        } catch (_) {}
+        await applyApprovedClientMasterOnDevice(notif.record_id, pendingMeta);
+        await markPermissionNotificationComplete(notif.id);
+        Alert.alert(
+          pendingMeta?.action === 'add' ? 'Client Added' : 'Client Master Updated',
+          `"${clientLabel}" on ${chamberLabel} ${pendingMeta?.action === 'add' ? 'added' : 'updated'} after Super Admin approval.`
+        );
+      } else {
+        await clearPendingClientMasterOp(notif.record_id);
+        await markPermissionNotificationComplete(notif.id);
+        Alert.alert(
+          'Client Change Denied',
+          desc || `Super Admin denied client change for "${clientLabel}" on ${chamberLabel}.`
+        );
+      }
       return;
     }
 
@@ -2576,7 +2879,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         : (chambersList || [])
     );
 
-    let cachedData = getLocalAssignments(user?.warehouse_name);
+    let cachedData = getLocalAssignments(user?.warehouse_name, user?.warehouse_code);
 
     if (chambers.length === 0) {
       const fromAssign = [];
@@ -2746,7 +3049,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       if (selected && selected < fromStr) fromStr = selected;
       const qs = new URLSearchParams({
         page: '1',
-        limit: '500',
+        limit: '300',
         fromDate: fromStr,
         toDate: todayStr < selected ? selected : todayStr
       });
@@ -2788,7 +3091,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     try {
       const qs = new URLSearchParams({
         page: '1',
-        limit: '500',
+        limit: '150',
         fromDate: dateStr,
         toDate: dateStr
       });
@@ -3210,6 +3513,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       chamber_id: selectedChamber.id,
       chamber_name: selectedChamber.name,
       client_name: selectedClient,
+      client_code: (assignments || []).find((a) =>
+        String(a.client_name || '').trim().toLowerCase() === String(selectedClient || '').trim().toLowerCase()
+      )?.client_code || null,
       box_temp: parseFloat(tempInput),
       box_count: parseInt(boxCountInput, 10),
       temp_sensor_image: capturedImage,
@@ -3224,6 +3530,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       shift: targetShiftName,
       created_at: formatDateTime(new Date()),
       warehouse_name: user?.warehouse_name || null,
+      warehouse_code: user?.warehouse_code || null,
       operator_email: user?.email || null
     };
 
@@ -3343,81 +3650,57 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     };
     const typeChanged =
       normalizeChamberTypeValue(draft.type) !== normalizeChamberTypeValue(draft.baselineType);
-    let mutated = false;
+    let requested = 0;
 
     for (const row of draft.clients || []) {
       if (row._op === 'add') {
-        const ok = addLocalAssignment(
-          chamber.id,
-          chamber.name,
-          row.client_name,
-          note,
-          draft.type,
-          user?.warehouse_name
-        );
-        if (ok) {
-          mutated = true;
-          ensureClientInLotMaster(row.client_name);
-          reportDOActivity(
-            'ADD_CLIENT',
-            `Added client "${row.client_name}" (${draft.type}) to ${chamber.name} on ${formatActivityDateTime()}. Remark: ${note}`,
-            note,
-            chamber.id
-          );
-        }
+        const ok = await requestClientMasterPermission({
+          chamber,
+          action: 'add',
+          clientName: row.client_name,
+          chamberType: draft.type,
+          remark: note,
+          silent: true
+        });
+        if (ok) requested += 1;
       } else if (row._op === 'delete') {
-        const ok = deleteLocalAssignment(chamber.id, row.client_name, note);
-        if (ok) {
-          mutated = true;
-          reportDOActivity(
-            'DELETE_CLIENT',
-            `${displayName} deleted client master "${row.client_name}" from ${chamber.name} on ${formatActivityDateTime()}. Remark: ${note}`,
-            note,
-            chamber.id
-          );
-        }
+        const ok = await requestClientMasterPermission({
+          chamber,
+          action: 'delete',
+          clientName: row.client_name,
+          remark: note,
+          silent: true
+        });
+        if (ok) requested += 1;
       } else if (row._op === 'rename' && row.oldName) {
-        const ok = renameLocalAssignment(
-          chamber.id,
-          chamber.name,
-          row.oldName,
-          row.client_name,
-          note
-        );
-        if (ok) {
-          mutated = true;
-          ensureClientInLotMaster(row.client_name);
-          reportDOActivity(
-            'UPDATE_CLIENT',
-            `${displayName} edited client master "${row.oldName}" → "${row.client_name}" on ${chamber.name} (chamber_id: ${chamber.id}). Remark: ${note}`,
-            note,
-            chamber.id
-          );
-        }
+        const ok = await requestClientMasterPermission({
+          chamber,
+          action: 'edit',
+          clientName: row.oldName,
+          newName: row.client_name,
+          remark: note,
+          silent: true
+        });
+        if (ok) requested += 1;
       }
     }
 
     if (typeChanged) {
       await requestChamberTypePermission(chamber, draft.type, draft.baselineType, note);
-    } else if (mutated) {
-      loadLocalAssignmentsData(chambersList);
-      if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress, user);
-    }
-
-    if (mutated) {
-      reportMasterSetupActivity(chamber, draft, note);
     }
 
     closeChamberEditSession();
-    if (mutated) {
+    if (requested > 0 || typeChanged) {
       Alert.alert(
-        'Setup Saved',
-        typeChanged
-          ? `Client changes for "${chamber.name}" are saved. Type will update after Super Admin allows.`
-          : `Changes for "${chamber.name}" are saved and will show in the app.`
+        'Request Sent',
+        typeChanged && requested > 0
+          ? `Client changes and chamber type for "${chamber.name}" were sent to Super Admin. They will apply automatically after approval.`
+          : typeChanged
+            ? `Chamber type for "${chamber.name}" will update after Super Admin allows.`
+            : `Client changes for "${chamber.name}" were sent to Super Admin. They will appear automatically after approval.`
       );
     }
-    return mutated || typeChanged;
+    return requested > 0 || typeChanged;
   };
 
   const handleChangeChamberZone = (type) => {
@@ -3503,28 +3786,20 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return;
     }
 
-    const success = addLocalAssignment(
-      managerSelectedChamber.id,
-      managerSelectedChamber.name,
-      clientName,
-      'Added for this chamber only',
-      newClientType,
-      user?.warehouse_name
-    );
-    if (success) {
-      setNewClientInput('');
-      loadLocalAssignmentsData(chambersList);
-      reportDOActivity(
-        'ADD_CLIENT',
-        `Added client "${clientName}" (${newClientType}) to ${managerSelectedChamber.name} only. Remark: Added for this chamber only`,
-        'Added for this chamber only',
-        managerSelectedChamber.id
-      );
-      if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress, user);
-      Alert.alert('Success', `"${clientName}" (${newClientType}) added to ${managerSelectedChamber.name}. Saves immediately — Super Admin is notified.`);
-    } else {
-      Alert.alert('Error', 'Failed to add client to this chamber.');
-    }
+    setPermissionModal({
+      isOpen: true,
+      status: 'None',
+      log: null,
+      taskItem: null,
+      loading: false,
+      mode: 'client_add',
+      chamber: managerSelectedChamber,
+      nextType: null,
+      oldType: null,
+      remark: '',
+      pendingClientName: clientName,
+      pendingClientType: newClientType
+    });
   };
 
   const handleRenameChamberClient = async () => {
@@ -4264,24 +4539,39 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const chamber = permissionModal.chamber;
       const oldName = permissionModal.oldName;
       const newName = permissionModal.newName;
-      const ok = renameLocalAssignment(chamber.id, chamber.name, oldName, newName, remark);
-      if (!ok) {
-        Alert.alert('Rename failed', 'Name may already exist on this chamber.');
-        return;
-      }
-      ensureClientInLotMaster(newName);
       closePermissionModal();
       setEditingClientName(null);
       setEditClientDraft('');
-      loadLocalAssignmentsData(chambersList);
-      await reportDOActivity(
-        'UPDATE_CLIENT',
-        `${displayName} edited client master "${oldName}" → "${newName}" on ${chamber.name} (chamber_id: ${chamber.id}). Remark: ${remark}`,
-        remark,
-        chamber.id
-      );
-      if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress, user);
-      Alert.alert('Updated', `"${oldName}" renamed to "${newName}". Super Admin has been notified.`);
+      await requestClientMasterPermission({
+        chamber,
+        action: 'edit',
+        clientName: oldName,
+        newName,
+        remark
+      });
+      return;
+    }
+
+    if (mode === 'client_add') {
+      const remark = String(permissionModal.remark || '').trim();
+      if (!remark) {
+        Alert.alert('Remark required', 'Please add a remark for this client add.');
+        return;
+      }
+      const chamber = permissionModal.chamber;
+      const clientName = permissionModal.pendingClientName;
+      const clientType = permissionModal.pendingClientType || newClientType;
+      closePermissionModal();
+      setNewClientInput('');
+      setShowClientSuggestions(false);
+      const ok = await requestClientMasterPermission({
+        chamber,
+        action: 'add',
+        clientName,
+        chamberType: clientType,
+        remark
+      });
+      if (ok) ensureClientInLotMaster(clientName);
       return;
     }
 
@@ -4882,227 +5172,229 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
         )}
 
-        {/* Chamber & Client Filters */}
-        <View style={{
-          flexDirection: 'row',
-          paddingHorizontal: 15,
-          paddingVertical: 10,
-          backgroundColor: '#ffffff',
-          borderBottomWidth: 1,
-          borderBottomColor: '#cbd5e1',
-          gap: 10,
-          zIndex: 100
-        }}>
-          {/* Chamber Filter Dropdown */}
-          <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
-            <TouchableOpacity
-              style={{
-                height: 38,
-                backgroundColor: '#f8fafc',
-                borderRadius: 8,
-                borderWidth: 1,
-                borderColor: '#cbd5e1',
-                paddingHorizontal: 10,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                minWidth: 0,
-                overflow: 'hidden'
-              }}
-              onPress={() => {
-                setShowTaskChamberDropdown(!showTaskChamberDropdown);
-                setShowTaskClientDropdown(false);
-              }}
-            >
-              <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
-                {taskChamberFilter === 'All' ? 'All Chambers' : (chambersList.find(c => Number(c.id) === Number(taskChamberFilter))?.name || 'All Chambers')}
-              </Text>
-              <Ionicons name={showTaskChamberDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
-            </TouchableOpacity>
+        {/* Chamber & Client Filters — bottom sheet (same as DO profile / Daily Reports) */}
+        {(() => {
+          const chamberFilterOn = taskChamberFilter !== 'All';
+          const clientFilterOn = taskClientFilter !== 'All';
+          const filtersActive = chamberFilterOn || clientFilterOn;
+          const chamberLabel = chamberFilterOn
+            ? chambersList.find((c) => Number(c.id) === Number(taskChamberFilter))?.name || 'Chamber'
+            : 'All Chambers';
+          const clientLabel = clientFilterOn ? taskClientFilter : 'All Clients';
+          const pickerQ = String(taskPickerQuery || '').trim().toLowerCase();
+          const pickerChamberOptions = (chambersList || []).filter((ch) =>
+            pickerQ ? String(ch.name || '').toLowerCase().includes(pickerQ) : true
+          );
+          const allTaskClients =
+            taskChamberFilter === 'All'
+              ? Array.from(new Set(assignments.map((a) => a.client_name).filter(Boolean)))
+              : Array.from(
+                  new Set(
+                    assignments
+                      .filter((a) => Number(a.chamber_id) === Number(taskChamberFilter))
+                      .map((a) => a.client_name)
+                      .filter(Boolean)
+                  )
+                );
+          const pickerClientOptions = allTaskClients
+            .filter((name) => (pickerQ ? String(name).toLowerCase().includes(pickerQ) : true))
+            .sort((a, b) => String(a).localeCompare(String(b)));
 
-            {showTaskChamberDropdown && (
-              <View style={{
-                position: 'absolute',
-                top: 42,
-                left: 0,
-                right: 0,
-                backgroundColor: '#ffffff',
-                borderRadius: 8,
-                borderWidth: 1,
-                borderColor: '#cbd5e1',
-                maxHeight: 200,
-                zIndex: 200,
-                elevation: 5,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.15,
-                shadowRadius: 4
-              }}>
-                <ScrollView nestedScrollEnabled={true} keyboardShouldPersistTaps="handled">
+          return (
+            <>
+              <View
+                style={[
+                  styles.reportListFilterRow,
+                  {
+                    marginTop: 0,
+                    paddingHorizontal: 15,
+                    paddingVertical: 10,
+                    backgroundColor: '#ffffff',
+                    borderBottomWidth: 1,
+                    borderBottomColor: '#cbd5e1',
+                  },
+                ]}
+              >
+                <TouchableOpacity
+                  style={[styles.doFilterChip, chamberFilterOn && styles.doFilterChipActive]}
+                  onPress={() => {
+                    setTaskPickerQuery('');
+                    setTaskOpenFilter(taskOpenFilter === 'chamber' ? null : 'chamber');
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.doFilterChipLabel}>Chamber</Text>
+                  <Text style={styles.doFilterChipValue} numberOfLines={1}>
+                    {chamberLabel}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.doFilterChip, clientFilterOn && styles.doFilterChipActive]}
+                  onPress={() => {
+                    setTaskPickerQuery('');
+                    setTaskOpenFilter(taskOpenFilter === 'client' ? null : 'client');
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.doFilterChipLabel}>Client</Text>
+                  <Text style={styles.doFilterChipValue} numberOfLines={1}>
+                    {clientLabel}
+                  </Text>
+                </TouchableOpacity>
+                {filtersActive ? (
                   <TouchableOpacity
-                    style={{
-                      padding: 10,
-                      borderBottomWidth: 0.5,
-                      borderColor: '#f1f5f9',
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      justifyContent: 'space-between'
-                    }}
+                    style={styles.reportListClearBtn}
                     onPress={() => {
                       setTaskChamberFilter('All');
-                      setTaskClientFilter('All'); // Reset client filter when chamber changes
-                      setShowTaskChamberDropdown(false);
-                    }}
-                  >
-                    <Text style={{ fontSize: 11, color: '#0f172a', fontWeight: taskChamberFilter === 'All' ? '800' : '400' }}>All Chambers</Text>
-                    {taskChamberFilter === 'All' && <Ionicons name="checkmark" size={14} color="#003580" />}
-                  </TouchableOpacity>
-                  {chambersList.map(ch => {
-                    const isSelected = String(taskChamberFilter) === String(ch.id);
-                    return (
-                      <TouchableOpacity
-                        key={`ch-filter-${ch.id}`}
-                        style={{
-                          padding: 10,
-                          borderBottomWidth: 0.5,
-                          borderColor: '#f1f5f9',
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'space-between'
-                        }}
-                        onPress={() => {
-                          setTaskChamberFilter(ch.id);
-                          setTaskClientFilter('All'); // Reset client filter when chamber changes
-                          setShowTaskChamberDropdown(false);
-                        }}
-                      >
-                        <Text style={{ fontSize: 11, color: '#334155', fontWeight: isSelected ? '800' : '400' }}>{ch.name}</Text>
-                        {isSelected && <Ionicons name="checkmark" size={14} color="#003580" />}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
-          </View>
-
-          {/* Client Filter Dropdown */}
-          <View style={{ flex: 1, position: 'relative', minWidth: 0 }}>
-            <TouchableOpacity
-              style={{
-                height: 38,
-                backgroundColor: '#f8fafc',
-                borderRadius: 8,
-                borderWidth: 1,
-                borderColor: '#cbd5e1',
-                paddingHorizontal: 10,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                minWidth: 0,
-                overflow: 'hidden'
-              }}
-              onPress={() => {
-                setShowTaskClientDropdown(!showTaskClientDropdown);
-                setShowTaskChamberDropdown(false);
-              }}
-            >
-              <Text style={{ fontSize: 11, color: '#1e293b', fontWeight: '700', flex: 1, marginRight: 4 }} numberOfLines={1}>
-                {taskClientFilter === 'All' ? 'All Clients' : taskClientFilter}
-              </Text>
-              <Ionicons name={showTaskClientDropdown ? 'chevron-up' : 'chevron-down'} size={14} color="#64748b" />
-            </TouchableOpacity>
-
-            {showTaskClientDropdown && (
-              <View style={{
-                position: 'absolute',
-                top: 42,
-                left: 0,
-                right: 0,
-                backgroundColor: '#ffffff',
-                borderRadius: 8,
-                borderWidth: 1,
-                borderColor: '#cbd5e1',
-                maxHeight: 200,
-                zIndex: 200,
-                elevation: 5,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.15,
-                shadowRadius: 4
-              }}>
-                <ScrollView nestedScrollEnabled={true} keyboardShouldPersistTaps="handled">
-                  <TouchableOpacity
-                    style={{
-                      padding: 10,
-                      borderBottomWidth: 0.5,
-                      borderColor: '#f1f5f9',
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      justifyContent: 'space-between'
-                    }}
-                    onPress={() => {
                       setTaskClientFilter('All');
-                      setShowTaskClientDropdown(false);
+                      setTaskOpenFilter(null);
+                      setTaskPickerQuery('');
                     }}
+                    activeOpacity={0.85}
                   >
-                    <Text style={{ fontSize: 11, color: '#0f172a', fontWeight: taskClientFilter === 'All' ? '800' : '400' }}>All Clients</Text>
-                    {taskClientFilter === 'All' && <Ionicons name="checkmark" size={14} color="#003580" />}
+                    <Ionicons name="close" size={14} color="#dc2626" />
                   </TouchableOpacity>
-                  {(() => {
-                    // Populate client options dynamically based on taskChamberFilter
-                    const filteredClients = taskChamberFilter === 'All'
-                      ? Array.from(new Set(assignments.map(a => a.client_name).filter(Boolean)))
-                      : Array.from(new Set(
-                          assignments
-                            .filter(a => Number(a.chamber_id) === Number(taskChamberFilter))
-                            .map(a => a.client_name)
-                            .filter(Boolean)
-                        ));
-                    
-                    return filteredClients.sort().map(clientName => {
-                      const isSelected = taskClientFilter === clientName;
-                      return (
-                        <TouchableOpacity
-                          key={`cl-filter-${clientName}`}
-                          style={{
-                            padding: 10,
-                            borderBottomWidth: 0.5,
-                            borderColor: '#f1f5f9',
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            justifyContent: 'space-between'
-                          }}
-                          onPress={() => {
-                            setTaskClientFilter(clientName);
-                            setShowTaskClientDropdown(false);
-                          }}
-                        >
-                          <Text style={{ fontSize: 11, color: '#334155', fontWeight: isSelected ? '800' : '400' }}>{clientName}</Text>
-                          {isSelected && <Ionicons name="checkmark" size={14} color="#003580" />}
-                        </TouchableOpacity>
-                      );
-                    });
-                  })()}
-                </ScrollView>
+                ) : null}
               </View>
-            )}
-          </View>
 
-          {/* Clear button */}
-          <TouchableOpacity
-            style={[styles.doSuggestChip, { alignSelf: 'center', height: 38, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#cbd5e1', backgroundColor: '#f1f5f9' }]}
-            onPress={() => {
-              setTaskChamberFilter('All');
-              setTaskClientFilter('All');
-              setShowTaskChamberDropdown(false);
-              setShowTaskClientDropdown(false);
-            }}
-            activeOpacity={0.85}
-          >
-            <Text style={[styles.doSuggestText, { fontSize: 11, fontWeight: '700', color: '#475569' }]}>Clear</Text>
-          </TouchableOpacity>
-        </View>
+              <Modal
+                visible={!!taskOpenFilter}
+                transparent
+                animationType="slide"
+                onRequestClose={() => {
+                  setTaskOpenFilter(null);
+                  setTaskPickerQuery('');
+                }}
+              >
+                <View style={styles.reportFilterModalOverlay}>
+                  <TouchableOpacity
+                    style={StyleSheet.absoluteFill}
+                    activeOpacity={1}
+                    onPress={() => {
+                      setTaskOpenFilter(null);
+                      setTaskPickerQuery('');
+                    }}
+                  />
+                  <View style={styles.reportFilterModalSheet}>
+                    <Text style={styles.reportFilterModalTitle}>
+                      {taskOpenFilter === 'client' ? 'Filter client' : 'Filter chamber'}
+                    </Text>
+                    <View style={styles.reportListSearchWrap}>
+                      <Ionicons name="search" size={14} color="#94a3b8" />
+                      <TextInput
+                        style={styles.reportListSearchInput}
+                        value={taskPickerQuery}
+                        onChangeText={setTaskPickerQuery}
+                        placeholder={
+                          taskOpenFilter === 'client' ? 'Search client...' : 'Search chamber...'
+                        }
+                        placeholderTextColor="#94a3b8"
+                        autoCorrect={false}
+                        autoCapitalize="none"
+                      />
+                    </View>
+                    <ScrollView
+                      style={styles.reportFilterModalScroll}
+                      keyboardShouldPersistTaps="handled"
+                      nestedScrollEnabled
+                      showsVerticalScrollIndicator
+                    >
+                      {taskOpenFilter === 'chamber' ? (
+                        <>
+                          <TouchableOpacity
+                            style={styles.reportFilterOption}
+                            onPress={() => {
+                              setTaskChamberFilter('All');
+                              setTaskClientFilter('All');
+                              setTaskOpenFilter(null);
+                              setTaskPickerQuery('');
+                            }}
+                          >
+                            <Text style={styles.reportFilterOptionText}>All Chambers</Text>
+                            {!chamberFilterOn ? (
+                              <Ionicons name="checkmark" size={16} color="#003580" />
+                            ) : null}
+                          </TouchableOpacity>
+                          {pickerChamberOptions.length === 0 ? (
+                            <Text style={styles.reportFilterModalEmpty}>No chambers found.</Text>
+                          ) : (
+                            pickerChamberOptions.map((ch) => (
+                              <TouchableOpacity
+                                key={`task-pick-ch-${ch.id}`}
+                                style={styles.reportFilterOption}
+                                onPress={() => {
+                                  setTaskChamberFilter(ch.id);
+                                  setTaskClientFilter('All');
+                                  setTaskOpenFilter(null);
+                                  setTaskPickerQuery('');
+                                }}
+                              >
+                                <Text style={styles.reportFilterOptionText} numberOfLines={1}>
+                                  {ch.name}
+                                </Text>
+                                {String(taskChamberFilter) === String(ch.id) ? (
+                                  <Ionicons name="checkmark" size={16} color="#003580" />
+                                ) : null}
+                              </TouchableOpacity>
+                            ))
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <TouchableOpacity
+                            style={styles.reportFilterOption}
+                            onPress={() => {
+                              setTaskClientFilter('All');
+                              setTaskOpenFilter(null);
+                              setTaskPickerQuery('');
+                            }}
+                          >
+                            <Text style={styles.reportFilterOptionText}>All Clients</Text>
+                            {!clientFilterOn ? (
+                              <Ionicons name="checkmark" size={16} color="#003580" />
+                            ) : null}
+                          </TouchableOpacity>
+                          {pickerClientOptions.length === 0 ? (
+                            <Text style={styles.reportFilterModalEmpty}>No clients found.</Text>
+                          ) : (
+                            pickerClientOptions.map((name) => (
+                              <TouchableOpacity
+                                key={`task-pick-cl-${name}`}
+                                style={styles.reportFilterOption}
+                                onPress={() => {
+                                  setTaskClientFilter(name);
+                                  setTaskOpenFilter(null);
+                                  setTaskPickerQuery('');
+                                }}
+                              >
+                                <Text style={styles.reportFilterOptionText} numberOfLines={1}>
+                                  {name}
+                                </Text>
+                                {taskClientFilter === name ? (
+                                  <Ionicons name="checkmark" size={16} color="#003580" />
+                                ) : null}
+                              </TouchableOpacity>
+                            ))
+                          )}
+                        </>
+                      )}
+                    </ScrollView>
+                    <TouchableOpacity
+                      style={styles.reportFilterModalClose}
+                      onPress={() => {
+                        setTaskOpenFilter(null);
+                        setTaskPickerQuery('');
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.reportFilterModalCloseText}>Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </Modal>
+            </>
+          );
+        })()}
 
         {/* Tab Caption Info Box */}
         {!completedOnly ? (
@@ -5545,15 +5837,16 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           setDailyReportPickerQuery('');
         }}
       >
-        <TouchableOpacity
-          style={styles.reportFilterModalOverlay}
-          activeOpacity={1}
-          onPress={() => {
-            setDailyReportOpenFilter(null);
-            setDailyReportPickerQuery('');
-          }}
-        >
-          <TouchableOpacity style={styles.reportFilterModalSheet} activeOpacity={1} onPress={() => {}}>
+        <View style={styles.reportFilterModalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => {
+              setDailyReportOpenFilter(null);
+              setDailyReportPickerQuery('');
+            }}
+          />
+          <View style={styles.reportFilterModalSheet}>
             <Text style={styles.reportFilterModalTitle}>
               {dailyReportOpenFilter === 'client' ? 'Filter client' : 'Filter chamber'}
             </Text>
@@ -5569,7 +5862,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 autoCapitalize="none"
               />
             </View>
-            <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              style={styles.reportFilterModalScroll}
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
+              showsVerticalScrollIndicator
+            >
               {dailyReportOpenFilter === 'chamber' ? (
                 <>
                   <TouchableOpacity
@@ -5658,8 +5956,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             >
               <Text style={styles.reportFilterModalCloseText}>Close</Text>
             </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     );
 
@@ -5671,24 +5969,22 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         <Modal
           visible={showDailyReportCalendar}
           transparent
-          animationType="fade"
+          animationType="slide"
           onRequestClose={() => setShowDailyReportCalendar(false)}
         >
-          <TouchableOpacity
-            style={styles.reportFilterModalOverlay}
-            activeOpacity={1}
-            onPress={() => setShowDailyReportCalendar(false)}
-          >
+          <View style={styles.reportFilterModalOverlay}>
             <TouchableOpacity
-              style={[styles.reportFilterModalSheet, { maxHeight: '80%' }]}
+              style={StyleSheet.absoluteFill}
               activeOpacity={1}
-              onPress={() => {}}
-            >
+              onPress={() => setShowDailyReportCalendar(false)}
+            />
+            <View style={styles.calendarFilterModalSheet}>
+              <View style={styles.calendarSheetHandle} />
               <Text style={styles.reportFilterModalTitle}>Select date</Text>
-              <Text style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+              <Text style={styles.calendarSheetHint}>
                 One day only · {dateLabel}
               </Text>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <View style={styles.calendarSheetMonthRow}>
                 <TouchableOpacity
                   onPress={() => {
                     const prev = new Date(dailyReportCalendarMonth);
@@ -5697,9 +5993,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   }}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Ionicons name="chevron-back" size={22} color="#003580" />
+                  <Ionicons name="chevron-back" size={20} color="#003580" />
                 </TouchableOpacity>
-                <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>{monthName}</Text>
+                <Text style={styles.calendarSheetMonthText}>{monthName}</Text>
                 <TouchableOpacity
                   onPress={() => {
                     const next = new Date(dailyReportCalendarMonth);
@@ -5708,15 +6004,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   }}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Ionicons name="chevron-forward" size={22} color="#003580" />
+                  <Ionicons name="chevron-forward" size={20} color="#003580" />
                 </TouchableOpacity>
               </View>
-              <View style={{ flexDirection: 'row', marginBottom: 6 }}>
+              <View style={{ flexDirection: 'row', marginBottom: 4 }}>
                 {weekDays.map((d, i) => (
-                  <Text
-                    key={`wd-${i}`}
-                    style={{ width: '14.28%', textAlign: 'center', fontSize: 10, fontWeight: '800', color: '#94a3b8' }}
-                  >
+                  <Text key={`wd-${i}`} style={styles.calendarSheetWeekDay}>
                     {d}
                   </Text>
                 ))}
@@ -5724,7 +6017,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
                 {days.map((d, index) => {
                   if (!d) {
-                    return <View key={`empty-${index}`} style={{ width: '14.28%', height: 38 }} />;
+                    return <View key={`empty-${index}`} style={styles.calendarSheetDayCell} />;
                   }
                   const cellDate = getLocalDateStr(d);
                   const isSelected = cellDate === dateStr;
@@ -5738,23 +6031,22 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                         setSelectedReportDate(cellDate);
                         setShowDailyReportCalendar(false);
                       }}
-                      style={{
-                        width: '14.28%',
-                        height: 38,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        borderRadius: 19,
-                        backgroundColor: isSelected ? '#003580' : 'transparent',
-                        borderWidth: isToday && !isSelected ? 1 : 0,
-                        borderColor: '#93c5fd',
-                        opacity: isFuture ? 0.3 : 1
-                      }}
+                      style={[
+                        styles.calendarSheetDayCell,
+                        {
+                          borderRadius: 16,
+                          backgroundColor: isSelected ? '#003580' : 'transparent',
+                          borderWidth: isToday && !isSelected ? 1 : 0,
+                          borderColor: '#93c5fd',
+                          opacity: isFuture ? 0.3 : 1,
+                        },
+                      ]}
                     >
                       <Text
                         style={{
-                          fontSize: 13,
+                          fontSize: 12,
                           fontWeight: isSelected || isToday ? '800' : '600',
-                          color: isSelected ? '#ffffff' : '#0f172a'
+                          color: isSelected ? '#ffffff' : '#0f172a',
                         }}
                       >
                         {d.getDate()}
@@ -5772,8 +6064,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               >
                 <Text style={styles.reportFilterModalCloseText}>Today</Text>
               </TouchableOpacity>
-            </TouchableOpacity>
-          </TouchableOpacity>
+            </View>
+          </View>
         </Modal>
       );
     };
@@ -6225,7 +6517,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const to = reportDateFrom <= reportDateTo ? reportDateTo : reportDateFrom;
       const qs = new URLSearchParams({
         page: '1',
-        limit: '500',
+        limit: '150',
         fromDate: from,
         toDate: to
       });
@@ -6945,8 +7237,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                               : 'Chamber Delete')
                           : notif.record_type === 'ClientMaster'
                             ? (/EDIT client|UPDATE_CLIENT|edited client/i.test(permText)
-                              ? 'Client Edit (Notify)'
-                              : 'Client Delete (Notify)')
+                              ? 'Client Edit'
+                              : /ADD client/i.test(permText)
+                                ? 'Client Add'
+                                : 'Client Delete')
                             : 'Edit Permission'}{' '}
                       · {formattedDate}
                     </Text>
@@ -6970,7 +7264,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                 : (isApproved ? '#16a34a' : '#ef4444')
                         }}>
                           {notif.record_type === 'ClientMaster'
-                            ? 'NOTIFY'
+                            ? (isApproved ? 'APPROVED' : 'DENIED')
                             : notif.record_type === 'MasterSetup'
                               ? 'OPEN'
                               : (isApproved ? 'APPROVED' : 'DENIED')}
@@ -7001,7 +7295,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                         : notif.record_type === 'ChamberMaster'
                           ? `${/ADD chamber/i.test(permText) ? 'Chamber add' : (/EDIT chamber/i.test(permText) ? 'Chamber edit' : 'Chamber delete')} ${isApproved ? 'approved' : 'denied'}`
                           : notif.record_type === 'ClientMaster'
-                            ? 'Saved. Super Admin has been notified.'
+                            ? `Client change ${isApproved ? 'approved — updating automatically' : 'denied'}`
                           : `${shiftLabel} task · Edit ${isApproved ? 'approved' : 'denied'}${meta.reference_no ? ` · ${meta.reference_no}` : ''}`}
                     </Text>
 
@@ -7018,7 +7312,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                           : notif.record_type === 'ChamberType'
                             ? (isApproved ? 'Type updates automatically ➔' : 'View & dismiss ➔')
                           : notif.record_type === 'ClientMaster'
-                            ? 'Tap to dismiss ➔'
+                            ? (isApproved ? 'Client updates automatically ➔' : 'View & dismiss ➔')
                           : notif.record_type === 'MasterSetup'
                             ? 'Tap to open Master Setup ➔'
                           : isApproved
@@ -7531,7 +7825,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           {reportsMode === 'temperature' ? renderDateSlider() : null}
 
           {reportsMode === 'temperature' ? (
-            chamberReportsLoading && !reportsRefreshing ? (
+            isBlockingListLoad(
+              chamberReportsLoading,
+              reportsRefreshing,
+              getFilteredReportLogs().length
+            ) ? (
               <View style={styles.reportsCenterState}>
                 <ActivityIndicator size="large" color="#003580" />
                 <Text style={styles.reportsStateText}>Loading temperature logs…</Text>
@@ -7548,6 +7846,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 </TouchableOpacity>
               </View>
             ) : (
+              <View style={{ flex: 1 }}>
               <FlatList
                 data={getFilteredReportLogs()}
                 keyExtractor={(item, idx) =>
@@ -7605,14 +7904,24 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     <Text style={styles.reportsStateText}>No temperature logs for selected filters.</Text>
                   </View>
                 }
+                {...FLATLIST_PERF_PROPS}
               />
+              <ListLoadingOverlay
+                visible={isSoftListLoad(
+                  chamberReportsLoading,
+                  reportsRefreshing,
+                  getFilteredReportLogs().length
+                )}
+                label="Updating logs…"
+              />
+              </View>
             )
-          ) : reportsLoading && !reportsRefreshing ? (
+          ) : isBlockingListLoad(reportsLoading, reportsRefreshing, filteredInventoryReportRows.length) ? (
             <View style={styles.reportsCenterState}>
               <ActivityIndicator size="large" color="#003580" />
               <Text style={styles.reportsStateText}>Loading inventory…</Text>
             </View>
-          ) : reportsError ? (
+          ) : reportsError && filteredInventoryReportRows.length === 0 ? (
             <View style={styles.reportsCenterState}>
               <Ionicons name="warning-outline" size={28} color="#dc2626" />
               <Text style={styles.reportsStateText}>{reportsError}</Text>
@@ -7621,31 +7930,42 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               </TouchableOpacity>
             </View>
           ) : (
-            <FlatList
-              data={filteredInventoryReportRows}
-              keyExtractor={(item, idx) =>
-                `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${item.chamber_name || 'ch'}-${idx}`
-              }
-              renderItem={renderInventoryItem}
-              contentContainerStyle={styles.reportsListBody}
-              refreshControl={
-                <RefreshControl
-                  refreshing={reportsRefreshing}
-                  onRefresh={() => {
-                    setReportsRefreshing(true);
-                    Promise.all([loadInventoryReports(), loadChamberReportLogs()]).finally(() =>
-                      setReportsRefreshing(false)
-                    );
-                  }}
-                />
-              }
-              ListEmptyComponent={
-                <View style={styles.reportsCenterState}>
-                  <Ionicons name="cube-outline" size={28} color="#94a3b8" />
-                  <Text style={styles.reportsStateText}>No inventory for selected filters.</Text>
-                </View>
-              }
-            />
+            <View style={{ flex: 1 }}>
+              <FlatList
+                data={filteredInventoryReportRows}
+                keyExtractor={(item, idx) =>
+                  `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${item.chamber_name || 'ch'}-${idx}`
+                }
+                renderItem={renderInventoryItem}
+                contentContainerStyle={styles.reportsListBody}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={reportsRefreshing}
+                    onRefresh={() => {
+                      setReportsRefreshing(true);
+                      Promise.all([loadInventoryReports(), loadChamberReportLogs()]).finally(() =>
+                        setReportsRefreshing(false)
+                      );
+                    }}
+                  />
+                }
+                ListEmptyComponent={
+                  <View style={styles.reportsCenterState}>
+                    <Ionicons name="cube-outline" size={28} color="#94a3b8" />
+                    <Text style={styles.reportsStateText}>No inventory for selected filters.</Text>
+                  </View>
+                }
+                {...FLATLIST_PERF_PROPS}
+              />
+              <ListLoadingOverlay
+                visible={isSoftListLoad(
+                  reportsLoading,
+                  reportsRefreshing,
+                  filteredInventoryReportRows.length
+                )}
+                label="Updating inventory…"
+              />
+            </View>
           )}
         </View>
 
@@ -7942,7 +8262,6 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       ['Supervisor', item.monitor_supervisor_name],
       ['Operator', item.operator_email || user?.email],
       ['Reference', item.reference_no],
-      ['Photo time', item.photo_capture_time],
       [
         'Time variance',
         item.time_variance_minutes != null ? `${item.time_variance_minutes} min` : null
@@ -8025,6 +8344,15 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <View style={styles.doDetailCard}>
               <Text style={styles.doDetailSectionTitle}>Sensor photo</Text>
               <DoSensorPhotoView rawPath={imagePath} apiUrl={apiUrl} />
+              <GpsDetailRow
+                label="Photo location (GPS)"
+                lat={item.photo_capture_latitude}
+                lng={item.photo_capture_longitude}
+                accuracy={item.photo_capture_accuracy}
+              />
+              {item.photo_capture_time
+                ? renderDetailRow('Photo capture time', item.photo_capture_time)
+                : null}
             </View>
           </ScrollView>
         </SafeAreaView>
@@ -8587,7 +8915,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     capturedImage ? (
                       <View style={{ width: '100%' }}>
                         <View style={styles.verticalPhotoWrapper}>
-                          <Image source={{ uri: capturedImage }} style={styles.verticalPhotoPreview} />
+                          <TouchableOpacity
+                            activeOpacity={0.9}
+                            onPress={() =>
+                              setImagePreview({ uri: capturedImage, label: 'Sensor Verification Photo' })
+                            }
+                          >
+                            <Image source={{ uri: capturedImage }} style={styles.verticalPhotoPreview} />
+                          </TouchableOpacity>
                           <TouchableOpacity 
                             style={styles.verticalRetakeBtn}
                             onPress={handleLaunchCamera}
@@ -8609,9 +8944,15 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     )
                   ) : (
                     capturedImage ? (
-                      <View style={styles.verticalPhotoWrapper}>
+                      <TouchableOpacity
+                        style={styles.verticalPhotoWrapper}
+                        activeOpacity={0.9}
+                        onPress={() =>
+                          setImagePreview({ uri: capturedImage, label: 'Sensor Verification Photo' })
+                        }
+                      >
                         <Image source={{ uri: capturedImage }} style={styles.verticalPhotoPreview} />
-                      </View>
+                      </TouchableOpacity>
                     ) : (
                       <View style={[styles.verticalCameraBtn, { borderWidth: 1, borderStyle: 'solid' }]}>
                         <Ionicons name="image-outline" size={26} color="#cbd5e1" />
@@ -9325,7 +9666,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             )}
           </ScrollView>
           {permissionModal.isOpen &&
-            (permissionModal.mode === 'chamber_edit' || permissionModal.mode === 'chamber_type' || permissionModal.mode === 'chamber_setup' || permissionModal.mode === 'client_rename') && (
+            (permissionModal.mode === 'chamber_edit' || permissionModal.mode === 'chamber_type' || permissionModal.mode === 'chamber_setup' || permissionModal.mode === 'client_rename' || permissionModal.mode === 'client_add') && (
             <View
               style={{
                 position: 'absolute',
@@ -9481,7 +9822,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   ? `Enter remark/reason to request Super Admin allow for editing "${clientToDelete?.chamberName}":`
                   : (isClientRename
                     ? `Rename client lot "${clientToDelete?.oldName}" to "${clientToDelete?.newName}" on ${clientToDelete?.chamberName}? Enter a remark/reason:`
-                    : `Remove "${clientToDelete?.clientName}" from ${clientToDelete?.chamberName || 'Chamber'} immediately? Enter a remark:`
+                    : `Send request to remove "${clientToDelete?.clientName}" from ${clientToDelete?.chamberName || 'Chamber'}. Super Admin must allow first:`
                   ))}
             </Text>
             
@@ -9547,77 +9888,41 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   }
 
                   if (target.type === 'client_rename') {
-                    const oldName = target.oldName;
-                    const newName = target.newName;
-                    const ok = renameLocalAssignment(
-                      target.chamberId,
-                      target.chamberName,
-                      oldName,
-                      newName,
-                      remark
-                    );
-                    if (!ok) {
-                      Alert.alert('Rename failed', 'Name may already exist on this chamber.');
-                      return;
-                    }
-                    ensureClientInLotMaster(newName);
-                    
                     setShowDeleteConfirmModal(false);
                     setDeleteRemarkInput('');
                     setEditingClientName(null);
                     setEditClientDraft('');
                     setClientToDelete(null);
-                    
-                    loadLocalAssignmentsData(chambersList);
-                    await reportDOActivity(
-                      'UPDATE_CLIENT',
-                      `${displayName} edited client master "${oldName}" → "${newName}" on ${target.chamberName} (chamber_id: ${target.chamberId}). Remark: ${remark}`,
-                      remark,
-                      target.chamberId
-                    );
-                    if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress, user);
-                    Alert.alert('Updated', `"${oldName}" renamed to "${newName}". Saves immediately — Super Admin is notified.`);
+                    await requestClientMasterPermission({
+                      chamber: { id: target.chamberId, name: target.chamberName },
+                      action: 'edit',
+                      clientName: target.oldName,
+                      newName: target.newName,
+                      remark
+                    });
                     return;
                   }
 
-                  const success = deleteLocalAssignment(
-                    target.chamberId,
-                    target.clientName,
+                  setShowDeleteConfirmModal(false);
+                  setDeleteRemarkInput('');
+                  setClientToDelete(null);
+                  await requestClientMasterPermission({
+                    chamber: { id: target.chamberId, name: target.chamberName },
+                    action: 'delete',
+                    clientName: target.clientName,
                     remark
-                  );
-                  if (success) {
-                    setShowDeleteConfirmModal(false);
-                    setDeleteRemarkInput('');
-                    loadLocalAssignmentsData(chambersList);
-                    reportDOActivity(
-                      'DELETE_CLIENT',
-                      `${displayName} deleted client master "${target.clientName}" from ${target.chamberName} (chamber_id: ${target.chamberId}). Remark: ${remark}`,
-                      remark,
-                      target.chamberId
-                    );
-                    if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress, user);
-                    if (target.permissionNotifId) {
-                      markPermissionNotificationComplete(target.permissionNotifId);
-                    }
-                    if (selectedClient === target.clientName) {
-                      setSelectedClient(null);
-                      setTempInput('');
-                      setBoxCountInput('');
-                      setCapturedImage(null);
-                      setCapturedImageTimestamp(null);
-                    }
-                    setClientToDelete(null);
-                    Alert.alert(
-                      'Deleted',
-                      `"${target.clientName}" removed from ${target.chamberName}. Super Admin has been notified.`
-                    );
-                  } else {
-                    Alert.alert('Error', 'Failed to delete client locally.');
+                  });
+                  if (selectedClient === target.clientName) {
+                    setSelectedClient(null);
+                    setTempInput('');
+                    setBoxCountInput('');
+                    setCapturedImage(null);
+                    setCapturedImageTimestamp(null);
                   }
                 }}
               >
                 <Text style={styles.dialogSaveBtnText}>
-                  {isChamberDeleteRequest || isChamberEditRequest ? 'Send Request' : (isClientRename ? 'Confirm Rename' : 'Confirm Delete')}
+                  {isChamberDeleteRequest || isChamberEditRequest ? 'Send Request' : (isClientRename ? 'Send Request' : 'Send Request')}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -9641,28 +9946,27 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       status === 'Approved' ? '#16a34a' : '#64748b';
 
     const clientCount = chamber ? getClientsForChamber(chamber.id).length : 0;
-    const needsRemark = mode === 'chamber_edit' || mode === 'chamber_type' || mode === 'chamber_setup' || mode === 'client_rename';
+    const needsRemark = mode === 'chamber_edit' || mode === 'chamber_type' || mode === 'chamber_setup' || mode === 'client_rename' || mode === 'client_add';
     const typeNeedsAllow = mode === 'chamber_type' || (mode === 'chamber_setup' && !!permissionModal.nextType);
+    const clientNeedsAllow = mode === 'client_rename' || mode === 'client_add' || mode === 'chamber_setup';
     const primaryLabel =
-      typeNeedsAllow
-        ? 'Request Permission'
+      typeNeedsAllow || clientNeedsAllow
+        ? 'Send Request'
         : mode === 'chamber_setup'
-          ? 'Save'
-          : mode === 'client_rename'
-            ? 'Save Client'
-            : 'Request Permission';
+          ? 'Send Request'
+          : 'Request Permission';
 
     const yellowText =
-      mode === 'chamber_setup' && permissionModal.nextType
-        ? 'Client add/delete saves now. Chamber type will change only after Super Admin allows — then it updates automatically.'
-        : mode === 'chamber_setup'
-          ? 'Enter a remark to save client add or delete. Changes apply after this save.'
+      mode === 'chamber_setup'
+        ? 'Client add, delete, rename and chamber type changes need Super Admin approval. They will apply automatically after allow.'
+        : mode === 'client_add'
+          ? 'Client will be added only after Super Admin allows. It will appear automatically on this app.'
         : mode === 'chamber_type'
           ? 'Chamber type will not change until Super Admin allows. After allow, it updates automatically on this app.'
           : mode === 'chamber_edit'
             ? 'This chamber has clients. First get permission from Super Admin to edit. Each approval allows one edit session.'
             : mode === 'client_rename'
-              ? 'Add a remark to edit this client name.'
+              ? 'Client rename needs Super Admin approval. After allow, the new name appears automatically.'
               : 'To update this completed log, first get permission from Super Admin. Each approval allows one update only.';
 
     return (
@@ -9701,7 +10005,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <>
               <Text style={{ fontSize: 12, color: '#334155' }}>
                 <Text style={{ fontWeight: '800' }}>Record:</Text>{' '}
-                {mode === 'chamber_type' ? 'Chamber Type' : mode === 'chamber_setup' ? 'Chamber Setup' : mode === 'client_rename' ? 'Client Master' : 'Chamber Master'}
+                {mode === 'chamber_type' ? 'Chamber Type' : mode === 'chamber_setup' ? 'Chamber Setup' : mode === 'client_rename' || mode === 'client_add' ? 'Client Master' : 'Chamber Master'}
               </Text>
               <Text style={{ fontSize: 12, color: '#334155' }}>
                 <Text style={{ fontWeight: '800' }}>Chamber:</Text> {chamber?.name || '-'}
@@ -9713,6 +10017,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               ) : mode === 'client_rename' ? (
                 <Text style={{ fontSize: 12, color: '#334155' }}>
                   <Text style={{ fontWeight: '800' }}>Client:</Text> {permissionModal.oldName || '-'} → {permissionModal.newName || '-'}
+                </Text>
+              ) : mode === 'client_add' ? (
+                <Text style={{ fontSize: 12, color: '#334155' }}>
+                  <Text style={{ fontWeight: '800' }}>Client:</Text> {permissionModal.pendingClientName || '-'} ({permissionModal.pendingClientType || newClientType})
                 </Text>
               ) : permissionModal.nextType ? (
                 <Text style={{ fontSize: 12, color: '#334155' }}>
@@ -9779,7 +10087,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <Text style={styles.dialogCancelBtnText}>Back</Text>
           </TouchableOpacity>
 
-          {(status === 'None' || status === 'Denied' || status === 'Used' || ((mode === 'chamber_type' || mode === 'chamber_setup' || mode === 'client_rename') && status !== 'Pending')) && (
+          {(status === 'None' || status === 'Denied' || status === 'Used' || ((mode === 'chamber_type' || mode === 'chamber_setup' || mode === 'client_rename' || mode === 'client_add') && status !== 'Pending')) && (
             <TouchableOpacity
               style={[styles.dialogSaveBtn, { backgroundColor: '#ea580c', opacity: permissionRequestBusy ? 0.7 : 1 }]}
               disabled={permissionRequestBusy}
@@ -9825,7 +10133,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const renderPermissionModal = () => {
     if (!permissionModal.isOpen) return null;
     // Master Setup already open: overlay is drawn inside that screen
-    if (showClientManagerModal && (permissionModal.mode === 'chamber_edit' || permissionModal.mode === 'chamber_type' || permissionModal.mode === 'chamber_setup' || permissionModal.mode === 'client_rename')) {
+    if (showClientManagerModal && (permissionModal.mode === 'chamber_edit' || permissionModal.mode === 'chamber_type' || permissionModal.mode === 'chamber_setup' || permissionModal.mode === 'client_rename' || permissionModal.mode === 'client_add')) {
       return null;
     }
     return (
@@ -10024,83 +10332,85 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
   // Custom month calendar modal — pick From then To for report range
   const renderCalendarModal = () => {
-    if (!showCalendarModal) return null;
-
     const days = getCalendarDays(calendarMonth);
     const monthName = calendarMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
-    const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const rangeStart = reportDateFrom <= reportDateTo ? reportDateFrom : reportDateTo;
     const rangeEnd = reportDateFrom <= reportDateTo ? reportDateTo : reportDateFrom;
 
     return (
-      <Modal visible={showCalendarModal} transparent animationType="fade" onRequestClose={() => setShowCalendarModal(false)}>
-        <View style={styles.dialogOverlay}>
-          <View style={[styles.dialogContent, { width: 320, padding: 16 }]}>
-            <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a', marginBottom: 4 }}>
-              Select date range
-            </Text>
-            <Text style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>
+      <Modal visible={showCalendarModal} transparent animationType="slide" onRequestClose={() => setShowCalendarModal(false)}>
+        <View style={styles.reportFilterModalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setShowCalendarModal(false)}
+          />
+          <View style={styles.calendarFilterModalSheet}>
+            <View style={styles.calendarSheetHandle} />
+            <Text style={styles.reportFilterModalTitle}>Select date range</Text>
+            <Text style={styles.calendarSheetHint}>
               {calendarPickMode === 'from'
                 ? 'Tap start date, then end date'
                 : 'Tap end date to finish range'}
             </Text>
 
-            <View style={{ flexDirection: 'row', marginBottom: 12 }}>
+            <View style={styles.calendarSheetChipRow}>
               <TouchableOpacity
                 style={[
                   styles.reportRangePickChip,
                   calendarPickMode === 'from' && styles.reportRangePickChipActive,
-                  { marginRight: 8 }
+                  { flex: 1, marginRight: 8 }
                 ]}
                 onPress={() => setCalendarPickMode('from')}
               >
                 <Text style={[
                   styles.reportRangePickChipText,
                   calendarPickMode === 'from' && styles.reportRangePickChipTextActive
-                ]}>
+                ]} numberOfLines={1}>
                   From: {reportDateFrom}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
                   styles.reportRangePickChip,
-                  calendarPickMode === 'to' && styles.reportRangePickChipActive
+                  calendarPickMode === 'to' && styles.reportRangePickChipActive,
+                  { flex: 1 }
                 ]}
                 onPress={() => setCalendarPickMode('to')}
               >
                 <Text style={[
                   styles.reportRangePickChipText,
                   calendarPickMode === 'to' && styles.reportRangePickChipTextActive
-                ]}>
+                ]} numberOfLines={1}>
                   To: {reportDateTo}
                 </Text>
               </TouchableOpacity>
             </View>
 
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <View style={styles.calendarSheetMonthRow}>
               <TouchableOpacity onPress={() => {
                 const prev = new Date(calendarMonth);
                 prev.setMonth(prev.getMonth() - 1);
                 setCalendarMonth(prev);
-              }}>
+              }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="chevron-back" size={20} color="#003580" />
               </TouchableOpacity>
               
-              <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#0f172a' }}>{monthName}</Text>
+              <Text style={styles.calendarSheetMonthText}>{monthName}</Text>
               
               <TouchableOpacity onPress={() => {
                 const next = new Date(calendarMonth);
                 next.setMonth(next.getMonth() + 1);
                 setCalendarMonth(next);
-              }}>
+              }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="chevron-forward" size={20} color="#003580" />
               </TouchableOpacity>
             </View>
 
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
-              {weekDays.map(d => (
-                <Text key={d} style={{ width: '14.28%', textAlign: 'center', fontSize: 10, color: '#64748b', fontWeight: 'bold' }}>
-                  {d[0]}
+            <View style={{ flexDirection: 'row', marginBottom: 4 }}>
+              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+                <Text key={`cal-wd-${i}`} style={styles.calendarSheetWeekDay}>
+                  {d}
                 </Text>
               ))}
             </View>
@@ -10108,7 +10418,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
               {days.map((d, index) => {
                 if (d === null) {
-                  return <View key={`empty_${index}`} style={{ width: '14.28%', height: 34 }} />;
+                  return <View key={`empty_${index}`} style={styles.calendarSheetDayCell} />;
                 }
                 const dateStr = getLocalDateStr(d);
                 const isStart = dateStr === rangeStart;
@@ -10119,16 +10429,15 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 return (
                   <TouchableOpacity
                     key={dateStr}
-                    style={{
-                      width: '14.28%',
-                      height: 34,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: 17,
-                      backgroundColor: isStart || isEnd ? '#003580' : inRange ? '#dbeafe' : 'transparent',
-                      borderWidth: isToday && !isStart && !isEnd ? 1 : 0,
-                      borderColor: '#003580',
-                    }}
+                    style={[
+                      styles.calendarSheetDayCell,
+                      {
+                        borderRadius: 16,
+                        backgroundColor: isStart || isEnd ? '#003580' : inRange ? '#dbeafe' : 'transparent',
+                        borderWidth: isToday && !isStart && !isEnd ? 1 : 0,
+                        borderColor: '#93c5fd',
+                      },
+                    ]}
                     onPress={() => {
                       if (calendarPickMode === 'from') {
                         setReportDateFrom(dateStr);
@@ -10154,8 +10463,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     }}
                   >
                     <Text style={{
-                      fontSize: 11,
-                      fontWeight: isStart || isEnd || isToday ? 'bold' : 'normal',
+                      fontSize: 12,
+                      fontWeight: isStart || isEnd || isToday ? '800' : '600',
                       color: isStart || isEnd ? '#ffffff' : '#0f172a'
                     }}>
                       {d.getDate()}
@@ -10166,10 +10475,257 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             </View>
 
             <TouchableOpacity 
-              style={[styles.dialogCancelBtn, { marginTop: 16, alignSelf: 'stretch', alignItems: 'center' }]}
+              style={styles.reportFilterModalClose}
               onPress={() => setShowCalendarModal(false)}
+              activeOpacity={0.85}
             >
-              <Text style={styles.dialogCancelBtnText}>Done</Text>
+              <Text style={styles.reportFilterModalCloseText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  const openDockReportCalendar = (kind, mode = 'from') => {
+    const from = kind === 'outward' ? outwardReportDateFrom : inwardReportDateFrom;
+    const to = kind === 'outward' ? outwardReportDateTo : inwardReportDateTo;
+    const seed =
+      mode === 'to' && to
+        ? to
+        : from || getLocalDateStr();
+    const seedDate = new Date(`${seed}T12:00:00`);
+    setDockReportCalendarKind(kind);
+    setDockReportCalendarPickMode(mode);
+    setDockReportCalendarMonth(Number.isNaN(seedDate.getTime()) ? new Date() : seedDate);
+    setDockReportCalendarOpen(true);
+  };
+
+  const renderDockReportCalendarModal = () => {
+    const isOutward = dockReportCalendarKind === 'outward';
+    const dateFrom = isOutward ? outwardReportDateFrom : inwardReportDateFrom;
+    const dateTo = isOutward ? outwardReportDateTo : inwardReportDateTo;
+    const setDateFrom = isOutward ? setOutwardReportDateFrom : setInwardReportDateFrom;
+    const setDateTo = isOutward ? setOutwardReportDateTo : setInwardReportDateTo;
+    const days = getCalendarDays(dockReportCalendarMonth);
+    const monthName = dockReportCalendarMonth.toLocaleString('default', {
+      month: 'long',
+      year: 'numeric',
+    });
+    const weekDays = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    const rangeStart =
+      dateFrom && dateTo
+        ? dateFrom <= dateTo
+          ? dateFrom
+          : dateTo
+        : dateFrom || dateTo || '';
+    const rangeEnd =
+      dateFrom && dateTo
+        ? dateFrom <= dateTo
+          ? dateTo
+          : dateFrom
+        : dateFrom || dateTo || '';
+    const todayStr = getLocalDateStr();
+
+    return (
+      <Modal
+        visible={dockReportCalendarOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDockReportCalendarOpen(false)}
+      >
+        <View style={styles.reportFilterModalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setDockReportCalendarOpen(false)}
+          />
+          <View style={styles.calendarFilterModalSheet}>
+            <View style={styles.calendarSheetHandle} />
+            <Text style={styles.reportFilterModalTitle}>Select date range</Text>
+            <Text style={styles.calendarSheetHint}>
+              {dockReportCalendarPickMode === 'from'
+                ? 'Tap start date, then end date'
+                : 'Tap end date to finish range'}
+            </Text>
+
+            <View style={styles.calendarSheetChipRow}>
+              <TouchableOpacity
+                style={[
+                  styles.reportRangePickChip,
+                  dockReportCalendarPickMode === 'from' && styles.reportRangePickChipActive,
+                  { flex: 1, marginRight: 8 },
+                ]}
+                onPress={() => setDockReportCalendarPickMode('from')}
+              >
+                <Text
+                  style={[
+                    styles.reportRangePickChipText,
+                    dockReportCalendarPickMode === 'from' && styles.reportRangePickChipTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  From: {dateFrom || 'Select'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.reportRangePickChip,
+                  dockReportCalendarPickMode === 'to' && styles.reportRangePickChipActive,
+                  { flex: 1 },
+                ]}
+                onPress={() => setDockReportCalendarPickMode('to')}
+              >
+                <Text
+                  style={[
+                    styles.reportRangePickChipText,
+                    dockReportCalendarPickMode === 'to' && styles.reportRangePickChipTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  To: {dateTo || 'Select'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.calendarSheetMonthRow}>
+              <TouchableOpacity
+                onPress={() => {
+                  const prev = new Date(dockReportCalendarMonth);
+                  prev.setMonth(prev.getMonth() - 1);
+                  setDockReportCalendarMonth(prev);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="chevron-back" size={20} color="#003580" />
+              </TouchableOpacity>
+              <Text style={styles.calendarSheetMonthText}>{monthName}</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  const next = new Date(dockReportCalendarMonth);
+                  next.setMonth(next.getMonth() + 1);
+                  setDockReportCalendarMonth(next);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="chevron-forward" size={20} color="#003580" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ flexDirection: 'row', marginBottom: 4 }}>
+              {weekDays.map((d, i) => (
+                <Text key={`dock-wd-${i}`} style={styles.calendarSheetWeekDay}>
+                  {d}
+                </Text>
+              ))}
+            </View>
+
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+              {days.map((d, index) => {
+                if (d === null) {
+                  return <View key={`dock-empty_${index}`} style={styles.calendarSheetDayCell} />;
+                }
+                const dateStr = getLocalDateStr(d);
+                const isStart = dateStr === rangeStart;
+                const isEnd = dateStr === rangeEnd;
+                const inRange = rangeStart && rangeEnd && dateStr >= rangeStart && dateStr <= rangeEnd;
+                const isToday = dateStr === todayStr;
+                const isDisabled =
+                  dockReportCalendarPickMode === 'to' && dateFrom && dateStr < dateFrom;
+
+                return (
+                  <TouchableOpacity
+                    key={dateStr}
+                    disabled={!!isDisabled}
+                    style={[
+                      styles.calendarSheetDayCell,
+                      {
+                        borderRadius: 16,
+                        backgroundColor:
+                          isStart || isEnd ? '#003580' : inRange ? '#dbeafe' : 'transparent',
+                        borderWidth: isToday && !isStart && !isEnd ? 1 : 0,
+                        borderColor: '#93c5fd',
+                        opacity: isDisabled ? 0.3 : 1,
+                      },
+                    ]}
+                    onPress={() => {
+                      if (dockReportCalendarPickMode === 'from') {
+                        setDateFrom(dateStr);
+                        if (!dateTo || dateStr > dateTo) setDateTo(dateStr);
+                        setDockReportCalendarPickMode('to');
+                      } else {
+                        if (dateFrom && dateStr < dateFrom) {
+                          setDateFrom(dateStr);
+                          setDateTo(dateFrom);
+                        } else {
+                          setDateTo(dateStr);
+                          if (!dateFrom) setDateFrom(dateStr);
+                        }
+                        setDockReportCalendarPickMode('from');
+                        setDockReportCalendarOpen(false);
+                      }
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: isStart || isEnd || isToday ? '800' : '600',
+                        color: isStart || isEnd ? '#ffffff' : '#0f172a',
+                      }}
+                    >
+                      {d.getDate()}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={styles.calendarSheetSuggestRow}>
+              <TouchableOpacity
+                style={styles.doSuggestChip}
+                onPress={() => {
+                  const t = getLocalDateStr();
+                  setDateFrom(t);
+                  setDateTo(t);
+                  setDockReportCalendarOpen(false);
+                }}
+              >
+                <Text style={styles.doSuggestText}>Today</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.doSuggestChip}
+                onPress={() => {
+                  const d = new Date();
+                  d.setDate(d.getDate() - 1);
+                  const y = getLocalDateStr(d);
+                  setDateFrom(y);
+                  setDateTo(y);
+                  setDockReportCalendarOpen(false);
+                }}
+              >
+                <Text style={styles.doSuggestText}>Yesterday</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.doSuggestChip}
+                onPress={() => {
+                  const end = new Date();
+                  const start = new Date();
+                  start.setDate(end.getDate() - 6);
+                  setDateFrom(getLocalDateStr(start));
+                  setDateTo(getLocalDateStr(end));
+                  setDockReportCalendarOpen(false);
+                }}
+              >
+                <Text style={styles.doSuggestText}>Last 7 days</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.reportFilterModalClose}
+              onPress={() => setDockReportCalendarOpen(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.reportFilterModalCloseText}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -10479,10 +11035,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   }, [loadInwardReports]);
 
   const clearInwardReportFilters = useCallback(() => {
+    const today = getLocalDateStr();
     setInwardReportSearch('');
-    setInwardReportDateFrom('');
-    setInwardReportDateTo('');
-    loadInwardReports({ page: 1, search: '', fromDate: '', toDate: '' });
+    setInwardReportDateFrom(today);
+    setInwardReportDateTo(today);
+    loadInwardReports({ page: 1, search: '', fromDate: today, toDate: today });
   }, [loadInwardReports]);
 
   const goInwardReportPrevPage = useCallback(() => {
@@ -10656,25 +11213,28 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     ];
 
     const photoGroups = [
-      { label: 'Invoice', paths: splitInwardPhotoPaths(item.inward_invoice_photos) },
-      { label: 'Vehicle temp', paths: splitInwardPhotoPaths(item.inward_vehicle_temp_photo) },
-      { label: 'Material temp', paths: splitInwardPhotoPaths(item.inward_material_temp_photo) },
-      { label: 'Vehicle back', paths: splitInwardPhotoPaths(item.inward_vehicle_back_side_photo) },
+      { label: 'Invoice', fieldKey: 'inward_invoice_photos', paths: splitInwardPhotoPaths(item.inward_invoice_photos) },
+      { label: 'Vehicle temp', fieldKey: 'inward_vehicle_temp_photo', paths: splitInwardPhotoPaths(item.inward_vehicle_temp_photo) },
+      { label: 'Material temp', fieldKey: 'inward_material_temp_photo', paths: splitInwardPhotoPaths(item.inward_material_temp_photo) },
+      { label: 'Vehicle back', fieldKey: 'inward_vehicle_back_side_photo', paths: splitInwardPhotoPaths(item.inward_vehicle_back_side_photo) },
       {
         label: 'Back with material',
+        fieldKey: 'inward_vehicle_back_side_photo_with_material',
         paths: splitInwardPhotoPaths(item.inward_vehicle_back_side_photo_with_material),
       },
-      { label: 'Count sheet', paths: splitInwardPhotoPaths(item.inward_count_sheet_photo) },
-      { label: 'Seal', paths: splitInwardPhotoPaths(item.inward_vehicle_seal_photo) },
-      { label: 'Damage boxes', paths: splitInwardPhotoPaths(item.inward_damage_boxes_photo) },
+      { label: 'Count sheet', fieldKey: 'inward_count_sheet_photo', paths: splitInwardPhotoPaths(item.inward_count_sheet_photo) },
+      { label: 'Seal', fieldKey: 'inward_vehicle_seal_photo', paths: splitInwardPhotoPaths(item.inward_vehicle_seal_photo) },
+      { label: 'Damage boxes', fieldKey: 'inward_damage_boxes_photo', paths: splitInwardPhotoPaths(item.inward_damage_boxes_photo) },
     ].filter((g) => g.paths.length > 0);
     const podPaths = splitInwardPhotoPaths(item.inward_pod_photo);
 
     const photoItems = photoGroups.flatMap((group) =>
       group.paths.map((path, idx) => ({
-        key: `${group.label}-${idx}`,
+        key: `${group.fieldKey}-${idx}`,
         label: group.paths.length > 1 ? `${group.label} ${idx + 1}` : group.label,
         path,
+        fieldKey: group.fieldKey,
+        photoIndex: idx,
       }))
     );
 
@@ -10747,12 +11307,18 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     const uri =
                       resolveDoImageUrl(path, apiUrl, 'inward_images') ||
                       resolveDoImageUrl(path, PRODUCTION_API_URL, 'inward_images');
+                    const label = `POD${podPaths.length > 1 ? ` ${idx + 1}` : ''}`;
                     return (
                       <View key={`pod-${idx}`} style={styles.inwardDetailPhotoCell}>
                         <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
-                          POD{podPaths.length > 1 ? ` ${idx + 1}` : ''}
+                          {label}
                         </Text>
-                        <View style={styles.inwardDetailPhotoFrame}>
+                        <TouchableOpacity
+                          style={styles.inwardDetailPhotoFrame}
+                          activeOpacity={uri ? 0.85 : 1}
+                          disabled={!uri}
+                          onPress={() => uri && setImagePreview({ uri, label })}
+                        >
                           {uri ? (
                             <Image
                               source={{ uri }}
@@ -10764,7 +11330,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                               <Ionicons name="image-outline" size={22} color="#94a3b8" />
                             </View>
                           )}
-                        </View>
+                        </TouchableOpacity>
                       </View>
                     );
                   })}
@@ -10794,33 +11360,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             {photoItems.length > 0 ? (
               <View style={styles.doDetailCard}>
                 <Text style={styles.doDetailSectionTitle}>Photos</Text>
-                <View style={styles.inwardDetailPhotoGrid}>
-                  {photoItems.map((photo) => {
-                    const uri =
-                      resolveDoImageUrl(photo.path, apiUrl, 'inward_images') ||
-                      resolveDoImageUrl(photo.path, PRODUCTION_API_URL, 'inward_images');
-                    return (
-                      <View key={photo.key} style={styles.inwardDetailPhotoCell}>
-                        <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
-                          {photo.label}
-                        </Text>
-                        <View style={styles.inwardDetailPhotoFrame}>
-                          {uri ? (
-                            <Image
-                              source={{ uri }}
-                              style={styles.inwardDetailPhotoImage}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <View style={styles.inwardDetailPhotoPlaceholder}>
-                              <Ionicons name="image-outline" size={22} color="#94a3b8" />
-                            </View>
-                          )}
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
+                <PhotoGridWithLocation
+                  photoItems={photoItems}
+                  folderHint="inward_images"
+                  resolveUri={(path, folderHint) =>
+                    resolveDoImageUrl(path, apiUrl, folderHint) ||
+                    resolveDoImageUrl(path, PRODUCTION_API_URL, folderHint)
+                  }
+                />
               </View>
             ) : null}
           </ScrollView>
@@ -10851,23 +11398,35 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             returnKeyType="search"
           />
         </View>
-        <View style={styles.dockReportDateRow}>
-          <TextInput
-            style={styles.dockReportDateInput}
-            placeholder="From YYYY-MM-DD"
-            placeholderTextColor="#94a3b8"
-            value={inwardReportDateFrom}
-            onChangeText={setInwardReportDateFrom}
-            autoCapitalize="none"
-          />
-          <TextInput
-            style={styles.dockReportDateInput}
-            placeholder="To YYYY-MM-DD"
-            placeholderTextColor="#94a3b8"
-            value={inwardReportDateTo}
-            onChangeText={setInwardReportDateTo}
-            autoCapitalize="none"
-          />
+        <View style={[styles.reportListFilterRow, { marginTop: 0 }]}>
+          <TouchableOpacity
+            style={[styles.doFilterChip, !!inwardReportDateFrom && styles.doFilterChipActive]}
+            onPress={() => openDockReportCalendar('inward', 'from')}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.doFilterChipLabel}>From</Text>
+            <Text style={styles.doFilterChipValue} numberOfLines={1}>
+              {inwardReportDateFrom
+                ? inwardReportDateFrom === getLocalDateStr()
+                  ? 'Today'
+                  : inwardReportDateFrom
+                : 'All'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.doFilterChip, !!inwardReportDateTo && styles.doFilterChipActive]}
+            onPress={() => openDockReportCalendar('inward', 'to')}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.doFilterChipLabel}>To</Text>
+            <Text style={styles.doFilterChipValue} numberOfLines={1}>
+              {inwardReportDateTo
+                ? inwardReportDateTo === getLocalDateStr()
+                  ? 'Today'
+                  : inwardReportDateTo
+                : 'All'}
+            </Text>
+          </TouchableOpacity>
         </View>
         <View style={styles.dockReportFilterActions}>
           <TouchableOpacity
@@ -10882,12 +11441,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
       </View>
 
-      {inwardReportsLoading && !inwardReportsRefreshing ? (
+      {isBlockingListLoad(inwardReportsLoading, inwardReportsRefreshing, inwardReportRows.length) ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color="#003580" />
           <Text style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>Loading reports…</Text>
         </View>
-      ) : inwardReportsError ? (
+      ) : inwardReportsError && inwardReportRows.length === 0 ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <Text style={{ color: '#b91c1c', textAlign: 'center', marginBottom: 12 }}>
             {inwardReportsError}
@@ -10905,6 +11464,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           </TouchableOpacity>
         </View>
       ) : (
+        <View style={{ flex: 1 }}>
         <FlatList
           style={{ flex: 1 }}
           data={inwardReportRows}
@@ -10923,7 +11483,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     styles.dockReportPageBtn,
                     inwardReportPage <= 1 && styles.dockReportPageBtnDisabled,
                   ]}
-                  disabled={inwardReportPage <= 1}
+                  disabled={inwardReportPage <= 1 || inwardReportsLoading}
                   onPress={goInwardReportPrevPage}
                 >
                   <Text style={styles.dockReportPageBtnText}>Previous</Text>
@@ -10938,7 +11498,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     styles.dockReportPageBtn,
                     !inwardReportHasMore && styles.dockReportPageBtnDisabled,
                   ]}
-                  disabled={!inwardReportHasMore}
+                  disabled={!inwardReportHasMore || inwardReportsLoading}
                   onPress={goInwardReportNextPage}
                 >
                   <Text style={styles.dockReportPageBtnText}>Next</Text>
@@ -10956,6 +11516,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               </Text>
             </View>
           }
+          {...FLATLIST_PERF_PROPS}
           renderItem={({ item }) => {
             const shortQty = parseInt(item.inward_short_received_boxes_qty, 10) || 0;
             const excessQty = parseInt(item.inward_excess_received_boxes_qty, 10) || 0;
@@ -11020,6 +11581,15 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             );
           }}
         />
+        <ListLoadingOverlay
+          visible={isSoftListLoad(
+            inwardReportsLoading,
+            inwardReportsRefreshing,
+            inwardReportRows.length
+          )}
+          label="Loading page…"
+        />
+        </View>
       )}
     </View>
   );
@@ -11102,10 +11672,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   }, [loadOutwardReports]);
 
   const clearOutwardReportFilters = useCallback(() => {
+    const today = getLocalDateStr();
     setOutwardReportSearch('');
-    setOutwardReportDateFrom('');
-    setOutwardReportDateTo('');
-    loadOutwardReports({ page: 1, search: '', fromDate: '', toDate: '' });
+    setOutwardReportDateFrom(today);
+    setOutwardReportDateTo(today);
+    loadOutwardReports({ page: 1, search: '', fromDate: today, toDate: today });
   }, [loadOutwardReports]);
 
   const goOutwardReportPrevPage = useCallback(() => {
@@ -11204,13 +11775,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     [apiUrl, token, podUploadBusy]
   );
 
-  const splitOutwardPhotoPaths = (value) => {
-    if (!value) return [];
-    return String(value)
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s && s !== 'null' && s !== 'undefined');
-  };
+  const splitOutwardPhotoPaths = (value) => splitLogPhotoPaths(value);
 
   const renderOutwardDetailModal = () => {
     if (!selectedOutwardReport) return null;
@@ -11280,30 +11845,34 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     ];
 
     const photoGroups = [
-      { label: 'Invoice', paths: splitOutwardPhotoPaths(item.outward_invoice_photos) },
+      { label: 'Invoice', fieldKey: 'outward_invoice_photos', paths: splitOutwardPhotoPaths(item.outward_invoice_photos) },
       {
         label: 'Pre vehicle temp',
+        fieldKey: 'outward_pre_vehicle_temp_photo',
         paths: splitOutwardPhotoPaths(
           item.outward_pre_vehicle_temp_photo || item.outward_vehicle_temp_photo
         ),
       },
-      { label: 'Material temp', paths: splitOutwardPhotoPaths(item.outward_material_temp_photo) },
-      { label: 'Vehicle back', paths: splitOutwardPhotoPaths(item.outward_vehicle_back_side_photo) },
+      { label: 'Material temp', fieldKey: 'outward_material_temp_photo', paths: splitOutwardPhotoPaths(item.outward_material_temp_photo) },
+      { label: 'Vehicle back', fieldKey: 'outward_vehicle_back_side_photo', paths: splitOutwardPhotoPaths(item.outward_vehicle_back_side_photo) },
       {
         label: 'Back with material',
+        fieldKey: 'outward_vehicle_back_side_photo_with_material',
         paths: splitOutwardPhotoPaths(item.outward_vehicle_back_side_photo_with_material),
       },
-      { label: 'Count sheet', paths: splitOutwardPhotoPaths(item.outward_count_sheet_photo) },
-      { label: 'Seal', paths: splitOutwardPhotoPaths(item.outward_vehicle_seal_photo) },
-      { label: 'Damage boxes', paths: splitOutwardPhotoPaths(item.outward_damage_boxes_photo) },
+      { label: 'Count sheet', fieldKey: 'outward_count_sheet_photo', paths: splitOutwardPhotoPaths(item.outward_count_sheet_photo) },
+      { label: 'Seal', fieldKey: 'outward_vehicle_seal_photo', paths: splitOutwardPhotoPaths(item.outward_vehicle_seal_photo) },
+      { label: 'Damage boxes', fieldKey: 'outward_damage_boxes_photo', paths: splitOutwardPhotoPaths(item.outward_damage_boxes_photo) },
     ].filter((g) => g.paths.length > 0);
     const podPaths = splitOutwardPhotoPaths(item.outward_pod_photo);
 
     const photoItems = photoGroups.flatMap((group) =>
       group.paths.map((path, idx) => ({
-        key: `${group.label}-${idx}`,
+        key: `${group.fieldKey}-${idx}`,
         label: group.paths.length > 1 ? `${group.label} ${idx + 1}` : group.label,
         path,
+        fieldKey: group.fieldKey,
+        photoIndex: idx,
       }))
     );
 
@@ -11376,12 +11945,18 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     const uri =
                       resolveDoImageUrl(path, apiUrl, 'outward_images') ||
                       resolveDoImageUrl(path, PRODUCTION_API_URL, 'outward_images');
+                    const label = `POD${podPaths.length > 1 ? ` ${idx + 1}` : ''}`;
                     return (
                       <View key={`pod-${idx}`} style={styles.inwardDetailPhotoCell}>
                         <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
-                          POD{podPaths.length > 1 ? ` ${idx + 1}` : ''}
+                          {label}
                         </Text>
-                        <View style={styles.inwardDetailPhotoFrame}>
+                        <TouchableOpacity
+                          style={styles.inwardDetailPhotoFrame}
+                          activeOpacity={uri ? 0.85 : 1}
+                          disabled={!uri}
+                          onPress={() => uri && setImagePreview({ uri, label })}
+                        >
                           {uri ? (
                             <Image
                               source={{ uri }}
@@ -11393,7 +11968,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                               <Ionicons name="image-outline" size={22} color="#94a3b8" />
                             </View>
                           )}
-                        </View>
+                        </TouchableOpacity>
                       </View>
                     );
                   })}
@@ -11423,33 +11998,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             {photoItems.length > 0 ? (
               <View style={styles.doDetailCard}>
                 <Text style={styles.doDetailSectionTitle}>Photos</Text>
-                <View style={styles.inwardDetailPhotoGrid}>
-                  {photoItems.map((photo) => {
-                    const uri =
-                      resolveDoImageUrl(photo.path, apiUrl, 'outward_images') ||
-                      resolveDoImageUrl(photo.path, PRODUCTION_API_URL, 'outward_images');
-                    return (
-                      <View key={photo.key} style={styles.inwardDetailPhotoCell}>
-                        <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
-                          {photo.label}
-                        </Text>
-                        <View style={styles.inwardDetailPhotoFrame}>
-                          {uri ? (
-                            <Image
-                              source={{ uri }}
-                              style={styles.inwardDetailPhotoImage}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <View style={styles.inwardDetailPhotoPlaceholder}>
-                              <Ionicons name="image-outline" size={22} color="#94a3b8" />
-                            </View>
-                          )}
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
+                <PhotoGridWithLocation
+                  photoItems={photoItems}
+                  folderHint="outward_images"
+                  resolveUri={(path, folderHint) =>
+                    resolveDoImageUrl(path, apiUrl, folderHint) ||
+                    resolveDoImageUrl(path, PRODUCTION_API_URL, folderHint)
+                  }
+                />
               </View>
             ) : null}
           </ScrollView>
@@ -11480,23 +12036,35 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             returnKeyType="search"
           />
         </View>
-        <View style={styles.dockReportDateRow}>
-          <TextInput
-            style={styles.dockReportDateInput}
-            placeholder="From YYYY-MM-DD"
-            placeholderTextColor="#94a3b8"
-            value={outwardReportDateFrom}
-            onChangeText={setOutwardReportDateFrom}
-            autoCapitalize="none"
-          />
-          <TextInput
-            style={styles.dockReportDateInput}
-            placeholder="To YYYY-MM-DD"
-            placeholderTextColor="#94a3b8"
-            value={outwardReportDateTo}
-            onChangeText={setOutwardReportDateTo}
-            autoCapitalize="none"
-          />
+        <View style={[styles.reportListFilterRow, { marginTop: 0 }]}>
+          <TouchableOpacity
+            style={[styles.doFilterChip, !!outwardReportDateFrom && styles.doFilterChipActive]}
+            onPress={() => openDockReportCalendar('outward', 'from')}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.doFilterChipLabel}>From</Text>
+            <Text style={styles.doFilterChipValue} numberOfLines={1}>
+              {outwardReportDateFrom
+                ? outwardReportDateFrom === getLocalDateStr()
+                  ? 'Today'
+                  : outwardReportDateFrom
+                : 'All'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.doFilterChip, !!outwardReportDateTo && styles.doFilterChipActive]}
+            onPress={() => openDockReportCalendar('outward', 'to')}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.doFilterChipLabel}>To</Text>
+            <Text style={styles.doFilterChipValue} numberOfLines={1}>
+              {outwardReportDateTo
+                ? outwardReportDateTo === getLocalDateStr()
+                  ? 'Today'
+                  : outwardReportDateTo
+                : 'All'}
+            </Text>
+          </TouchableOpacity>
         </View>
         <View style={styles.dockReportFilterActions}>
           <TouchableOpacity
@@ -11511,12 +12079,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
       </View>
 
-      {outwardReportsLoading && !outwardReportsRefreshing ? (
+      {isBlockingListLoad(outwardReportsLoading, outwardReportsRefreshing, outwardReportRows.length) ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color="#003580" />
           <Text style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>Loading reports…</Text>
         </View>
-      ) : outwardReportsError ? (
+      ) : outwardReportsError && outwardReportRows.length === 0 ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <Text style={{ color: '#b91c1c', textAlign: 'center', marginBottom: 12 }}>
             {outwardReportsError}
@@ -11534,6 +12102,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           </TouchableOpacity>
         </View>
       ) : (
+        <View style={{ flex: 1 }}>
         <FlatList
           style={{ flex: 1 }}
           data={outwardReportRows}
@@ -11552,7 +12121,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     styles.dockReportPageBtn,
                     outwardReportPage <= 1 && styles.dockReportPageBtnDisabled,
                   ]}
-                  disabled={outwardReportPage <= 1}
+                  disabled={outwardReportPage <= 1 || outwardReportsLoading}
                   onPress={goOutwardReportPrevPage}
                 >
                   <Text style={styles.dockReportPageBtnText}>Previous</Text>
@@ -11567,7 +12136,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     styles.dockReportPageBtn,
                     !outwardReportHasMore && styles.dockReportPageBtnDisabled,
                   ]}
-                  disabled={!outwardReportHasMore}
+                  disabled={!outwardReportHasMore || outwardReportsLoading}
                   onPress={goOutwardReportNextPage}
                 >
                   <Text style={styles.dockReportPageBtnText}>Next</Text>
@@ -11585,6 +12154,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               </Text>
             </View>
           }
+          {...FLATLIST_PERF_PROPS}
           renderItem={({ item }) => {
             const shortQty = parseInt(item.outward_short_received_boxes_qty, 10) || 0;
             const excessQty = parseInt(item.outward_excess_received_boxes_qty, 10) || 0;
@@ -11648,6 +12218,15 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             );
           }}
         />
+        <ListLoadingOverlay
+          visible={isSoftListLoad(
+            outwardReportsLoading,
+            outwardReportsRefreshing,
+            outwardReportRows.length
+          )}
+          label="Loading page…"
+        />
+        </View>
       )}
     </View>
   );
@@ -11779,7 +12358,32 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 </Text>
               </TouchableOpacity>
 
-              {/* Inwards Menu Item — above Daily Tasks */}
+              {/* Daily Tasks Menu Item */}
+              <TouchableOpacity 
+                style={[
+                  styles.drawerMenuItem, 
+                  isDailyTasksActive && styles.drawerMenuItemActive
+                ]}
+                onPress={() => {
+                  handleNavTabChange('Tasks', 'daily');
+                  closeDrawer();
+                }}
+              >
+                <Ionicons 
+                  name={isDailyTasksActive ? 'clipboard' : 'clipboard-outline'} 
+                  size={20} 
+                  color={isDailyTasksActive ? '#003580' : '#475569'} 
+                  style={{ marginRight: 12 }}
+                />
+                <Text style={[
+                  styles.drawerMenuText,
+                  isDailyTasksActive && styles.drawerMenuTextActive
+                ]}>
+                  Daily Tasks
+                </Text>
+              </TouchableOpacity>
+
+              {/* Inwards Menu Item */}
               <TouchableOpacity 
                 style={[
                   styles.drawerMenuItem, 
@@ -11827,31 +12431,6 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   isOutwardsActive && styles.drawerMenuTextActiveOutward
                 ]}>
                   Outwards
-                </Text>
-              </TouchableOpacity>
-
-              {/* Daily Tasks Menu Item */}
-              <TouchableOpacity 
-                style={[
-                  styles.drawerMenuItem, 
-                  isDailyTasksActive && styles.drawerMenuItemActive
-                ]}
-                onPress={() => {
-                  handleNavTabChange('Tasks', 'daily');
-                  closeDrawer();
-                }}
-              >
-                <Ionicons 
-                  name={isDailyTasksActive ? 'clipboard' : 'clipboard-outline'} 
-                  size={20} 
-                  color={isDailyTasksActive ? '#003580' : '#475569'} 
-                  style={{ marginRight: 12 }}
-                />
-                <Text style={[
-                  styles.drawerMenuText,
-                  isDailyTasksActive && styles.drawerMenuTextActive
-                ]}>
-                  Daily Tasks
                 </Text>
               </TouchableOpacity>
 
@@ -11967,8 +12546,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       >
         <View style={styles.dialogOverlay}>
           <View style={styles.dialogContent}>
-            <Text style={styles.dialogTitle}>Add New Client Lot</Text>
-            <Text style={styles.dialogSubtitle}>Assign a new client to {selectedChamber?.name}:</Text>
+            <Text style={styles.dialogTitle}>Request New Client Lot</Text>
+            <Text style={styles.dialogSubtitle}>
+              Send add request for {selectedChamber?.name}. Super Admin must allow first — client will appear automatically after approval.
+            </Text>
             
             <Text style={[styles.modalLabel, { fontSize: 11, marginBottom: 4 }]}>Client Name</Text>
             <TextInput
@@ -11978,6 +12559,16 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               value={inlineClientInput}
               onChangeText={setInlineClientInput}
               autoCapitalize="words"
+            />
+
+            <Text style={[styles.modalLabel, { fontSize: 11, marginBottom: 4, marginTop: 10 }]}>Remark / Reason</Text>
+            <TextInput
+              style={styles.dialogInput}
+              placeholder="Why this client should be added"
+              placeholderTextColor="#94a3b8"
+              value={inlineRemarkInput}
+              onChangeText={setInlineRemarkInput}
+              autoCapitalize="sentences"
             />
 
             <View style={styles.dialogActionsRow}>
@@ -11993,42 +12584,52 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               </TouchableOpacity>
               <TouchableOpacity 
                 style={styles.dialogSaveBtn}
-                onPress={() => {
+                onPress={async () => {
+                  if (!selectedChamber?.id) {
+                    Alert.alert('Validation Error', 'Please select a chamber first.');
+                    return;
+                  }
                   if (!inlineClientInput.trim()) {
                     Alert.alert('Validation Error', 'Please enter a client name.');
                     return;
                   }
-                  const name = ensureClientInLotMaster(inlineClientInput);
-                  const exists = assignments.some(item => Number(item.chamber_id) === Number(selectedChamber.id) && item.client_name.toLowerCase() === name.toLowerCase());
-                  if (exists) {
-                    Alert.alert('Duplicate Client', `"${name}" is already in the list.`);
+                  if (!inlineRemarkInput.trim()) {
+                    Alert.alert('Validation Error', 'Please enter a remark / reason.');
                     return;
                   }
-                  
-                  const success = addLocalAssignment(selectedChamber.id, selectedChamber.name, name, '', 'Frozen', user?.warehouse_name);
-                  if (success) {
+                  if (!apiUrl || !token) {
+                    Alert.alert('Offline', 'Connect to server to request client add.');
+                    return;
+                  }
+                  const name = ensureClientInLotMaster(inlineClientInput);
+                  const exists = assignments.some(
+                    (item) =>
+                      Number(item.chamber_id) === Number(selectedChamber.id) &&
+                      item.client_name.toLowerCase() === name.toLowerCase()
+                  );
+                  if (exists) {
+                    Alert.alert('Duplicate Client', `"${name}" is already on ${selectedChamber.name}.`);
+                    return;
+                  }
+
+                  const chamberType =
+                    getChamberTypeAndDefault(selectedChamber.id, null).type || 'Frozen';
+                  const ok = await requestClientMasterPermission({
+                    chamber: selectedChamber,
+                    action: 'add',
+                    clientName: name,
+                    chamberType,
+                    remark: inlineRemarkInput.trim()
+                  });
+                  if (ok) {
+                    ensureClientInLotMaster(name);
                     setInlineClientInput('');
                     setInlineRemarkInput('');
                     setShowAddClientModal(false);
-                    loadLocalAssignmentsData(chambersList);
-                    reportDOActivity(
-                      'ADD_CLIENT',
-                      `Added client "${name}" to ${selectedChamber.name} only`,
-                      '',
-                      selectedChamber.id
-                    );
-                    if (apiUrl && token) triggerSync(apiUrl, token, handleSyncProgress, user);
-                    setSelectedClient(name);
-                    setTempInput('');
-                    setBoxCountInput('');
-                    setCapturedImage(null);
-                    setCapturedImageTimestamp(null);
-                  } else {
-                    Alert.alert('Database Error', 'Failed to add client.');
                   }
                 }}
               >
-                <Text style={styles.dialogSaveBtnText}>Save</Text>
+                <Text style={styles.dialogSaveBtnText}>Send Request</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -12289,9 +12890,16 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       {renderHistoryModal()}
       {renderNotificationsModal()}
       {renderCalendarModal()}
+      {renderDockReportCalendarModal()}
       {renderReportLogDetailModal()}
       {renderInwardDetailModal()}
       {renderOutwardDetailModal()}
+      <ImagePreviewModal
+        visible={!!imagePreview}
+        uri={imagePreview?.uri}
+        label={imagePreview?.label}
+        onClose={() => setImagePreview(null)}
+      />
 
       {/* Navigation Tab Bar Overlay */}
       {renderBottomTabBar()}
@@ -13912,6 +14520,29 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#0f172a',
   },
+  dockReportDateBtn: {
+    justifyContent: 'center',
+    minHeight: 40,
+  },
+  dockReportDateBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  dockReportDateBtnPlaceholder: {
+    color: '#94a3b8',
+    fontWeight: '500',
+  },
+  dockReportCalendarBtn: {
+    width: 40,
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   dockReportFilterActions: {
     flexDirection: 'row',
     gap: 8,
@@ -14362,6 +14993,23 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: '#f1f5f9'
   },
+  doDetailImageViewHint: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(15,23,42,0.62)',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  doDetailImageViewHintText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   doDetailImageEmpty: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -14728,7 +15376,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 20,
-    maxHeight: '70%'
+    maxHeight: BOTTOM_SHEET_MAX_H,
+  },
+  calendarFilterModalSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 14,
+  },
+  reportFilterModalScroll: {
+    maxHeight: BOTTOM_SHEET_SCROLL_H,
   },
   reportFilterModalTitle: {
     fontSize: 15,
@@ -14753,6 +15412,54 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: '#334155'
+  },
+  calendarSheetHandle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#cbd5e1',
+    marginBottom: 8,
+  },
+  calendarSheetHint: {
+    fontSize: 10,
+    color: '#64748b',
+    marginBottom: 8,
+    fontWeight: '600',
+  },
+  calendarSheetChipRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
+  calendarSheetMonthRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  calendarSheetMonthText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  calendarSheetWeekDay: {
+    width: '14.28%',
+    textAlign: 'center',
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#94a3b8',
+  },
+  calendarSheetDayCell: {
+    width: '14.28%',
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarSheetSuggestRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 10,
   },
   /* DO Reports filters — same as Sub-Admin filterPanel */
   doFilterPanel: {

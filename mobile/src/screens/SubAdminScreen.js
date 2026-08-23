@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -15,41 +15,40 @@ import {
   Alert,
   Share,
   Platform,
-  BackHandler
+  BackHandler,
+  Animated,
+  TextInput
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import FastTouchable from '../components/FastTouchable';
 import { dedupeInventoryLots } from '../utils/dedupeInventoryLots';
 import { buildReportReadingRows, latestReadingQty } from '../utils/buildReportReadingRows';
+import { GpsDetailRow, PhotoGridWithLocation } from '../components/LogDetailPhotoLocation';
+import {
+  resolveLogImageUrl,
+  DOCK_REPORT_PAGE_SIZE,
+  buildInwardOutwardPhotoItems
+} from '../utils/customerLogReportHelpers';
+import { formatUserError } from '../utils/userFacingError';
+import ListLoadingOverlay from '../components/ListLoadingOverlay';
+import InlineErrorState from '../components/InlineErrorState';
+import { initSubAdminPushAlerts, notifySubAdminIfNeeded } from '../services/subAdminPushAlerts';
+import {
+  FLATLIST_PERF_PROPS,
+  isBlockingListLoad,
+  isSoftListLoad,
+} from '../utils/listPerf';
+import SubAdminAdminPanel from '../components/SubAdminAdminPanel';
+import SubAdminDoMasterSetup from '../components/SubAdminDoMasterSetup';
+import SavedChangesPopup from '../components/SavedChangesPopup';
 
 const TouchableOpacity = FastTouchable;
 
 const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
 
 function resolveImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
-  if (raw == null) return null;
-  let value = String(raw).trim();
-  if (!value || value === 'null' || value === 'undefined') return null;
-  if (/^https?:\/\//i.test(value) || value.startsWith('file://') || value.startsWith('content://')) {
-    return value;
-  }
-  if (value.startsWith('data:')) return value;
-  const looksBase64 =
-    value.length > 200 &&
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
-  if (looksBase64 || value.startsWith('/9j/') || value.startsWith('iVBOR')) {
-    const mime = value.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-    return `data:${mime};base64,${value.replace(/\s/g, '')}`;
-  }
-  const base = String(baseUrl || '').replace(/\/$/, '');
-  if (!base) return null;
-  value = value.replace(/\\/g, '/').replace(/^\/+/, '');
-  if (value.startsWith('uploads/')) return `${base}/${value}`;
-  if (!value.includes('/')) return `${base}/uploads/${folderHint}/${value}`;
-  return `${base}/${value}`;
+  return resolveLogImageUrl(raw, baseUrl, folderHint);
 }
 
 function pickLogImage(log) {
@@ -210,23 +209,83 @@ function SmallLogImage({ rawPath, apiUrl, folderHint }) {
 
 /**
  * Mobile Sub-Admin (mini-admin) — full data visibility.
- * Tabs: Home (overview) | Logs | Reports | More
+ * Tabs: Dashboard | Logs | Reports | Admin | More
  */
 export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
-  const [activeTab, setActiveTab] = useState('Home');
+  const [activeTab, setActiveTab] = useState('Dashboard');
+  const [adminInitialSection, setAdminInitialSection] = useState('permissions');
+  const [showDrawer, setShowDrawer] = useState(false);
+  const drawerAnim = useRef(new Animated.Value(-280)).current;
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (showDrawer) {
+      drawerAnim.setValue(-280);
+      Animated.timing(drawerAnim, {
+        toValue: 0,
+        duration: 250,
+        useNativeDriver: true
+      }).start();
+    }
+  }, [showDrawer, drawerAnim]);
+
+  const openDrawer = () => setShowDrawer(true);
+
+  const closeDrawer = useCallback(() => {
+    Animated.timing(drawerAnim, {
+      toValue: -280,
+      duration: 200,
+      useNativeDriver: true
+    }).start(() => {
+      setShowDrawer(false);
+    });
+  }, [drawerAnim]);
 
   const [stats, setStats] = useState(null);
   const [todayLogs, setTodayLogs] = useState([]);
   const [warehouseTasks, setWarehouseTasks] = useState([]);
+  const [homeOperators, setHomeOperators] = useState([]);
+  const [homeCustomers, setHomeCustomers] = useState([]);
   const [taskSummary, setTaskSummary] = useState(null);
+  const [homeListFocus, setHomeListFocus] = useState('ops'); // warehouses | customers | ops
+  const [selectedDoProfile, setSelectedDoProfile] = useState(null);
+  const [showDoMasterSetup, setShowDoMasterSetup] = useState(false);
+  const [doProfileEditing, setDoProfileEditing] = useState(false);
+  const [doProfileBusy, setDoProfileBusy] = useState(false);
+  const [doProfileForm, setDoProfileForm] = useState({
+    full_name: '',
+    phone_no: '',
+    warehouse_name: '',
+    chamber_limit: ''
+  });
+  const [doProfileAssignments, setDoProfileAssignments] = useState([]);
+  const [doProfileAssignLoading, setDoProfileAssignLoading] = useState(false);
+  const [savedPopup, setSavedPopup] = useState({
+    visible: false,
+    title: 'Changes saved',
+    message: 'Your updates were saved successfully.'
+  });
+
+  const showSavedChanges = useCallback((title, message) => {
+    setSavedPopup({
+      visible: true,
+      title: title || 'Changes saved',
+      message: message || 'Your updates were saved successfully.'
+    });
+  }, []);
   const [homeLoading, setHomeLoading] = useState(false);
   const [homeRefreshing, setHomeRefreshing] = useState(false);
   const [homeError, setHomeError] = useState('');
 
   const [warehouseFilter, setWarehouseFilter] = useState('All');
+  const [chamberFilter, setChamberFilter] = useState('All');
   const [clientFilter, setClientFilter] = useState('All');
   const [logType, setLogType] = useState('chambers'); // chambers | inward | outward
+  const [logFilterScope, setLogFilterScope] = useState({
+    warehouses: [],
+    warehouseClients: {}, // wh -> [clients]
+    warehouseChambers: {}, // wh -> [{ name, clients: [] }]
+  });
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date();
     const y = d.getFullYear();
@@ -251,6 +310,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState('');
   const [logsRefreshing, setLogsRefreshing] = useState(false);
+  const [logPage, setLogPage] = useState(1);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logHasMore, setLogHasMore] = useState(false);
   const [selectedLog, setSelectedLog] = useState(null);
 
   const [reportRows, setReportRows] = useState([]);
@@ -394,7 +456,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     setHomeError('');
     try {
       const today = toLocalYmd();
-      const [statsRes, logsRes, tasksRes] = await Promise.all([
+      const [statsRes, logsRes, tasksRes, customersRes, filterRes, operatorsRes] = await Promise.all([
         fetch(`${apiUrl}/api/dashboard`, { headers: authHeaders }),
         fetch(
           `${apiUrl}/api/chamber-temp?${new URLSearchParams({
@@ -405,7 +467,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           }).toString()}`,
           { headers: authHeaders }
         ),
-        fetch(`${apiUrl}/api/dashboard/do-task-overview`, { headers: authHeaders })
+        fetch(`${apiUrl}/api/dashboard/do-task-overview`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/dashboard/customers`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/dashboard/inventory-filter-options`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/dashboard/do-operators`, { headers: authHeaders })
       ]);
 
       const statsData = await statsRes.json().catch(() => ({}));
@@ -430,6 +495,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       setTodayLogs(scoped);
 
       const tasksData = await tasksRes.json().catch(() => ({}));
+      const filterData = await filterRes.json().catch(() => ({}));
+      const operatorsData = await operatorsRes.json().catch(() => ({}));
+
       if (!tasksRes.ok) {
         console.warn('DO task overview failed:', tasksData.message || tasksRes.status);
         setWarehouseTasks([]);
@@ -438,15 +506,116 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         setWarehouseTasks(Array.isArray(tasksData.warehouses) ? tasksData.warehouses : []);
         setTaskSummary(tasksData.summary || null);
       }
+
+      // DOs: task overview first (has done/pending/overdue), then dedicated operators list
+      let doList = [];
+      if (tasksRes.ok && Array.isArray(tasksData.operators) && tasksData.operators.length) {
+        doList = tasksData.operators;
+      } else if (operatorsRes.ok && Array.isArray(operatorsData.operators)) {
+        doList = operatorsData.operators.map((op) => ({
+          id: op.id,
+          name: op.name || op.full_name || (op.email ? String(op.email).split('@')[0] : 'DO'),
+          email: op.email || null,
+          phone_no: op.phone_no || null,
+          warehouse_name: op.warehouse_name || 'Unassigned',
+          chamber_limit: op.chamber_limit,
+          completed: 0,
+          pending: 0,
+          overdue: 0
+        }));
+      } else if (tasksRes.ok && Array.isArray(tasksData.warehouses)) {
+        tasksData.warehouses.forEach((w) => {
+          (w.operators || []).forEach((op) => {
+            doList.push({
+              ...op,
+              warehouse_name: w.warehouse_name,
+              completed: w.completed,
+              pending: w.pending,
+              overdue: w.overdue
+            });
+          });
+        });
+      }
+      setHomeOperators(doList);
+
+      // Fallback warehouses if overview empty or failed
+      if (
+        (!tasksRes.ok || !(Array.isArray(tasksData.warehouses) && tasksData.warehouses.length)) &&
+        filterRes.ok
+      ) {
+        const filterWarehouses = Array.isArray(filterData?.warehouses) ? filterData.warehouses : [];
+        if (filterWarehouses.length) {
+          setWarehouseTasks(
+            filterWarehouses.map((wh) => {
+              const whName = wh.name || wh.warehouse_name || 'Unassigned';
+              const dosHere = doList.filter(
+                (op) =>
+                  String(op.warehouse_name || '').trim().toLowerCase() ===
+                  String(whName).trim().toLowerCase()
+              );
+              return {
+                warehouse_name: whName,
+                do_names: dosHere.map((d) => d.name).join(', ') || 'No DO',
+                operators: dosHere,
+                assignment_count:
+                  Number(wh.client_count) || (Array.isArray(wh.clients) ? wh.clients.length : 0),
+                completed: 0,
+                pending: 0,
+                overdue: 0,
+                expected_today: 0
+              };
+            })
+          );
+        }
+      } else if (tasksRes.ok && Array.isArray(tasksData.warehouses) && doList.length) {
+        // Attach DO names onto warehouse rows when overview has warehouses
+        setWarehouseTasks(
+          tasksData.warehouses.map((wh) => {
+            if (wh.do_names && wh.do_names !== 'No DO assigned') return wh;
+            const dosHere = doList.filter(
+              (op) =>
+                String(op.warehouse_name || '').trim().toLowerCase() ===
+                String(wh.warehouse_name || '').trim().toLowerCase()
+            );
+            if (!dosHere.length) return wh;
+            return {
+              ...wh,
+              do_names: dosHere.map((d) => d.name).join(', '),
+              operators: Array.isArray(wh.operators) && wh.operators.length ? wh.operators : dosHere
+            };
+          })
+        );
+      }
+
+      // Portal customers (customers table) — not chamber clients
+      const customersData = await customersRes.json().catch(() => ({}));
+      if (!customersRes.ok) {
+        console.warn('Customers fetch failed:', customersData.message || customersRes.status);
+        setHomeCustomers([]);
+      } else {
+        const list = Array.isArray(customersData.customers)
+          ? customersData.customers
+          : Array.isArray(customersData)
+            ? customersData
+            : [];
+        setHomeCustomers(
+          list.map((row) => ({
+            id: row.id,
+            full_name: row.full_name || null,
+            email: row.email || null,
+            phone_no: row.phone_no || null,
+            allowed_clients: row.allowed_clients || null,
+            allowed_warehouses: row.allowed_warehouses || null
+          }))
+        );
+      }
     } catch (err) {
-      const msg =
-        err?.message === 'Network request failed'
-          ? `Cannot reach server: ${apiUrl}`
-          : err.message || 'Failed to load overview.';
-      setHomeError(msg);
+      setHomeError(formatUserError(err, { apiUrl, context: 'Failed to load overview' }));
       setTodayLogs([]);
       setStats(null);
       setWarehouseTasks([]);
+      setHomeOperators([]);
+      setHomeCustomers([]);
       setTaskSummary(null);
     } finally {
       setHomeLoading(false);
@@ -457,8 +626,16 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   // Handle Android system back button presses
   useEffect(() => {
     const backAction = () => {
+      if (showDrawer) {
+        closeDrawer();
+        return true;
+      }
       if (showNotifications) {
         setShowNotifications(false);
+        return true;
+      }
+      if (selectedDoProfile) {
+        setSelectedDoProfile(null);
         return true;
       }
       if (selectedLog) {
@@ -473,8 +650,8 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         setShowCalendarModal(false);
         return true;
       }
-      if (activeTab !== 'Home') {
-        setActiveTab('Home');
+      if (activeTab !== 'Dashboard') {
+        setActiveTab('Dashboard');
         return true;
       }
       return false;
@@ -482,7 +659,121 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [showNotifications, selectedLog, selectedReport, showCalendarModal, activeTab]);
+  }, [showDrawer, closeDrawer, showNotifications, selectedDoProfile, selectedLog, selectedReport, showCalendarModal, activeTab]);
+
+  const loadLogFilterScope = useCallback(async () => {
+    if (!apiUrl || !token) return;
+    try {
+      const [filterRes, assignRes, chamberRes] = await Promise.all([
+        fetch(`${apiUrl}/api/dashboard/inventory-filter-options`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/chambers/assignments`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/chambers`, { headers: authHeaders })
+      ]);
+      const filterData = await filterRes.json().catch(() => ({}));
+      const assignData = await assignRes.json().catch(() => ({}));
+      const chamberData = await chamberRes.json().catch(() => ({}));
+      const chamberRows = Array.isArray(chamberData?.data) ? chamberData.data : [];
+      const chamberWarehouseById = new Map();
+      chamberRows.forEach((c) => {
+        if (c?.id == null) return;
+        const wh = String(c.warehouse_name || '').trim();
+        if (wh) chamberWarehouseById.set(String(c.id), wh);
+      });
+
+      // Case-insensitive maps: key = lower(wh), value holds display name + data
+      const whMeta = {}; // lower -> { name, clients:Set, chambers: { chamberName: Set } }
+
+      const ensureWh = (rawName) => {
+        const name = String(rawName || '').trim();
+        if (!name) return null;
+        const key = name.toLowerCase();
+        if (!whMeta[key]) {
+          whMeta[key] = { name, clients: new Set(), chambers: {} };
+        }
+        return whMeta[key];
+      };
+
+      const filterWh = Array.isArray(filterData?.warehouses) ? filterData.warehouses : [];
+      filterWh.forEach((w) => {
+        const bucket = ensureWh(w.name || w.warehouse_name);
+        if (!bucket) return;
+        (Array.isArray(w.clients) ? w.clients : []).forEach((c) => {
+          const cl = String(c || '').trim();
+          if (cl) bucket.clients.add(cl);
+        });
+      });
+
+      const assigns = Array.isArray(assignData?.data)
+        ? assignData.data
+        : Array.isArray(assignData)
+          ? assignData
+          : [];
+      assigns.forEach((a) => {
+        const whRaw =
+          String(a.warehouse_name || '').trim() ||
+          chamberWarehouseById.get(String(a.chamber_id)) ||
+          '';
+        const bucket = ensureWh(whRaw);
+        if (!bucket) return;
+        const chamber = String(a.chamber_name || '').trim();
+        const client = String(a.client_name || '').trim();
+        const status = String(a.status || 'active').toLowerCase();
+        // Include inactive for filter lists too (still useful), but prefer active in UI chips
+        if (chamber) {
+          if (!bucket.chambers[chamber]) bucket.chambers[chamber] = new Set();
+          if (client && status !== 'inactive') bucket.chambers[chamber].add(client);
+          if (client && status === 'inactive' && bucket.chambers[chamber].size === 0) {
+            // keep chamber visible even if only inactive clients
+            bucket.chambers[chamber].add(client);
+          }
+        }
+        if (client) bucket.clients.add(client);
+      });
+
+      const warehouses = Object.values(whMeta)
+        .map((b) => b.name)
+        .sort((a, b) => a.localeCompare(b));
+
+      const warehouseClients = {};
+      const warehouseChambersList = {};
+      Object.values(whMeta).forEach((b) => {
+        warehouseClients[b.name] = Array.from(b.clients).sort((a, c) => a.localeCompare(c));
+        warehouseChambersList[b.name] = Object.keys(b.chambers)
+          .sort((a, c) => a.localeCompare(c, undefined, { numeric: true }))
+          .map((chamberName) => ({
+            name: chamberName,
+            clients: Array.from(b.chambers[chamberName]).sort((a, c) => a.localeCompare(c))
+          }));
+      });
+
+      setLogFilterScope({
+        warehouses,
+        warehouseClients,
+        warehouseChambers: warehouseChambersList,
+        _byLower: whMeta
+      });
+      setWarehouses(warehouses);
+    } catch (_) {
+      // keep existing scope
+    }
+  }, [apiUrl, token, authHeaders]);
+
+  const resolveScopeWarehouseKey = useCallback(
+    (whName) => {
+      const raw = String(whName || '').trim();
+      if (!raw || raw === 'All') return null;
+      if (logFilterScope.warehouseClients?.[raw]) return raw;
+      if (logFilterScope.warehouseChambers?.[raw]) return raw;
+      const lower = raw.toLowerCase();
+      const hit = (logFilterScope.warehouses || []).find((w) => w.toLowerCase() === lower);
+      if (hit) return hit;
+      const fromMeta = logFilterScope._byLower?.[lower]?.name;
+      return fromMeta || raw;
+    },
+    [logFilterScope]
+  );
+
+  const logsWarehouseSelected = warehouseFilter !== 'All';
 
   const loadLogs = useCallback(async () => {
     if (!apiUrl || !token) return;
@@ -498,7 +789,17 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         to = to === 'All' ? t : to;
       }
 
-      const qs = new URLSearchParams({ page: '1', limit: '300' });
+      // Local chamber/client filters need a wider page so filters stay accurate
+      const hasLocalFilter =
+        (chamberFilter && chamberFilter !== 'All') ||
+        (clientFilter && clientFilter !== 'All');
+      const pageSize = hasLocalFilter ? 100 : DOCK_REPORT_PAGE_SIZE;
+      const page = hasLocalFilter ? 1 : logPage;
+
+      const qs = new URLSearchParams({
+        page: String(page),
+        limit: String(pageSize)
+      });
       if (warehouseFilter && warehouseFilter !== 'All') qs.set('warehouse', warehouseFilter);
       if (from && from !== 'All') qs.set('fromDate', from);
       if (to && to !== 'All') qs.set('toDate', to);
@@ -520,6 +821,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       let items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
       items = items.map((row) => normalizeLogRow(row, logType));
 
+      if (chamberFilter && chamberFilter !== 'All') {
+        const needle = chamberFilter.trim().toLowerCase();
+        items = items.filter(
+          (r) => String(r.chamber_name || '').trim().toLowerCase() === needle
+        );
+      }
+
       if (clientFilter && clientFilter !== 'All') {
         const needle = clientFilter.trim().toLowerCase();
         items = items.filter((r) => String(r.client_name || '').trim().toLowerCase() === needle);
@@ -531,7 +839,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           const da = String(a.formatted_date || a.entry_date || '').slice(0, 10);
           const db = String(b.formatted_date || b.entry_date || '').slice(0, 10);
           if (da !== db) return db.localeCompare(da);
-          const ca = String(a.chamber_name || '').localeCompare(String(b.chamber_name || ''));
+          const ca = String(a.chamber_name || '').localeCompare(String(b.chamber_name || ''), undefined, {
+            numeric: true
+          });
           if (ca !== 0) return ca;
           const sa = String(a.shift || '');
           const sb = String(b.shift || '');
@@ -542,23 +852,76 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         });
       }
 
-      const whSet = new Set();
-      const clSet = new Set();
-      items.forEach((r) => {
-        if (r.warehouse_name) whSet.add(String(r.warehouse_name).trim());
-        if (r.client_name) clSet.add(String(r.client_name).trim());
-      });
-      setWarehouses(Array.from(whSet).sort((a, b) => a.localeCompare(b)));
-      setClients(Array.from(clSet).sort((a, b) => a.localeCompare(b)));
+      if (!logFilterScope.warehouses.length) {
+        const whSet = new Set();
+        const clSet = new Set();
+        items.forEach((r) => {
+          if (r.warehouse_name) whSet.add(String(r.warehouse_name).trim());
+          if (r.client_name) clSet.add(String(r.client_name).trim());
+        });
+        setWarehouses(Array.from(whSet).sort((a, b) => a.localeCompare(b)));
+        setClients(Array.from(clSet).sort((a, b) => a.localeCompare(b)));
+      } else if (warehouseFilter && warehouseFilter !== 'All') {
+        // Merge clients seen in current logs into scope (fallback if assignments sparse)
+        const clFromLogs = new Set();
+        items.forEach((r) => {
+          const wh = String(r.warehouse_name || '').trim().toLowerCase();
+          if (wh === warehouseFilter.trim().toLowerCase() && r.client_name) {
+            clFromLogs.add(String(r.client_name).trim());
+          }
+        });
+        if (clFromLogs.size) {
+          setLogFilterScope((prev) => {
+            const whKey =
+              (prev.warehouses || []).find(
+                (w) => w.toLowerCase() === warehouseFilter.trim().toLowerCase()
+              ) || warehouseFilter;
+            const existing = prev.warehouseClients?.[whKey] || [];
+            const merged = Array.from(new Set([...existing, ...clFromLogs])).sort((a, b) =>
+              a.localeCompare(b)
+            );
+            if (merged.length === existing.length) return prev;
+            return {
+              ...prev,
+              warehouseClients: { ...prev.warehouseClients, [whKey]: merged }
+            };
+          });
+        }
+      }
+      const total = Number(data?.total ?? data?.pagination?.total ?? items.length) || items.length;
       setLogs(items);
+      setLogTotal(hasLocalFilter ? items.length : total);
+      setLogHasMore(hasLocalFilter ? false : page * pageSize < total);
     } catch (err) {
       setLogs([]);
-      setLogsError(err.message || 'Failed to load logs.');
+      setLogTotal(0);
+      setLogHasMore(false);
+      setLogsError(formatUserError(err, { apiUrl, context: 'Failed to load logs' }));
     } finally {
       setLogsLoading(false);
       setLogsRefreshing(false);
     }
-  }, [apiUrl, token, authHeaders, warehouseFilter, clientFilter, dateFrom, dateTo, logType]);
+  }, [
+    apiUrl,
+    token,
+    authHeaders,
+    warehouseFilter,
+    chamberFilter,
+    clientFilter,
+    dateFrom,
+    dateTo,
+    logType,
+    logPage,
+    logFilterScope.warehouses.length
+  ]);
+
+  const goLogPrevPage = useCallback(() => {
+    setLogPage((p) => Math.max(1, p - 1));
+  }, []);
+
+  const goLogNextPage = useCallback(() => {
+    if (logHasMore) setLogPage((p) => p + 1);
+  }, [logHasMore]);
 
   const loadReports = useCallback(async () => {
     if (!apiUrl || !token) return;
@@ -645,12 +1008,19 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   }, [reportRows, reportWarehouseFilter, reportClientFilter, reportView]);
 
   useEffect(() => {
-    if (activeTab === 'Home') loadHomeOverview();
+    if (activeTab === 'Dashboard' || activeTab === 'Home') loadHomeOverview();
   }, [activeTab, loadHomeOverview]);
 
   useEffect(() => {
-    if (activeTab === 'Logs') loadLogs();
-  }, [activeTab, loadLogs]);
+    setLogPage(1);
+  }, [warehouseFilter, chamberFilter, clientFilter, dateFrom, dateTo, logType]);
+
+  useEffect(() => {
+    if (activeTab === 'Logs') {
+      loadLogFilterScope();
+      loadLogs();
+    }
+  }, [activeTab, loadLogFilterScope, loadLogs]);
 
   useEffect(() => {
     if (activeTab === 'Reports') loadReports();
@@ -696,10 +1066,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const isRolePermissionNotif = (n) => {
     const type = String(n.record_type || '');
     // Same Scope as Super Admin Role & Permission (skip notify-only noise)
-    if (type === 'ClientMaster' || type === 'MasterSetup' || type === 'DO_CHANGE' || type === 'activity') {
+    if (type === 'MasterSetup' || type === 'DO_CHANGE' || type === 'activity') {
       return false;
     }
-    return ['Chamber', 'Inward', 'Outward', 'ChamberMaster'].includes(type);
+    return ['Chamber', 'Inward', 'Outward', 'ChamberMaster', 'ChamberType', 'ClientMaster'].includes(type);
   };
 
   const rolePermissionNotifications = useMemo(
@@ -786,6 +1156,12 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         throw new Error(data.error || data.message || `Failed to ${status.toLowerCase()}`);
       }
       await loadNotifications();
+      showSavedChanges(
+        status === 'Approved' ? 'Permission approved' : 'Permission denied',
+        status === 'Approved'
+          ? 'Request approved. Changes are saved.'
+          : 'Request denied. Decision was saved.'
+      );
     } catch (err) {
       Alert.alert('Request update failed', err.message || 'Please try again.');
     } finally {
@@ -818,9 +1194,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
   const overviewCards = useMemo(() => {
     const t = taskSummary || {};
-    const clientTotal =
-      Number(t.clients) ||
-      warehouseTasks.reduce((sum, w) => sum + (Number(w.assignment_count) || 0), 0);
+    const customerTotal = homeCustomers.length || Number(t.customers) || 0;
     return [
       {
         key: 'warehouses',
@@ -830,21 +1204,303 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         color: '#0284c7'
       },
       {
-        key: 'clients',
-        label: 'Clients',
-        value: clientTotal,
+        key: 'customers',
+        label: 'Customers',
+        value: customerTotal,
         icon: 'briefcase-outline',
         color: '#059669'
       },
       {
         key: 'ops',
-        label: "DO's",
-        value: Number(t.operators) || 0,
+        label: 'DOs',
+        value: homeOperators.length || Number(t.operators) || 0,
         icon: 'people-outline',
         color: '#003580'
       }
     ];
-  }, [taskSummary, warehouseTasks]);
+  }, [taskSummary, warehouseTasks, homeCustomers, homeOperators]);
+
+  const homeListTitle = useMemo(() => {
+    if (homeListFocus === 'warehouses') return 'Warehouses';
+    if (homeListFocus === 'customers') return 'Customers';
+    return "Data operators";
+  }, [homeListFocus]);
+
+  const homeListSubtitle = useMemo(() => {
+    if (homeListFocus === 'warehouses') {
+      return 'Task progress by warehouse · tap a DO for profile';
+    }
+    if (homeListFocus === 'customers') {
+      return 'Portal login accounts · view access scope';
+    }
+    return 'Monitor daily tasks · tap a row for DO profile';
+  }, [homeListFocus]);
+
+  const todayOps = useMemo(() => {
+    const t = taskSummary || {};
+    return {
+      completed: Number(t.completed) || 0,
+      pending: Number(t.pending) || 0,
+      overdue: Number(t.overdue) || 0
+    };
+  }, [taskSummary]);
+
+  useEffect(() => {
+    initSubAdminPushAlerts();
+  }, []);
+
+  useEffect(() => {
+    notifySubAdminIfNeeded({
+      pendingPermissions: pendingNotifCount,
+      overdueTasks: todayOps.overdue
+    });
+  }, [pendingNotifCount, todayOps.overdue]);
+
+  const todayLabel = useMemo(() => {
+    try {
+      return new Date().toLocaleDateString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'short'
+      });
+    } catch (_) {
+      return toLocalYmd();
+    }
+  }, []);
+
+  const openAdminSection = useCallback((section) => {
+    setAdminInitialSection(section);
+    setActiveTab('Admin');
+  }, []);
+
+  const openLogsToday = useCallback(() => {
+    const today = toLocalYmd();
+    setLogPage(1);
+    setLogType('chambers');
+    applyDateRange(today, today);
+    setWarehouseFilter('All');
+    setChamberFilter('All');
+    setClientFilter('All');
+    setActiveTab('Logs');
+  }, []);
+
+  const derivedHomeOperators = useMemo(() => {
+    if (homeOperators.length) return homeOperators;
+    const flat = [];
+    warehouseTasks.forEach((w) => {
+      (w.operators || []).forEach((op) => {
+        flat.push({
+          ...op,
+          warehouse_name: w.warehouse_name,
+          completed: w.completed,
+          pending: w.pending,
+          overdue: w.overdue
+        });
+      });
+    });
+    return flat;
+  }, [homeOperators, warehouseTasks]);
+
+  const attentionOperators = useMemo(
+    () =>
+      derivedHomeOperators
+        .filter((op) => Number(op.overdue) > 0 || Number(op.pending) > 0)
+        .sort(
+          (a, b) =>
+            (Number(b.overdue) || 0) - (Number(a.overdue) || 0) ||
+            (Number(b.pending) || 0) - (Number(a.pending) || 0)
+        )
+        .slice(0, 3),
+    [derivedHomeOperators]
+  );
+
+  const formatScopeList = (value) => {
+    if (value == null || String(value).trim() === '') return 'All';
+    const parts = String(value)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!parts.length) return 'All';
+    if (parts.length <= 2) return parts.join(', ');
+    return `${parts.slice(0, 2).join(', ')} +${parts.length - 2}`;
+  };
+
+  const resolveDoProfile = useCallback(
+    (op, warehouseHint) => {
+      if (!op) return null;
+      const email = String(op.email || '').trim().toLowerCase();
+      const id = op.id != null ? Number(op.id) : null;
+      const fromList =
+        homeOperators.find((o) => {
+          if (id != null && Number.isFinite(id) && Number(o.id) === id) return true;
+          if (email && String(o.email || '').trim().toLowerCase() === email) return true;
+          return false;
+        }) || null;
+      const merged = { ...(fromList || {}), ...op };
+      return {
+        id: merged.id ?? null,
+        name:
+          merged.name ||
+          merged.full_name ||
+          (merged.email ? String(merged.email).split('@')[0] : 'DO'),
+        full_name: merged.full_name || merged.name || null,
+        email: merged.email || null,
+        phone_no: merged.phone_no || null,
+        warehouse_name: merged.warehouse_name || warehouseHint || 'Unassigned',
+        warehouse_code: merged.warehouse_code || null,
+        chamber_limit: merged.chamber_limit != null ? Number(merged.chamber_limit) : null,
+        completed: Number(merged.completed) || 0,
+        pending: Number(merged.pending) || 0,
+        overdue: Number(merged.overdue) || 0
+      };
+    },
+    [homeOperators]
+  );
+
+  const openDoProfile = useCallback(
+    (op, warehouseHint) => {
+      const profile = resolveDoProfile(op, warehouseHint);
+      if (!profile) return;
+      setSelectedDoProfile(profile);
+      setDoProfileEditing(false);
+      setDoProfileForm({
+        full_name: profile.full_name || profile.name || '',
+        phone_no: String(profile.phone_no || '').replace(/^\+91/, ''),
+        warehouse_name: profile.warehouse_name || '',
+        chamber_limit: profile.chamber_limit != null ? String(profile.chamber_limit) : '4'
+      });
+      setDoProfileAssignments([]);
+    },
+    [resolveDoProfile]
+  );
+
+  const loadDoProfileAssignments = useCallback(async () => {
+    const wh = selectedDoProfile?.warehouse_name;
+    if (!apiUrl || !token || !wh) {
+      setDoProfileAssignments([]);
+      return;
+    }
+    setDoProfileAssignLoading(true);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/chambers/assignments?warehouse_name=${encodeURIComponent(wh)}`,
+        { headers: authHeaders }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Failed');
+      setDoProfileAssignments(
+        Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : []
+      );
+    } catch (_) {
+      setDoProfileAssignments([]);
+    } finally {
+      setDoProfileAssignLoading(false);
+    }
+  }, [apiUrl, token, authHeaders, selectedDoProfile?.warehouse_name]);
+
+  useEffect(() => {
+    if (selectedDoProfile?.warehouse_name) loadDoProfileAssignments();
+  }, [selectedDoProfile?.warehouse_name, loadDoProfileAssignments]);
+
+  const saveDoProfileEdits = useCallback(async () => {
+    if (!selectedDoProfile?.id || !apiUrl || !token) {
+      Alert.alert(
+        'Cannot edit',
+        'Open this DO from Admin → DOs to edit full profile (needs operator id).'
+      );
+      return;
+    }
+    const payload = {
+      full_name: doProfileForm.full_name.trim(),
+      email: selectedDoProfile.email,
+      phone_no: doProfileForm.phone_no.trim(),
+      warehouse_name: doProfileForm.warehouse_name.trim(),
+      chamber_limit:
+        selectedDoProfile.chamber_limit != null
+          ? Number(selectedDoProfile.chamber_limit)
+          : 4
+    };
+    if (!payload.full_name || !payload.phone_no || !payload.warehouse_name) {
+      Alert.alert('Missing fields', 'Name, phone and warehouse are required.');
+      return;
+    }
+    setDoProfileBusy(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/do-operators/${selectedDoProfile.id}`, {
+        method: 'PUT',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.message || 'Save failed');
+      setSelectedDoProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              name: payload.full_name,
+              full_name: payload.full_name,
+              phone_no: payload.phone_no,
+              warehouse_name: payload.warehouse_name,
+              chamber_limit: payload.chamber_limit
+            }
+          : prev
+      );
+      setDoProfileEditing(false);
+      loadHomeOverview();
+      showSavedChanges('Changes saved', 'DO profile was updated successfully.');
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Could not save profile.');
+    } finally {
+      setDoProfileBusy(false);
+    }
+  }, [
+    selectedDoProfile,
+    apiUrl,
+    token,
+    authHeaders,
+    doProfileForm,
+    loadHomeOverview,
+    showSavedChanges
+  ]);
+
+  const doProfileChamberGroups = useMemo(() => {
+    const map = new Map();
+    doProfileAssignments.forEach((a) => {
+      const key = String(a.chamber_id);
+      if (!map.has(key)) {
+        map.set(key, {
+          id: a.chamber_id,
+          name: a.chamber_name || `Chamber #${a.chamber_id}`,
+          type: a.chamber_type || 'Frozen',
+          active: [],
+          deactive: []
+        });
+      }
+      const inactive =
+        String(a.status || 'active').trim().toLowerCase() === 'inactive';
+      const label = a.client_name || a.client_code || 'Client';
+      if (inactive) map.get(key).deactive.push(label);
+      else map.get(key).active.push(label);
+    });
+    return Array.from(map.values()).sort((a, b) =>
+      String(a.name).localeCompare(String(b.name), undefined, { numeric: true })
+    );
+  }, [doProfileAssignments]);
+
+  const dosForWarehouse = useCallback(
+    (wh) => {
+      const nested = Array.isArray(wh?.operators) ? wh.operators : [];
+      if (nested.length) return nested;
+      const whKey = String(wh?.warehouse_name || '')
+        .trim()
+        .toLowerCase();
+      if (!whKey) return [];
+      return homeOperators.filter(
+        (op) => String(op.warehouse_name || '').trim().toLowerCase() === whKey
+      );
+    },
+    [homeOperators]
+  );
 
   const reportSummary = useMemo(() => {
     let inward = 0;
@@ -1104,28 +1760,145 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     );
   };
 
-  const warehouseOptions = useMemo(() => ['All', ...warehouses], [warehouses]);
-  const clientOptions = useMemo(() => ['All', ...clients], [clients]);
+  const warehouseOptions = useMemo(() => {
+    const fromScope = logFilterScope.warehouses || [];
+    const merged = fromScope.length ? fromScope : warehouses;
+    return ['All', ...merged];
+  }, [logFilterScope.warehouses, warehouses]);
+
+  const chamberOptions = useMemo(() => {
+    const whKey = resolveScopeWarehouseKey(warehouseFilter);
+    if (!whKey) {
+      const set = new Set();
+      Object.values(logFilterScope.warehouseChambers || {}).forEach((list) => {
+        (list || []).forEach((c) => {
+          if (c?.name) set.add(c.name);
+        });
+      });
+      return ['All', ...Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))];
+    }
+    const list = logFilterScope.warehouseChambers?.[whKey] || [];
+    return ['All', ...list.map((c) => c.name)];
+  }, [warehouseFilter, logFilterScope.warehouseChambers, resolveScopeWarehouseKey]);
+
+  const clientOptions = useMemo(() => {
+    const whKey = resolveScopeWarehouseKey(warehouseFilter);
+    if (whKey) {
+      if (chamberFilter && chamberFilter !== 'All') {
+        const chambers = logFilterScope.warehouseChambers?.[whKey] || [];
+        const hit = chambers.find(
+          (c) => String(c.name).toLowerCase() === String(chamberFilter).toLowerCase()
+        );
+        if (hit?.clients?.length) return ['All', ...hit.clients];
+      }
+      const fromWh = logFilterScope.warehouseClients?.[whKey];
+      if (fromWh?.length) return ['All', ...fromWh];
+      // Fallback: union clients from chambers under this warehouse
+      const fromChambers = new Set();
+      (logFilterScope.warehouseChambers?.[whKey] || []).forEach((c) => {
+        (c.clients || []).forEach((cl) => fromChambers.add(cl));
+      });
+      if (fromChambers.size) {
+        return ['All', ...Array.from(fromChambers).sort((a, b) => a.localeCompare(b))];
+      }
+    }
+    const set = new Set();
+    Object.values(logFilterScope.warehouseClients || {}).forEach((list) => {
+      (list || []).forEach((c) => set.add(c));
+    });
+    if (set.size) return ['All', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+    return ['All', ...clients];
+  }, [
+    warehouseFilter,
+    chamberFilter,
+    logFilterScope.warehouseClients,
+    logFilterScope.warehouseChambers,
+    clients,
+    resolveScopeWarehouseKey
+  ]);
+
+  const selectWarehouseFilter = (opt) => {
+    setWarehouseFilter(opt);
+    setChamberFilter('All');
+    setClientFilter('All');
+  };
+
+  const selectChamberFilter = (opt) => {
+    setChamberFilter(opt);
+    setClientFilter('All');
+  };
+
+  const pickFilterOption = (opt) => {
+    if (openFilter === 'warehouse') {
+      selectWarehouseFilter(opt);
+      if (opt === 'All') {
+        setOpenFilter(null);
+        return;
+      }
+      const whKey = resolveScopeWarehouseKey(opt);
+      const chamberList = whKey ? logFilterScope.warehouseChambers?.[whKey] || [] : [];
+      setOpenFilter(chamberList.length ? 'chamber' : null);
+      return;
+    }
+    if (openFilter === 'chamber') {
+      selectChamberFilter(opt);
+      if (opt === 'All') {
+        setOpenFilter(null);
+        return;
+      }
+      const whKey = resolveScopeWarehouseKey(warehouseFilter);
+      const hit = (logFilterScope.warehouseChambers?.[whKey] || []).find(
+        (c) => String(c.name).toLowerCase() === String(opt).toLowerCase()
+      );
+      const clientList = hit?.clients?.length
+        ? hit.clients
+        : (logFilterScope.warehouseClients?.[whKey] || []).filter(Boolean);
+      setOpenFilter(clientList.length ? 'client' : null);
+      return;
+    }
+    if (openFilter === 'client') {
+      setClientFilter(opt);
+      setOpenFilter(null);
+      return;
+    }
+    if (openFilter === 'reportWarehouse') {
+      setReportWarehouseFilter(opt);
+      setOpenFilter(null);
+      return;
+    }
+    if (openFilter === 'reportClient') {
+      setReportClientFilter(opt);
+      setOpenFilter(null);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
 
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
+        <View style={styles.headerSide}>
+          <TouchableOpacity
+            onPress={openDrawer}
+            activeOpacity={0.85}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={{ padding: 2 }}
+          >
+            <Ionicons name="menu-outline" size={26} color="#003580" />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.headerCenter}>
           <Image
             source={require('../../assets/logo-transparent.png')}
             style={styles.headerLogo}
             resizeMode="contain"
           />
-          <View>
-            <Text style={styles.headerTitle}>Sub-Admin</Text>
-            <Text style={styles.headerSub} numberOfLines={1}>
-              Welcome, {displayName}
-            </Text>
+          <View style={styles.headerTitleWrap}>
+            <Text style={styles.headerTitle}>Sub Admin</Text>
+            <Text style={styles.headerMobileSub}>mobile</Text>
           </View>
         </View>
-        <View style={styles.headerRight}>
+        <View style={[styles.headerSide, styles.headerSideRight]}>
           <TouchableOpacity
             style={styles.bellBtn}
             onPress={openNotifications}
@@ -1144,10 +1917,6 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               </View>
             ) : null}
           </TouchableOpacity>
-          <View style={styles.badge}>
-            <Ionicons name="shield-checkmark" size={12} color="#003580" />
-            <Text style={styles.badgeText}>Full access</Text>
-          </View>
         </View>
       </View>
 
@@ -1166,8 +1935,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                     key={t.id}
                     style={[styles.logTypeChip, active && styles.logTypeChipActive]}
                     onPress={() => {
+                      setLogPage(1);
                       setLogType(t.id);
                       setWarehouseFilter('All');
+                      setChamberFilter('All');
                       setClientFilter('All');
                       setOpenFilter(null);
                       if (t.id === 'chambers') {
@@ -1195,15 +1966,28 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   {warehouseFilter}
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.filterChip, clientFilter !== 'All' && styles.filterChipActive]}
-                onPress={() => setOpenFilter(openFilter === 'client' ? null : 'client')}
-              >
-                <Text style={styles.filterChipLabel}>Client</Text>
-                <Text style={styles.filterChipValue} numberOfLines={1}>
-                  {clientFilter}
-                </Text>
-              </TouchableOpacity>
+              {logsWarehouseSelected ? (
+                <TouchableOpacity
+                  style={[styles.filterChip, chamberFilter !== 'All' && styles.filterChipActive]}
+                  onPress={() => setOpenFilter(openFilter === 'chamber' ? null : 'chamber')}
+                >
+                  <Text style={styles.filterChipLabel}>Chamber</Text>
+                  <Text style={styles.filterChipValue} numberOfLines={1}>
+                    {chamberFilter}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+              {logsWarehouseSelected ? (
+                <TouchableOpacity
+                  style={[styles.filterChip, clientFilter !== 'All' && styles.filterChipActive]}
+                  onPress={() => setOpenFilter(openFilter === 'client' ? null : 'client')}
+                >
+                  <Text style={styles.filterChipLabel}>Client</Text>
+                  <Text style={styles.filterChipValue} numberOfLines={1}>
+                    {clientFilter}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity
                 style={[styles.filterChip, dateFrom !== 'All' && styles.filterChipActive]}
                 onPress={() => openCalendar('from')}
@@ -1264,7 +2048,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               </View>
             ) : null}
 
-          {logsLoading && !logsRefreshing ? (
+          {isBlockingListLoad(logsLoading, logsRefreshing, logs.length) ? (
             <View style={styles.centerState}>
               <ActivityIndicator size="large" color="#003580" />
               <Text style={styles.stateText}>
@@ -1272,38 +2056,69 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 logs…
               </Text>
             </View>
-          ) : logsError ? (
-            <View style={styles.centerState}>
-              <Ionicons name="warning-outline" size={28} color="#dc2626" />
-              <Text style={styles.stateText}>{logsError}</Text>
-              <TouchableOpacity style={styles.retryBtn} onPress={loadLogs}>
-                <Text style={styles.retryText}>Retry</Text>
-              </TouchableOpacity>
-            </View>
+          ) : logsError && logs.length === 0 ? (
+            <InlineErrorState message={logsError} onRetry={loadLogs} icon="warning-outline" />
           ) : (
-            <FlatList
-              data={logs}
-              keyExtractor={(item, idx) =>
-                String(item.id || item.inward_id || item.outward_id || item.reference_no || idx)
-              }
-              renderItem={renderLogItem}
-              contentContainerStyle={styles.listBody}
-              refreshControl={
-                <RefreshControl
-                  refreshing={logsRefreshing}
-                  onRefresh={() => {
-                    setLogsRefreshing(true);
-                    loadLogs();
-                  }}
-                />
-              }
-              ListEmptyComponent={
-                <View style={styles.centerState}>
-                  <Ionicons name="document-text-outline" size={28} color="#94a3b8" />
-                  <Text style={styles.stateText}>No logs for selected filters.</Text>
-                </View>
-              }
-            />
+            <View style={{ flex: 1 }}>
+              <FlatList
+                data={logs}
+                keyExtractor={(item, idx) =>
+                  String(item.id || item.inward_id || item.outward_id || item.reference_no || idx)
+                }
+                renderItem={renderLogItem}
+                contentContainerStyle={styles.listBody}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={logsRefreshing}
+                    onRefresh={() => {
+                      setLogsRefreshing(true);
+                      loadLogs();
+                    }}
+                  />
+                }
+                ListFooterComponent={
+                  logTotal > DOCK_REPORT_PAGE_SIZE || logPage > 1 ? (
+                    <View style={styles.dockReportPagination}>
+                      <TouchableOpacity
+                        style={[
+                          styles.dockReportPageBtn,
+                          logPage <= 1 && styles.dockReportPageBtnDisabled
+                        ]}
+                        disabled={logPage <= 1 || logsLoading}
+                        onPress={goLogPrevPage}
+                      >
+                        <Text style={styles.dockReportPageBtnText}>Previous</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.dockReportPageMeta}>
+                        Page {logPage}
+                        {logTotal ? ` · ${logTotal} total` : ''}
+                      </Text>
+                      <TouchableOpacity
+                        style={[
+                          styles.dockReportPageBtn,
+                          !logHasMore && styles.dockReportPageBtnDisabled
+                        ]}
+                        disabled={!logHasMore || logsLoading}
+                        onPress={goLogNextPage}
+                      >
+                        <Text style={styles.dockReportPageBtnText}>Next</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null
+                }
+                ListEmptyComponent={
+                  <View style={styles.centerState}>
+                    <Ionicons name="document-text-outline" size={28} color="#94a3b8" />
+                    <Text style={styles.stateText}>No logs for selected filters.</Text>
+                  </View>
+                }
+                {...FLATLIST_PERF_PROPS}
+              />
+              <ListLoadingOverlay
+                visible={isSoftListLoad(logsLoading, logsRefreshing, logs.length)}
+                label="Loading logs…"
+              />
+            </View>
           )}
         </View>
       ) : activeTab === 'Reports' ? (
@@ -1400,12 +2215,12 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             </Text>
           </View>
 
-          {reportsLoading && !reportsRefreshing ? (
+          {isBlockingListLoad(reportsLoading, reportsRefreshing, filteredReportRows.length) ? (
             <View style={styles.centerState}>
               <ActivityIndicator size="large" color="#003580" />
               <Text style={styles.stateText}>Loading inventory…</Text>
             </View>
-          ) : reportsError ? (
+          ) : reportsError && filteredReportRows.length === 0 ? (
             <View style={styles.centerState}>
               <Ionicons name="warning-outline" size={28} color="#dc2626" />
               <Text style={styles.stateText}>{reportsError}</Text>
@@ -1414,37 +2229,90 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               </TouchableOpacity>
             </View>
           ) : (
-            <FlatList
-              data={filteredReportRows}
-              keyExtractor={(item, idx) =>
-                `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${idx}`
-              }
-              renderItem={renderReportItem}
-              contentContainerStyle={styles.listBody}
-              refreshControl={
-                <RefreshControl
-                  refreshing={reportsRefreshing}
-                  onRefresh={() => {
-                    setReportsRefreshing(true);
-                    loadReports();
-                  }}
-                />
-              }
-              ListEmptyComponent={
-                <View style={styles.centerState}>
-                  <Ionicons name="cube-outline" size={28} color="#94a3b8" />
-                  <Text style={styles.stateText}>No inventory for selected filters.</Text>
-                </View>
-              }
-            />
+            <View style={{ flex: 1 }}>
+              <FlatList
+                data={filteredReportRows}
+                keyExtractor={(item, idx) =>
+                  `${item.client_name || 'c'}-${item.warehouse_name || 'w'}-${idx}`
+                }
+                renderItem={renderReportItem}
+                contentContainerStyle={styles.listBody}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={reportsRefreshing}
+                    onRefresh={() => {
+                      setReportsRefreshing(true);
+                      loadReports();
+                    }}
+                  />
+                }
+                ListEmptyComponent={
+                  <View style={styles.centerState}>
+                    <Ionicons name="cube-outline" size={28} color="#94a3b8" />
+                    <Text style={styles.stateText}>No inventory for selected filters.</Text>
+                  </View>
+                }
+                {...FLATLIST_PERF_PROPS}
+              />
+              <ListLoadingOverlay
+                visible={isSoftListLoad(
+                  reportsLoading,
+                  reportsRefreshing,
+                  filteredReportRows.length
+                )}
+                label="Updating inventory…"
+              />
+            </View>
           )}
+        </View>
+      ) : activeTab === 'Admin' ? (
+        <View style={styles.contentArea}>
+          <SubAdminAdminPanel
+            apiUrl={apiUrl}
+            token={token}
+            authHeaders={authHeaders}
+            initialSection={adminInitialSection}
+            permissionItems={[...rolePermissionNotifications]
+              .sort((a, b) => {
+                const ap = a.status === 'Pending' ? 0 : 1;
+                const bp = b.status === 'Pending' ? 0 : 1;
+                if (ap !== bp) return ap - bp;
+                return (Number(b.id) || 0) - (Number(a.id) || 0);
+              })
+              .slice(0, 100)
+              .map((n) => ({
+                ...n,
+                _title: getNotifTitle(n),
+                _subtitle: getNotifMessage(n)
+              }))}
+            permissionLoading={false}
+            onRefreshPermissions={loadNotifications}
+            onApprovePermission={(id) => respondToPermissionRequest(id, 'Approved')}
+            onDenyPermission={(id) => respondToPermissionRequest(id, 'Denied')}
+            permissionBusyId={notifActionBusy}
+            onOpenDoProfile={(op) =>
+              openDoProfile(
+                {
+                  id: op.id,
+                  name: op.full_name || op.email,
+                  full_name: op.full_name,
+                  email: op.email,
+                  phone_no: op.phone_no,
+                  warehouse_name: op.warehouse_name,
+                  warehouse_code: op.warehouse_code,
+                  chamber_limit: op.chamber_limit
+                },
+                op.warehouse_name
+              )
+            }
+          />
         </View>
       ) : (
         <ScrollView
           contentContainerStyle={[styles.body, activeTab === 'More' && styles.moreBody]}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            activeTab === 'Home' ? (
+            activeTab === 'Dashboard' || activeTab === 'Home' ? (
               <RefreshControl
                 refreshing={homeRefreshing}
                 onRefresh={() => {
@@ -1455,114 +2323,318 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             ) : undefined
           }
         >
-          {activeTab === 'Home' && (
+          {(activeTab === 'Dashboard' || activeTab === 'Home') && (
             <>
-              <View style={styles.hero}>
-                <Text style={styles.heroEyebrow}>Operations overview</Text>
-                <Text style={styles.heroTitle}>Mini Admin Home</Text>
-                <Text style={styles.heroSub}>
-                  Watch all warehouses, clients, daily logs and inventory movement in one place.
-                </Text>
-              </View>
-
               {homeLoading && !homeRefreshing ? (
                 <View style={styles.centerState}>
                   <ActivityIndicator size="large" color="#003580" />
                   <Text style={styles.stateText}>Loading overview…</Text>
                 </View>
               ) : homeError ? (
-                <View style={styles.centerState}>
-                  <Ionicons name="cloud-offline-outline" size={28} color="#dc2626" />
-                  <Text style={styles.stateText}>{homeError}</Text>
-                  <TouchableOpacity style={styles.retryBtn} onPress={loadHomeOverview}>
-                    <Text style={styles.retryText}>Retry</Text>
-                  </TouchableOpacity>
-                </View>
+                <InlineErrorState message={homeError} onRetry={loadHomeOverview} />
               ) : (
                 <>
-                  <View style={styles.statsGrid}>
-                    {overviewCards.map((card) => (
-                      <View key={card.key} style={styles.statCard}>
-                        <View style={[styles.statIcon, { backgroundColor: `${card.color}18` }]}>
-                          <Ionicons name={card.icon} size={12} color={card.color} />
-                        </View>
-                        <Text style={[styles.statValue, { color: card.color }]}>{card.value}</Text>
-                        <Text style={styles.statLabel} numberOfLines={1}>
-                          {card.label}
-                        </Text>
-                      </View>
-                    ))}
+                  <View style={styles.dashHero}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.dashHeroEyebrow}>Operations overview</Text>
+                      <Text style={styles.dashHeroTitle}>Today&apos;s status</Text>
+                      <Text style={styles.dashHeroDate}>{todayLabel}</Text>
+                    </View>
+                    <View style={styles.dashHeroIcon}>
+                      <Ionicons name="pulse-outline" size={22} color="#003580" />
+                    </View>
                   </View>
 
+                  <View style={styles.todayOpsCard}>
+                    <View style={styles.todayOpsCell}>
+                      <Text style={[styles.todayOpsNum, { color: '#059669' }]}>
+                        {todayOps.completed}
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Completed</Text>
+                    </View>
+                    <View style={styles.todayOpsDivider} />
+                    <View style={styles.todayOpsCell}>
+                      <Text style={[styles.todayOpsNum, { color: '#d97706' }]}>
+                        {todayOps.pending}
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Pending</Text>
+                    </View>
+                    <View style={styles.todayOpsDivider} />
+                    <View style={styles.todayOpsCell}>
+                      <Text style={[styles.todayOpsNum, { color: '#dc2626' }]}>
+                        {todayOps.overdue}
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Overdue</Text>
+                    </View>
+                  </View>
+
+                  {pendingNotifCount > 0 ? (
+                    <TouchableOpacity
+                      style={styles.permAlertBanner}
+                      onPress={() => openAdminSection('permissions')}
+                      activeOpacity={0.88}
+                    >
+                      <View style={styles.permAlertIcon}>
+                        <Ionicons name="shield-outline" size={18} color="#b45309" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.permAlertTitle}>
+                          {pendingNotifCount} permission request
+                          {pendingNotifCount === 1 ? '' : 's'} pending
+                        </Text>
+                        <Text style={styles.permAlertSub}>Review in Admin → Permission</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color="#b45309" />
+                    </TouchableOpacity>
+                  ) : null}
+
+                  {attentionOperators.length > 0 ? (
+                    <View style={styles.attentionCard}>
+                      <View style={styles.attentionHead}>
+                        <Ionicons name="alert-circle-outline" size={16} color="#dc2626" />
+                        <Text style={styles.attentionTitle}>Needs attention</Text>
+                      </View>
+                      {attentionOperators.map((op, idx) => (
+                        <TouchableOpacity
+                          key={`att-${op.id || op.email || idx}`}
+                          style={[styles.attentionRow, idx > 0 && styles.attentionRowBorder]}
+                          onPress={() => {
+                            openDoProfile(op, op.warehouse_name);
+                            setHomeListFocus('ops');
+                          }}
+                          activeOpacity={0.85}
+                        >
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={styles.attentionName} numberOfLines={1}>
+                              {op.name || 'DO'}
+                            </Text>
+                            <Text style={styles.attentionMeta} numberOfLines={1}>
+                              {op.warehouse_name || 'Unassigned'}
+                            </Text>
+                          </View>
+                          <Text style={styles.attentionBadge}>
+                            {Number(op.overdue) > 0
+                              ? `${Number(op.overdue)} overdue`
+                              : `${Number(op.pending)} pending`}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  ) : null}
+
                   <View style={styles.quickRow}>
-                    <TouchableOpacity style={styles.quickBtn} onPress={() => setActiveTab('Logs')}>
-                      <Ionicons name="list-outline" size={18} color="#003580" />
-                      <Text style={styles.quickText}>All logs</Text>
+                    <TouchableOpacity style={styles.quickBtn} onPress={openLogsToday} activeOpacity={0.85}>
+                      <Ionicons name="list-outline" size={15} color="#003580" />
+                      <Text style={styles.quickText}>Logs</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.quickBtn} onPress={() => setActiveTab('Reports')}>
-                      <Ionicons name="stats-chart-outline" size={18} color="#003580" />
-                      <Text style={styles.quickText}>Reports</Text>
+                    <TouchableOpacity
+                      style={styles.quickBtn}
+                      onPress={() => {
+                        setHomeListFocus('ops');
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="people-outline" size={15} color="#003580" />
+                      <Text style={styles.quickText}>DOs</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.quickBtn}
+                      onPress={() => openAdminSection('dos')}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="settings-outline" size={15} color="#003580" />
+                      <Text style={styles.quickText}>Manage</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={styles.dashSectionLbl}>Browse by category</Text>
+                  <View style={styles.statsGrid}>
+                    {overviewCards.map((card) => {
+                      const active = homeListFocus === card.key;
+                      return (
+                        <TouchableOpacity
+                          key={card.key}
+                          style={[styles.statCard, active && styles.statCardActive]}
+                          onPress={() => setHomeListFocus(card.key)}
+                          activeOpacity={0.85}
+                        >
+                          <View style={[styles.statIcon, { backgroundColor: `${card.color}18` }]}>
+                            <Ionicons name={card.icon} size={12} color={card.color} />
+                          </View>
+                          <Text style={[styles.statValue, { color: card.color }]}>{card.value}</Text>
+                          <Text style={styles.statLabel} numberOfLines={1}>
+                            {card.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
 
                   <View style={styles.doSection}>
                     <View style={styles.doOverviewCard}>
-                      <Text style={styles.doOverviewTitle}>DO tasks today</Text>
+                      <Text style={styles.doOverviewTitle}>{homeListTitle}</Text>
+                      <Text style={styles.doOverviewSub}>{homeListSubtitle}</Text>
 
-                      {taskSummary ? (
-                        <View style={styles.doOverviewStats}>
-                          <Text style={styles.doOverviewStat}>
-                            <Text style={{ color: '#059669', fontWeight: '800' }}>
-                              {Number(taskSummary.completed) || 0}
-                            </Text>{' '}
-                            completed
-                          </Text>
-                          <Text style={styles.doOverviewDot}>·</Text>
-                          <Text style={styles.doOverviewStat}>
-                            <Text style={{ color: '#d97706', fontWeight: '800' }}>
-                              {Number(taskSummary.pending) || 0}
-                            </Text>{' '}
-                            pending
-                          </Text>
-                          <Text style={styles.doOverviewDot}>·</Text>
-                          <Text style={styles.doOverviewStat}>
-                            <Text style={{ color: '#dc2626', fontWeight: '800' }}>
-                              {Number(taskSummary.overdue) || 0}
-                            </Text>{' '}
-                            overdue
-                          </Text>
-                        </View>
-                      ) : null}
+                      {homeListFocus === 'warehouses' ? (
+                        warehouseTasks.length === 0 ? (
+                          <Text style={styles.cardHintSm}>No warehouses yet.</Text>
+                        ) : (
+                          warehouseTasks.map((wh, idx) => {
+                            const done = Number(wh.completed) || 0;
+                            const pending = Number(wh.pending) || 0;
+                            const overdue = Number(wh.overdue) || 0;
+                            const expected = Number(wh.expected_today) || done + pending;
+                            const allDone = pending === 0 && expected > 0;
+                            const color =
+                              overdue > 0 ? '#dc2626' : allDone ? '#059669' : '#d97706';
+                            const warehouseDos = dosForWarehouse(wh);
+                            return (
+                              <View
+                                key={wh.warehouse_name}
+                                style={[styles.doOverviewRow, idx > 0 && styles.doOverviewRowBorder]}
+                              >
+                                <View style={{ flex: 1, minWidth: 0 }}>
+                                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    <View
+                                      style={[styles.doOverviewDotSm, { backgroundColor: color }]}
+                                    />
+                                    <View style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>
+                                      <Text style={styles.doOverviewWh} numberOfLines={1}>
+                                        {wh.warehouse_name}
+                                      </Text>
+                                      <Text style={styles.doOverviewMeta} numberOfLines={1}>
+                                        {warehouseDos.length
+                                          ? `${warehouseDos.length} DO${
+                                              warehouseDos.length === 1 ? '' : 's'
+                                            }`
+                                          : 'No DO'}
+                                        {wh.assignment_count
+                                          ? ` · ${wh.assignment_count} client${
+                                              Number(wh.assignment_count) === 1 ? '' : 's'
+                                            }`
+                                          : ''}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.doCountPills}>
+                                      <View style={[styles.doCountPill, styles.doCountPillDone]}>
+                                        <Text style={[styles.doCountPillNum, { color: '#059669' }]}>
+                                          {done}
+                                        </Text>
+                                        <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>
+                                          Done
+                                        </Text>
+                                      </View>
+                                      <View style={[styles.doCountPill, styles.doCountPillPend]}>
+                                        <Text style={[styles.doCountPillNum, { color: '#d97706' }]}>
+                                          {pending}
+                                        </Text>
+                                        <Text style={[styles.doCountPillLbl, { color: '#d97706' }]}>
+                                          Pending
+                                        </Text>
+                                      </View>
+                                      <View style={[styles.doCountPill, styles.doCountPillOver]}>
+                                        <Text style={[styles.doCountPillNum, { color: '#dc2626' }]}>
+                                          {overdue}
+                                        </Text>
+                                        <Text style={[styles.doCountPillLbl, { color: '#dc2626' }]}>
+                                          Overdue
+                                        </Text>
+                                      </View>
+                                    </View>
+                                  </View>
 
-                      {warehouseTasks.length === 0 ? (
-                        <Text style={styles.cardHintSm}>No warehouse / DO task data yet.</Text>
-                      ) : (
-                        warehouseTasks.map((wh, idx) => {
-                          const done = Number(wh.completed) || 0;
-                          const pending = Number(wh.pending) || 0;
-                          const overdue = Number(wh.overdue) || 0;
-                          const expected = Number(wh.expected_today) || done + pending;
-                          const allDone = pending === 0 && expected > 0;
-                          const color =
-                            overdue > 0 ? '#dc2626' : allDone ? '#059669' : '#d97706';
-                          return (
+                                  {warehouseDos.length > 0 ? (
+                                    <View style={styles.warehouseDoList}>
+                                      {warehouseDos.map((op, doIdx) => {
+                                        const profile = resolveDoProfile(op, wh.warehouse_name);
+                                        return (
+                                          <TouchableOpacity
+                                            key={`${op.id || op.email || op.name}-${doIdx}`}
+                                            style={styles.warehouseDoChip}
+                                            activeOpacity={0.85}
+                                            onPress={() => openDoProfile(op, wh.warehouse_name)}
+                                          >
+                                            <View style={styles.warehouseDoAvatar}>
+                                              <Ionicons name="person" size={14} color="#003580" />
+                                            </View>
+                                            <View style={{ flex: 1, minWidth: 0 }}>
+                                              <Text style={styles.warehouseDoName} numberOfLines={1}>
+                                                {profile?.name || op.name || 'DO'}
+                                              </Text>
+                                              <Text style={styles.warehouseDoMeta} numberOfLines={1}>
+                                                {profile?.email || op.email || 'Tap for profile'}
+                                              </Text>
+                                            </View>
+                                            <Ionicons
+                                              name="chevron-forward"
+                                              size={16}
+                                              color="#94a3b8"
+                                            />
+                                          </TouchableOpacity>
+                                        );
+                                      })}
+                                    </View>
+                                  ) : null}
+                                </View>
+                              </View>
+                            );
+                          })
+                        )
+                      ) : homeListFocus === 'customers' ? (
+                        homeCustomers.length === 0 ? (
+                          <Text style={styles.cardHintSm}>No customer accounts yet.</Text>
+                        ) : (
+                          homeCustomers.map((c, idx) => (
                             <View
-                              key={wh.warehouse_name}
+                              key={String(c.id || c.email || idx)}
                               style={[styles.doOverviewRow, idx > 0 && styles.doOverviewRowBorder]}
+                            >
+                              <View
+                                style={[styles.doOverviewDotSm, { backgroundColor: '#059669' }]}
+                              />
+                              <View style={{ flex: 1, minWidth: 0 }}>
+                                <Text style={styles.doOverviewWh} numberOfLines={1}>
+                                  {c.full_name || c.email || 'Customer'}
+                                </Text>
+                                <Text style={styles.doOverviewMeta} numberOfLines={2}>
+                                  {c.email || '—'}
+                                  {c.phone_no ? ` · ${c.phone_no}` : ''}
+                                  {` · WH: ${formatScopeList(c.allowed_warehouses)}`}
+                                  {` · Clients: ${formatScopeList(c.allowed_clients)}`}
+                                </Text>
+                              </View>
+                            </View>
+                          ))
+                        )
+                      ) : derivedHomeOperators.length === 0 ? (
+                        <Text style={styles.cardHintSm}>No DO operators yet.</Text>
+                      ) : (
+                        derivedHomeOperators.map((op, idx) => {
+                          const overdue = Number(op.overdue) || 0;
+                          const pending = Number(op.pending) || 0;
+                          const color =
+                            overdue > 0 ? '#dc2626' : pending > 0 ? '#d97706' : '#059669';
+                          return (
+                            <TouchableOpacity
+                              key={`${op.id || op.email || op.name}-${idx}`}
+                              style={[styles.doOverviewRow, idx > 0 && styles.doOverviewRowBorder]}
+                              activeOpacity={0.85}
+                              onPress={() => openDoProfile(op, op.warehouse_name)}
                             >
                               <View style={[styles.doOverviewDotSm, { backgroundColor: color }]} />
                               <View style={{ flex: 1, minWidth: 0 }}>
                                 <Text style={styles.doOverviewWh} numberOfLines={1}>
-                                  {wh.warehouse_name}
+                                  {op.name || 'DO'}
                                 </Text>
                                 <Text style={styles.doOverviewMeta} numberOfLines={1}>
-                                  {wh.do_names || 'No DO'}
+                                  {op.warehouse_name || 'Unassigned'}
+                                  {op.email ? ` · ${op.email}` : ''}
                                 </Text>
                               </View>
                               <View style={styles.doCountPills}>
                                 <View style={[styles.doCountPill, styles.doCountPillDone]}>
                                   <Text style={[styles.doCountPillNum, { color: '#059669' }]}>
-                                    {done}
+                                    {Number(op.completed) || 0}
                                   </Text>
                                   <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>
                                     Done
@@ -1585,49 +2657,17 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                                   </Text>
                                 </View>
                               </View>
-                            </View>
+                              <Ionicons
+                                name="chevron-forward"
+                                size={16}
+                                color="#94a3b8"
+                                style={{ marginLeft: 4 }}
+                              />
+                            </TouchableOpacity>
                           );
                         })
                       )}
                     </View>
-                  </View>
-
-                  <View style={styles.card}>
-                    <View style={styles.cardTitleRow}>
-                      <Text style={styles.cardTitle}>Today’s activity</Text>
-                      <TouchableOpacity onPress={() => setActiveTab('Logs')}>
-                        <Text style={styles.linkText}>View all →</Text>
-                      </TouchableOpacity>
-                    </View>
-                    {todayLogs.length === 0 ? (
-                      <Text style={styles.cardHint}>No temperature logs recorded today yet.</Text>
-                    ) : (
-                      todayLogs.slice(0, 12).map((item, idx) => (
-                        <TouchableOpacity
-                          key={String(item.id || item.reference_no || idx)}
-                          style={[styles.recentRow, idx > 0 && styles.recentBorder]}
-                          onPress={() => setSelectedLog(item)}
-                        >
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.recentClient} numberOfLines={1}>
-                              {item.client_name || 'Client'}
-                            </Text>
-                            <Text style={styles.recentMeta} numberOfLines={1}>
-                              {item.chamber_name || 'Chamber'}
-                              {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
-                              {item.shift ? ` · ${item.shift}` : ''}
-                            </Text>
-                          </View>
-                          <Text style={styles.recentTemp}>
-                            {item.box_temp != null
-                              ? `${item.box_temp}°C`
-                              : item.chamber_temp != null
-                                ? `${item.chamber_temp}°C`
-                                : '—'}
-                          </Text>
-                        </TouchableOpacity>
-                      ))
-                    )}
                   </View>
                 </>
               )}
@@ -1699,27 +2739,25 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             <Text style={styles.sheetTitle}>
               {openFilter === 'warehouse' || openFilter === 'reportWarehouse'
                 ? 'Select warehouse'
-                : 'Select client'}
+                : openFilter === 'chamber'
+                  ? 'Select chamber'
+                  : 'Select client'}
             </Text>
             <ScrollView style={{ maxHeight: 320 }}>
               {(openFilter === 'warehouse'
                 ? warehouseOptions
-                : openFilter === 'reportWarehouse'
-                  ? reportWarehouseOptions
-                  : openFilter === 'reportClient'
-                    ? reportClientOptions
-                    : clientOptions
+                : openFilter === 'chamber'
+                  ? chamberOptions
+                  : openFilter === 'reportWarehouse'
+                    ? reportWarehouseOptions
+                    : openFilter === 'reportClient'
+                      ? reportClientOptions
+                      : clientOptions
               ).map((opt) => (
                 <TouchableOpacity
                   key={opt}
                   style={styles.sheetItem}
-                  onPress={() => {
-                    if (openFilter === 'warehouse') setWarehouseFilter(opt);
-                    else if (openFilter === 'client') setClientFilter(opt);
-                    else if (openFilter === 'reportWarehouse') setReportWarehouseFilter(opt);
-                    else if (openFilter === 'reportClient') setReportClientFilter(opt);
-                    setOpenFilter(null);
-                  }}
+                  onPress={() => pickFilterOption(opt)}
                 >
                   <Text style={styles.sheetItemText}>{opt}</Text>
                 </TouchableOpacity>
@@ -1788,123 +2826,336 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         <View style={styles.detailOverlay}>
           <View style={styles.detailSheet}>
             <View style={styles.detailHead}>
-              <Text style={styles.detailTitle}>Log detail</Text>
+              <Text style={styles.detailTitle}>
+                {selectedLog?._logType === 'inward'
+                  ? 'Inward details'
+                  : selectedLog?._logType === 'outward'
+                    ? 'Outward details'
+                    : 'Log detail'}
+              </Text>
               <TouchableOpacity onPress={() => setSelectedLog(null)}>
                 <Ionicons name="close" size={22} color="#334155" />
               </TouchableOpacity>
             </View>
             {selectedLog && (
-              <ScrollView>
-                <View style={styles.smallImgWrap}>
-                  <Text style={styles.detailLabel}>Image</Text>
-                  <SmallLogImage
-                    rawPath={pickLogImage(selectedLog)}
-                    apiUrl={apiUrl}
-                    folderHint={
-                      selectedLog._logType === 'inward'
-                        ? 'inward_temp_monitor_images'
-                        : selectedLog._logType === 'outward'
-                          ? 'outward_temp_monitor_images'
-                          : 'daily_temp_monitor_images'
-                    }
-                  />
-                </View>
-                {(selectedLog._logType === 'inward'
-                  ? [
+              <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
+                {selectedLog._logType === 'inward' || selectedLog._logType === 'outward' ? (
+                  <>
+                    {(() => {
+                      const item = selectedLog;
+                      const isInward = item._logType === 'inward';
+                      const shortQty =
+                        parseInt(
+                          isInward
+                            ? item.inward_short_received_boxes_qty
+                            : item.outward_short_received_boxes_qty,
+                          10
+                        ) || 0;
+                      const excessQty =
+                        parseInt(
+                          isInward
+                            ? item.inward_excess_received_boxes_qty
+                            : item.outward_excess_received_boxes_qty,
+                          10
+                        ) || 0;
+                      const damageQty =
+                        parseInt(
+                          isInward
+                            ? item.inward_damage_received_boxes_qty
+                            : item.outward_damage_received_boxes_qty,
+                          10
+                        ) || 0;
+                      const preVehicleTemp =
+                        item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp;
+                      const sections = isInward
+                        ? [
+                            {
+                              title: 'Location & Operator',
+                              rows: [
+                                ['Warehouse', item.warehouse_name],
+                                ['Warehouse code', item.warehouse_code],
+                                ['Operator', item.operator_email],
+                                ['Client code', item.inward_client_code]
+                              ]
+                            },
+                            {
+                              title: 'Arrival',
+                              rows: [
+                                [
+                                  'Reference',
+                                  item.reference_no ||
+                                    (item.inward_id != null ? `INW-${item.inward_id}` : null)
+                                ],
+                                [
+                                  'Entry date',
+                                  item.inward_entry_date ||
+                                    String(item.formatted_date || item.entry_date || '').slice(0, 10)
+                                ],
+                                ['Client', item.inward_client_name || item.client_name],
+                                ['Dock', item.inward_dock_no],
+                                ['Material', item.inward_material_type],
+                                ['Vehicle no.', item.inward_vehicle_no],
+                                ['Seal no.', item.inward_seal_no],
+                                ['Transporter', item.inward_transporter_name],
+                                ['Driver', item.inward_driver_name],
+                                ['Driver phone', item.inward_driver_no]
+                              ]
+                            },
+                            {
+                              title: 'Timing',
+                              rows: [
+                                ['Reporting time', item.inward_vehicle_reporting_time],
+                                ['Unload start', item.inward_unloading_start_time],
+                                ['Unload end', item.inward_unloading_end_time],
+                                [
+                                  'Duration',
+                                  item.inward_unloading_duration_hours != null ||
+                                  item.inward_unloading_duration_mins != null
+                                    ? `${item.inward_unloading_duration_hours || 0}h ${item.inward_unloading_duration_mins || 0}m`
+                                    : null
+                                ],
+                                [
+                                  'Created',
+                                  item.inward_created_at
+                                    ? String(item.inward_created_at).replace('T', ' ').slice(0, 19)
+                                    : item.created_at
+                                      ? String(item.created_at).replace('T', ' ').slice(0, 19)
+                                      : null
+                                ]
+                              ]
+                            },
+                            {
+                              title: 'Temperature & Quantity',
+                              rows: [
+                                [
+                                  'Vehicle temp',
+                                  item.inward_vehicle_temp != null
+                                    ? `${item.inward_vehicle_temp}°C`
+                                    : null
+                                ],
+                                [
+                                  'Material temp',
+                                  item.inward_material_temp != null
+                                    ? `${item.inward_material_temp}°C`
+                                    : null
+                                ],
+                                ['Pallets in', item.inward_pallets_in_qty],
+                                ['Invoice boxes', item.inward_invoice_qty],
+                                [
+                                  'Boxes received',
+                                  item.inward_received_boxes_qty ?? item.inward_received_qty
+                                ],
+                                ['Short qty', String(shortQty)],
+                                ['Excess qty', String(excessQty)],
+                                ['Damage qty', String(damageQty)],
+                                ['Supervisor', item.inward_unloading_supervisor_name],
+                                ['Remarks', item.inward_remarks]
+                              ]
+                            }
+                          ]
+                        : [
+                            {
+                              title: 'Location & Operator',
+                              rows: [
+                                ['Warehouse', item.warehouse_name],
+                                ['Warehouse code', item.warehouse_code],
+                                ['Operator', item.operator_email],
+                                ['Client code', item.outward_client_code]
+                              ]
+                            },
+                            {
+                              title: 'Dispatch',
+                              rows: [
+                                [
+                                  'Reference',
+                                  item.reference_no ||
+                                    (item.outward_id != null ? `OUT-${item.outward_id}` : null)
+                                ],
+                                [
+                                  'Entry date',
+                                  item.outward_entry_date ||
+                                    String(item.formatted_date || item.entry_date || '').slice(0, 10)
+                                ],
+                                ['Client', item.outward_client_name || item.client_name],
+                                ['Dock', item.outward_dock_no],
+                                ['Material', item.outward_material_type],
+                                ['Vehicle no.', item.outward_vehicle_no],
+                                ['Seal no.', item.outward_seal_no],
+                                ['Transporter', item.outward_transporter_name],
+                                ['Driver', item.outward_driver_name],
+                                ['Driver phone', item.outward_driver_no]
+                              ]
+                            },
+                            {
+                              title: 'Timing',
+                              rows: [
+                                ['Reporting time', item.outward_vehicle_reporting_time],
+                                ['Load start', item.outward_loading_start_time],
+                                ['Load end', item.outward_loading_end_time],
+                                [
+                                  'Duration',
+                                  item.outward_loading_duration_hours != null ||
+                                  item.outward_loading_duration_mins != null
+                                    ? `${item.outward_loading_duration_hours || 0}h ${item.outward_loading_duration_mins || 0}m`
+                                    : null
+                                ],
+                                [
+                                  'Created',
+                                  item.outward_created_at
+                                    ? String(item.outward_created_at).replace('T', ' ').slice(0, 19)
+                                    : item.created_at
+                                      ? String(item.created_at).replace('T', ' ').slice(0, 19)
+                                      : null
+                                ]
+                              ]
+                            },
+                            {
+                              title: 'Temperature & Quantity',
+                              rows: [
+                                [
+                                  'Pre vehicle temp',
+                                  preVehicleTemp != null ? `${preVehicleTemp}°C` : null
+                                ],
+                                [
+                                  'Material temp',
+                                  item.outward_material_temp != null
+                                    ? `${item.outward_material_temp}°C`
+                                    : null
+                                ],
+                                ['Pallets out', item.outward_pallets_in_qty],
+                                ['Invoice boxes', item.outward_invoice_qty],
+                                [
+                                  'Boxes loaded',
+                                  item.outward_received_boxes_qty ??
+                                    item.outward_loaded_boxes_qty ??
+                                    item.outward_received_qty ??
+                                    item.box_count
+                                ],
+                                ['Short qty', String(shortQty)],
+                                ['Excess qty', String(excessQty)],
+                                ['Damage qty', String(damageQty)],
+                                ['Supervisor', item.outward_loading_supervisor_name],
+                                ['Remarks', item.outward_remarks]
+                              ]
+                            }
+                          ];
+
+                      return sections.map((section) => {
+                        const visibleRows = section.rows.filter(
+                          ([, value]) => value != null && String(value).trim() !== ''
+                        );
+                        if (!visibleRows.length) return null;
+                        return (
+                          <View key={section.title} style={styles.logDetailSection}>
+                            <Text style={styles.logDetailSectionTitle}>{section.title}</Text>
+                            {visibleRows.map(([label, value]) => (
+                              <View key={label} style={styles.detailRow}>
+                                <Text style={styles.detailLabel}>{label}</Text>
+                                <Text style={styles.detailValue}>{String(value)}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        );
+                      });
+                    })()}
+
+                    <View style={styles.smallImgWrap}>
+                      <Text style={styles.logDetailSectionTitle}>Photos</Text>
+                      {(() => {
+                        const photoItems = buildInwardOutwardPhotoItems(selectedLog);
+                        const folderHint =
+                          selectedLog._logType === 'inward' ? 'inward_images' : 'outward_images';
+                        if (!photoItems.length) {
+                          return (
+                            <View style={styles.smallImgEmpty}>
+                              <Ionicons name="image-outline" size={18} color="#94a3b8" />
+                              <Text style={styles.smallImgEmptyText}>No photos attached</Text>
+                            </View>
+                          );
+                        }
+                        return (
+                          <PhotoGridWithLocation
+                            photoItems={photoItems}
+                            folderHint={folderHint}
+                            photoMeta={selectedLog.photo_capture_metadata}
+                              resolveUri={(path, hint) => {
+                                const local =
+                                  resolveImageUrl(path, apiUrl, hint) ||
+                                  resolveImageUrl(path, PRODUCTION_API_URL, hint);
+                                // Prefer local uploads; keep original Cloudinary as secondary
+                                if (
+                                  local &&
+                                  /^https?:\/\/res\.cloudinary\.com\//i.test(String(path || ''))
+                                ) {
+                                  return [local, String(path).trim()];
+                                }
+                                return local;
+                              }}
+                          />
+                        );
+                      })()}
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.smallImgWrap}>
+                      <Text style={styles.detailLabel}>Image</Text>
+                      <SmallLogImage
+                        rawPath={pickLogImage(selectedLog)}
+                        apiUrl={apiUrl}
+                        folderHint="daily_temp_monitor_images"
+                      />
+                      <GpsDetailRow
+                        label="Photo location (GPS)"
+                        lat={selectedLog.photo_capture_latitude}
+                        lng={selectedLog.photo_capture_longitude}
+                        accuracy={selectedLog.photo_capture_accuracy}
+                      />
+                    </View>
+                    {[
                       ['Client', selectedLog.client_name],
-                      ['Vehicle', selectedLog.inward_vehicle_no],
+                      ['Chamber', selectedLog.chamber_name],
                       ['Warehouse', selectedLog.warehouse_name],
-                      ['Date', String(selectedLog.formatted_date || selectedLog.entry_date || '').slice(0, 10)],
-                      ['Vehicle temp', selectedLog.inward_vehicle_temp != null ? `${selectedLog.inward_vehicle_temp}°C` : null],
-                      ['Material temp', selectedLog.inward_material_temp != null ? `${selectedLog.inward_material_temp}°C` : null],
-                      ['Received boxes', selectedLog.inward_received_boxes_qty ?? selectedLog.box_count],
-                      ['Dock', selectedLog.inward_dock_no],
+                      [
+                        'Date',
+                        String(selectedLog.formatted_date || selectedLog.entry_date || '').slice(
+                          0,
+                          10
+                        )
+                      ],
+                      ['Shift', selectedLog.shift || selectedLog.inspection_time],
+                      [
+                        'Box temp',
+                        selectedLog.box_temp != null ? `${selectedLog.box_temp}°C` : null
+                      ],
+                      ['Boxes', selectedLog.box_count],
                       ['Reference', selectedLog.reference_no],
                       [
                         'DO name',
-                        selectedLog.inward_unloading_supervisor_name ||
-                          selectedLog.monitor_supervisor_name ||
+                        selectedLog.monitor_supervisor_name ||
+                          selectedLog.do_name ||
                           (selectedLog.operator_email
                             ? String(selectedLog.operator_email).split('@')[0]
-                            : null)
+                            : null) ||
+                          selectedLog.created_by
                       ],
                       [
                         'Time',
-                        selectedLog.inward_vehicle_reporting_time ||
-                          selectedLog.inward_unloading_start_time ||
-                          (selectedLog.inward_created_at
-                            ? String(selectedLog.inward_created_at).replace('T', ' ').slice(0, 19)
-                            : null) ||
+                        selectedLog.photo_capture_time ||
+                          selectedLog.submit_time ||
                           (selectedLog.created_at
                             ? String(selectedLog.created_at).replace('T', ' ').slice(0, 19)
                             : null)
                       ]
-                    ]
-                  : selectedLog._logType === 'outward'
-                    ? [
-                        ['Client', selectedLog.client_name],
-                        ['Vehicle', selectedLog.outward_vehicle_no],
-                        ['Warehouse', selectedLog.warehouse_name],
-                        ['Date', String(selectedLog.formatted_date || selectedLog.entry_date || '').slice(0, 10)],
-                        ['Vehicle temp', selectedLog.outward_vehicle_temp != null ? `${selectedLog.outward_vehicle_temp}°C` : null],
-                        ['Material temp', selectedLog.outward_material_temp != null ? `${selectedLog.outward_material_temp}°C` : null],
-                        ['Boxes', selectedLog.box_count],
-                        ['Dock', selectedLog.outward_dock_no],
-                        ['Reference', selectedLog.reference_no],
-                        [
-                          'DO name',
-                          selectedLog.outward_loading_supervisor_name ||
-                            selectedLog.monitor_supervisor_name ||
-                            (selectedLog.operator_email
-                              ? String(selectedLog.operator_email).split('@')[0]
-                              : null)
-                        ],
-                        [
-                          'Time',
-                          selectedLog.outward_vehicle_reporting_time ||
-                            selectedLog.outward_loading_start_time ||
-                            (selectedLog.outward_created_at
-                              ? String(selectedLog.outward_created_at).replace('T', ' ').slice(0, 19)
-                              : null) ||
-                            (selectedLog.created_at
-                              ? String(selectedLog.created_at).replace('T', ' ').slice(0, 19)
-                              : null)
-                        ]
-                      ]
-                    : [
-                        ['Client', selectedLog.client_name],
-                        ['Chamber', selectedLog.chamber_name],
-                        ['Warehouse', selectedLog.warehouse_name],
-                        ['Date', String(selectedLog.formatted_date || selectedLog.entry_date || '').slice(0, 10)],
-                        ['Shift', selectedLog.shift || selectedLog.inspection_time],
-                        ['Box temp', selectedLog.box_temp != null ? `${selectedLog.box_temp}°C` : null],
-                        ['Boxes', selectedLog.box_count],
-                        ['Reference', selectedLog.reference_no],
-                        [
-                          'DO name',
-                          selectedLog.monitor_supervisor_name ||
-                            selectedLog.do_name ||
-                            (selectedLog.operator_email
-                              ? String(selectedLog.operator_email).split('@')[0]
-                              : null) ||
-                            selectedLog.created_by
-                        ],
-                        [
-                          'Time',
-                          selectedLog.photo_capture_time ||
-                            selectedLog.submit_time ||
-                            (selectedLog.created_at
-                              ? String(selectedLog.created_at).replace('T', ' ').slice(0, 19)
-                              : null)
-                        ]
-                      ]
-                ).map(([label, value]) =>
-                  value != null && String(value).trim() !== '' ? (
-                    <View key={label} style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>{label}</Text>
-                      <Text style={styles.detailValue}>{String(value)}</Text>
-                    </View>
-                  ) : null
+                    ].map(([label, value]) =>
+                      value != null && String(value).trim() !== '' ? (
+                        <View key={label} style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>{label}</Text>
+                          <Text style={styles.detailValue}>{String(value)}</Text>
+                        </View>
+                      ) : null
+                    )}
+                  </>
                 )}
               </ScrollView>
             )}
@@ -2145,11 +3396,457 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         </View>
       </Modal>
 
+      <Modal
+        visible={!!selectedDoProfile}
+        animationType="slide"
+        onRequestClose={() => {
+          setDoProfileEditing(false);
+          setSelectedDoProfile(null);
+        }}
+      >
+        <View style={styles.doProfileOverlay}>
+          <View style={styles.doProfileSheet}>
+            <View style={styles.doProfileHandle} />
+            <View style={styles.detailHead}>
+              <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                <Text style={styles.detailTitle} numberOfLines={1}>
+                  DO profile
+                </Text>
+                <Text style={styles.excelSub} numberOfLines={1}>
+                  {selectedDoProfile?.name || 'Data Operator'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  setDoProfileEditing(false);
+                  setSelectedDoProfile(null);
+                }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close" size={22} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            {selectedDoProfile ? (
+              <ScrollView
+                style={{ flex: 1 }}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: 28 }}
+                keyboardShouldPersistTaps="handled"
+              >
+                <View style={styles.doProfileHero}>
+                  <View style={styles.doProfileHeroAvatar}>
+                    <Ionicons name="person" size={28} color="#003580" />
+                  </View>
+                  <Text style={styles.doProfileHeroName} numberOfLines={2}>
+                    {selectedDoProfile.name}
+                  </Text>
+                  <Text style={styles.doProfileHeroRole}>Data Operator</Text>
+                </View>
+
+                <View style={styles.doProfileCard}>
+                  <View style={styles.doProfileCardHead}>
+                    <Text style={styles.doProfileSectionTitle}>Profile</Text>
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (doProfileEditing) {
+                          setDoProfileEditing(false);
+                          setDoProfileForm({
+                            full_name:
+                              selectedDoProfile.full_name || selectedDoProfile.name || '',
+                            phone_no: String(selectedDoProfile.phone_no || '').replace(
+                              /^\+91/,
+                              ''
+                            ),
+                            warehouse_name: selectedDoProfile.warehouse_name || '',
+                            chamber_limit:
+                              selectedDoProfile.chamber_limit != null
+                                ? String(selectedDoProfile.chamber_limit)
+                                : '4'
+                          });
+                        } else {
+                          setDoProfileEditing(true);
+                        }
+                      }}
+                    >
+                      <Text style={styles.doProfileEditLink}>
+                        {doProfileEditing ? 'Cancel' : 'Edit'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {doProfileEditing ? (
+                    <>
+                      {[
+                        ['full_name', 'Full name'],
+                        ['phone_no', 'Phone'],
+                        ['warehouse_name', 'Warehouse']
+                      ].map(([key, label]) => (
+                        <View key={key} style={styles.doProfileField}>
+                          <Text style={styles.doProfileLabel}>{label}</Text>
+                          <TextInput
+                            style={styles.doProfileInput}
+                            value={String(doProfileForm[key] || '')}
+                            onChangeText={(t) =>
+                              setDoProfileForm((p) => ({ ...p, [key]: t }))
+                            }
+                            keyboardType={key === 'phone_no' ? 'number-pad' : 'default'}
+                            placeholder={label}
+                            placeholderTextColor="#94a3b8"
+                          />
+                        </View>
+                      ))}
+                      <View style={styles.doProfileRow}>
+                        <Text style={styles.doProfileLabel}>Email</Text>
+                        <Text style={styles.doProfileValue}>
+                          {selectedDoProfile.email || '—'}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[styles.doMasterSetupBtn, { marginTop: 12, marginBottom: 0 }]}
+                        onPress={saveDoProfileEdits}
+                        disabled={doProfileBusy}
+                      >
+                        {doProfileBusy ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <>
+                            <Ionicons name="save-outline" size={16} color="#fff" />
+                            <Text style={styles.doMasterSetupBtnText}>Save profile</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    [
+                      ['Full name', selectedDoProfile.full_name || selectedDoProfile.name],
+                      ['Email', selectedDoProfile.email],
+                      ['Phone', selectedDoProfile.phone_no],
+                      ['Warehouse', selectedDoProfile.warehouse_name],
+                      ['Warehouse code', selectedDoProfile.warehouse_code]
+                    ]
+                      .filter(([, v]) => v != null && String(v).trim() !== '')
+                      .map(([label, value]) => (
+                        <View key={label} style={styles.doProfileRow}>
+                          <Text style={styles.doProfileLabel}>{label}</Text>
+                          <Text style={styles.doProfileValue}>{String(value)}</Text>
+                        </View>
+                      ))
+                  )}
+                </View>
+
+                <View style={styles.doProfileCard}>
+                  <Text style={[styles.doProfileSectionTitle, { marginBottom: 10 }]}>
+                    Today’s task snapshot
+                  </Text>
+                  <View style={styles.doProfileStatRow}>
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#ecfdf5' }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#059669' }]}>
+                        {selectedDoProfile.completed}
+                      </Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#059669' }]}>Done</Text>
+                    </View>
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#fffbeb' }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#d97706' }]}>
+                        {selectedDoProfile.pending}
+                      </Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#d97706' }]}>Pending</Text>
+                    </View>
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#fef2f2' }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#dc2626' }]}>
+                        {selectedDoProfile.overdue}
+                      </Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#dc2626' }]}>Overdue</Text>
+                    </View>
+                  </View>
+                </View>
+
+                {selectedDoProfile.warehouse_name ? (
+                  <View style={styles.doProfileCard}>
+                    <View style={styles.doProfileCardHead}>
+                      <Text style={styles.doProfileSectionTitle}>Chambers & clients</Text>
+                      <TouchableOpacity onPress={loadDoProfileAssignments}>
+                        <Ionicons name="refresh" size={16} color="#003580" />
+                      </TouchableOpacity>
+                    </View>
+                    {doProfileAssignLoading ? (
+                      <ActivityIndicator color="#003580" style={{ marginVertical: 12 }} />
+                    ) : doProfileChamberGroups.length === 0 ? (
+                      <Text style={styles.doProfileEmptyAssign}>
+                        No chamber–client assignments yet.
+                      </Text>
+                    ) : (
+                      doProfileChamberGroups.map((ch) => (
+                        <View key={String(ch.id)} style={styles.doProfileChamberBlock}>
+                          <View style={styles.doProfileChamberHead}>
+                            <Text style={styles.doProfileChamberName}>{ch.name}</Text>
+                            <View style={styles.doProfileTypePill}>
+                              <Text style={styles.doProfileTypeText}>{ch.type}</Text>
+                            </View>
+                          </View>
+                          <Text style={styles.doProfileClientsLine}>
+                            Active ({ch.active.length}):{' '}
+                            {ch.active.length ? ch.active.join(' · ') : '—'}
+                          </Text>
+                          <Text
+                            style={[styles.doProfileClientsLine, { color: '#94a3b8' }]}
+                          >
+                            Deactive ({ch.deactive.length}):{' '}
+                            {ch.deactive.length ? ch.deactive.join(' · ') : '—'}
+                          </Text>
+                        </View>
+                      ))
+                    )}
+                    <TouchableOpacity
+                      style={styles.doMasterSetupBtn}
+                      onPress={() => setShowDoMasterSetup(true)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="create-outline" size={18} color="#fff" />
+                      <Text style={styles.doMasterSetupBtnText}>Edit chambers & clients</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+
+                <TouchableOpacity
+                  style={styles.doProfileDoneBtn}
+                  onPress={() => {
+                    setDoProfileEditing(false);
+                    setSelectedDoProfile(null);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.doProfileDoneBtnText}>Done</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      <SubAdminDoMasterSetup
+        visible={showDoMasterSetup && !!selectedDoProfile?.warehouse_name}
+        onClose={({ hadChanges } = {}) => {
+          setShowDoMasterSetup(false);
+          loadDoProfileAssignments();
+          if (hadChanges) {
+            showSavedChanges(
+              'Changes saved',
+              'Chamber and client updates were saved successfully.'
+            );
+          }
+        }}
+        apiUrl={apiUrl}
+        token={token}
+        authHeaders={authHeaders}
+        warehouseName={selectedDoProfile?.warehouse_name}
+        warehouseCode={selectedDoProfile?.warehouse_code}
+        operatorEmail={selectedDoProfile?.email}
+        operatorName={selectedDoProfile?.name || selectedDoProfile?.full_name}
+        operatorId={selectedDoProfile?.id}
+        operatorPhone={selectedDoProfile?.phone_no}
+        chamberLimit={selectedDoProfile?.chamber_limit}
+        onChamberLimitChange={(next) => {
+          setSelectedDoProfile((prev) =>
+            prev ? { ...prev, chamber_limit: next } : prev
+          );
+        }}
+      />
+
+      <SavedChangesPopup
+        visible={savedPopup.visible}
+        title={savedPopup.title}
+        message={savedPopup.message}
+        onDone={() => setSavedPopup((p) => ({ ...p, visible: false }))}
+      />
+
+      <Modal
+        visible={showDrawer}
+        transparent
+        animationType="none"
+        onRequestClose={closeDrawer}
+      >
+        <View style={styles.drawerOverlay}>
+          <Animated.View
+            style={[styles.drawerPanel, { transform: [{ translateX: drawerAnim }] }]}
+          >
+            <View style={styles.drawerHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                <View style={styles.drawerUserAvatar}>
+                  <Ionicons name="person" size={18} color="#003580" />
+                </View>
+                <View style={{ marginLeft: 10, flex: 1 }}>
+                  <Text style={styles.drawerUserName} numberOfLines={1}>
+                    {displayName}
+                  </Text>
+                  <Text style={styles.drawerUserRole}>Sub-Admin</Text>
+                </View>
+              </View>
+              <TouchableOpacity onPress={closeDrawer} style={{ marginLeft: 10 }}>
+                <Ionicons name="close-circle-outline" size={26} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.drawerMenuScroll} showsVerticalScrollIndicator={false}>
+              <TouchableOpacity
+                style={[
+                  styles.drawerMenuItem,
+                  activeTab === 'Dashboard' && styles.drawerMenuItemActive
+                ]}
+                onPress={() => {
+                  setActiveTab('Dashboard');
+                  closeDrawer();
+                }}
+              >
+                <Ionicons
+                  name={activeTab === 'Dashboard' ? 'home' : 'home-outline'}
+                  size={20}
+                  color={activeTab === 'Dashboard' ? '#003580' : '#475569'}
+                  style={{ marginRight: 12 }}
+                />
+                <Text
+                  style={[
+                    styles.drawerMenuText,
+                    activeTab === 'Dashboard' && styles.drawerMenuTextActive
+                  ]}
+                >
+                  Dashboard
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.drawerMenuItem, activeTab === 'Logs' && styles.drawerMenuItemActive]}
+                onPress={() => {
+                  setActiveTab('Logs');
+                  closeDrawer();
+                }}
+              >
+                <Ionicons
+                  name={activeTab === 'Logs' ? 'list' : 'list-outline'}
+                  size={20}
+                  color={activeTab === 'Logs' ? '#003580' : '#475569'}
+                  style={{ marginRight: 12 }}
+                />
+                <Text
+                  style={[
+                    styles.drawerMenuText,
+                    activeTab === 'Logs' && styles.drawerMenuTextActive
+                  ]}
+                >
+                  Logs
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.drawerMenuItem,
+                  activeTab === 'Reports' && styles.drawerMenuItemActive
+                ]}
+                onPress={() => {
+                  setActiveTab('Reports');
+                  closeDrawer();
+                }}
+              >
+                <Ionicons
+                  name={activeTab === 'Reports' ? 'stats-chart' : 'stats-chart-outline'}
+                  size={20}
+                  color={activeTab === 'Reports' ? '#003580' : '#475569'}
+                  style={{ marginRight: 12 }}
+                />
+                <Text
+                  style={[
+                    styles.drawerMenuText,
+                    activeTab === 'Reports' && styles.drawerMenuTextActive
+                  ]}
+                >
+                  Reports
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.drawerMenuItem,
+                  activeTab === 'Admin' && styles.drawerMenuItemActive
+                ]}
+                onPress={() => {
+                  setAdminInitialSection('permissions');
+                  setActiveTab('Admin');
+                  closeDrawer();
+                }}
+              >
+                <Ionicons
+                  name={activeTab === 'Admin' ? 'construct' : 'construct-outline'}
+                  size={20}
+                  color={activeTab === 'Admin' ? '#003580' : '#475569'}
+                  style={{ marginRight: 12 }}
+                />
+                <Text
+                  style={[
+                    styles.drawerMenuText,
+                    activeTab === 'Admin' && styles.drawerMenuTextActive
+                  ]}
+                >
+                  Admin
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.drawerMenuItem, activeTab === 'More' && styles.drawerMenuItemActive]}
+                onPress={() => {
+                  setActiveTab('More');
+                  closeDrawer();
+                }}
+              >
+                <Ionicons
+                  name={activeTab === 'More' ? 'person' : 'person-outline'}
+                  size={20}
+                  color={activeTab === 'More' ? '#003580' : '#475569'}
+                  style={{ marginRight: 12 }}
+                />
+                <Text
+                  style={[
+                    styles.drawerMenuText,
+                    activeTab === 'More' && styles.drawerMenuTextActive
+                  ]}
+                >
+                  More
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+
+            <View style={styles.drawerFooter}>
+              <TouchableOpacity
+                style={styles.drawerLogoutBtn}
+                onPress={() => {
+                  closeDrawer();
+                  handleLogoutPress();
+                }}
+              >
+                <Ionicons
+                  name="log-out-outline"
+                  size={20}
+                  color="#ef4444"
+                  style={{ marginRight: 12 }}
+                />
+                <Text style={styles.drawerLogoutText}>Logout Session</Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+
+          <TouchableOpacity
+            style={styles.drawerBackdrop}
+            activeOpacity={1}
+            onPress={closeDrawer}
+          />
+        </View>
+      </Modal>
+
       <View style={styles.tabBar}>
         {[
-          { id: 'Home', label: 'Home', icon: 'home', iconOutline: 'home-outline' },
+          { id: 'Dashboard', label: 'Dashboard', icon: 'home', iconOutline: 'home-outline' },
           { id: 'Logs', label: 'Logs', icon: 'list', iconOutline: 'list-outline' },
           { id: 'Reports', label: 'Reports', icon: 'stats-chart', iconOutline: 'stats-chart-outline' },
+          { id: 'Admin', label: 'Admin', icon: 'construct', iconOutline: 'construct-outline' },
           { id: 'More', label: 'More', icon: 'person', iconOutline: 'person-outline' }
         ].map((tab) => {
           const active = activeTab === tab.id;
@@ -2157,7 +3854,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             <TouchableOpacity
               key={tab.id}
               style={styles.tabItem}
-              onPress={() => setActiveTab(tab.id)}
+              onPress={() => {
+                if (tab.id === 'Admin') setAdminInitialSection('permissions');
+                setActiveTab(tab.id);
+              }}
               activeOpacity={0.85}
             >
               <Ionicons name={active ? tab.icon : tab.iconOutline} size={22} color={active ? '#003580' : '#94a3b8'} />
@@ -2176,18 +3876,141 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 4 : 4,
-    paddingBottom: 16,
+    paddingBottom: 14,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0'
   },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerLogo: { width: 36, height: 36 },
-  headerTitle: { fontSize: 16, fontWeight: '800', color: '#0f172a' },
+  headerSide: {
+    width: 48,
+    alignItems: 'flex-start',
+    justifyContent: 'center'
+  },
+  headerSideRight: {
+    alignItems: 'flex-end'
+  },
+  headerCenter: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8
+  },
+  menuBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eff6ff'
+  },
+  headerLogo: { width: 44, height: 44 },
+  headerTitleWrap: {
+    alignItems: 'flex-start'
+  },
+  headerTitle: { fontSize: 16, fontWeight: '800', color: '#0f172a', lineHeight: 18 },
+  headerMobileSub: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#64748b',
+    marginTop: 1,
+    letterSpacing: 0.4,
+    textTransform: 'lowercase'
+  },
   headerSub: { fontSize: 12, color: '#64748b', maxWidth: 140 },
+  drawerOverlay: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(15, 23, 42, 0.4)'
+  },
+  drawerBackdrop: {
+    flex: 1,
+    height: '100%'
+  },
+  drawerPanel: {
+    width: 280,
+    height: '100%',
+    backgroundColor: '#ffffff',
+    paddingTop: Platform.OS === 'ios' ? 50 : 20,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 4, height: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 16
+  },
+  drawerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderColor: '#f1f5f9'
+  },
+  drawerUserAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#e0e7ff',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  drawerUserName: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#0f172a'
+  },
+  drawerUserRole: {
+    fontSize: 10,
+    color: '#64748b',
+    marginTop: 1,
+    fontWeight: '600'
+  },
+  drawerMenuScroll: {
+    flex: 1,
+    paddingHorizontal: 16
+  },
+  drawerMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 6
+  },
+  drawerMenuItemActive: {
+    backgroundColor: '#eff6ff'
+  },
+  drawerMenuText: {
+    fontSize: 13,
+    color: '#475569',
+    fontWeight: '600'
+  },
+  drawerMenuTextActive: {
+    color: '#003580',
+    fontWeight: 'bold'
+  },
+  drawerFooter: {
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    borderTopWidth: 1,
+    borderColor: '#f1f5f9',
+    marginBottom: Platform.OS === 'ios' ? 25 : 10
+  },
+  drawerLogoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8
+  },
+  drawerLogoutText: {
+    fontSize: 13,
+    color: '#ef4444',
+    fontWeight: 'bold'
+  },
   bellBtn: {
     width: 38,
     height: 38,
@@ -2311,6 +4134,130 @@ const styles = StyleSheet.create({
   contentArea: { flex: 1, paddingBottom: 64 },
   body: { padding: 16, paddingBottom: 88 },
   moreBody: { paddingBottom: 120 },
+  dashHero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderLeftWidth: 4,
+    borderLeftColor: '#003580'
+  },
+  dashHeroEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#64748b',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 2
+  },
+  dashHeroTitle: { fontSize: 17, fontWeight: '800', color: '#0f172a' },
+  dashHeroDate: { fontSize: 12, color: '#64748b', fontWeight: '600', marginTop: 3 },
+  dashHeroIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 10
+  },
+  todayOpsCard: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    marginBottom: 10,
+    overflow: 'hidden'
+  },
+  todayOpsCell: { flex: 1, alignItems: 'center', paddingVertical: 12 },
+  todayOpsDivider: { width: 1, backgroundColor: '#e2e8f0' },
+  todayOpsNum: { fontSize: 20, fontWeight: '800' },
+  todayOpsLbl: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748b',
+    marginTop: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
+  },
+  permAlertBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#fffbeb',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    marginBottom: 10
+  },
+  permAlertIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#fef3c7',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  permAlertTitle: { fontSize: 13, fontWeight: '800', color: '#92400e' },
+  permAlertSub: { fontSize: 11, fontWeight: '600', color: '#b45309', marginTop: 1 },
+  attentionCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    marginBottom: 10,
+    overflow: 'hidden'
+  },
+  attentionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    backgroundColor: '#fef2f2',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#fecaca'
+  },
+  attentionTitle: { fontSize: 12, fontWeight: '800', color: '#991b1b' },
+  attentionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8
+  },
+  attentionRowBorder: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#f1f5f9'
+  },
+  attentionName: { fontSize: 13, fontWeight: '700', color: '#0f172a' },
+  attentionMeta: { fontSize: 11, color: '#64748b', fontWeight: '600', marginTop: 1 },
+  attentionBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#dc2626',
+    backgroundColor: '#fef2f2',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    overflow: 'hidden'
+  },
+  dashSectionLbl: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#64748b',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 6,
+    marginTop: 2
+  },
   hero: {
     backgroundColor: '#003580',
     borderRadius: 16,
@@ -2331,6 +4278,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0',
     alignItems: 'center'
+  },
+  statCardActive: {
+    borderColor: '#003580',
+    backgroundColor: '#eff6ff',
+    borderWidth: 1.5
   },
   statIcon: {
     width: 22,
@@ -2391,7 +4343,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     color: '#0f172a',
-    marginBottom: 8
+    marginBottom: 2
+  },
+  doOverviewSub: {
+    fontSize: 11,
+    color: '#64748b',
+    fontWeight: '600',
+    marginBottom: 10,
+    lineHeight: 15
   },
   doOverviewStats: {
     flexDirection: 'row',
@@ -2511,6 +4470,33 @@ const styles = StyleSheet.create({
   suggestClear: { backgroundColor: '#fee2e2' },
   suggestText: { fontSize: 11, fontWeight: '700', color: '#334155' },
   listBody: { padding: 8, paddingBottom: 88 },
+  dockReportPagination: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    marginTop: 4
+  },
+  dockReportPageBtn: {
+    backgroundColor: '#003580',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8
+  },
+  dockReportPageBtnDisabled: {
+    backgroundColor: '#94a3b8'
+  },
+  dockReportPageBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12
+  },
+  dockReportPageMeta: {
+    fontSize: 12,
+    color: '#64748b',
+    fontWeight: '600'
+  },
   dailyBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2729,6 +4715,189 @@ const styles = StyleSheet.create({
     padding: 16,
     maxHeight: '88%'
   },
+  doProfileOverlay: {
+    flex: 1,
+    backgroundColor: '#fff'
+  },
+  doProfileSheet: {
+    flex: 1,
+    backgroundColor: '#fff',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 48 : 12,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 16
+  },
+  doProfileHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#cbd5e1',
+    marginBottom: 10
+  },
+  doProfileHero: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    marginBottom: 10
+  },
+  doProfileHeroAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#e0efff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10
+  },
+  doProfileHeroName: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0f172a',
+    textAlign: 'center'
+  },
+  doProfileHeroRole: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
+    marginTop: 4
+  },
+  doProfileCard: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 12,
+    marginBottom: 10
+  },
+  doProfileSectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#003580',
+    marginBottom: 0,
+    textTransform: 'uppercase'
+  },
+  doProfileCardHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10
+  },
+  doProfileEditLink: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0369a1'
+  },
+  doProfileField: { marginBottom: 8 },
+  doProfileInput: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0f172a',
+    backgroundColor: '#f8fafc',
+    marginTop: 4
+  },
+  doProfileEmptyAssign: {
+    fontSize: 12,
+    color: '#94a3b8',
+    fontWeight: '600',
+    marginBottom: 10
+  },
+  doProfileChamberBlock: {
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9'
+  },
+  doProfileChamberHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8
+  },
+  doProfileChamberName: { fontSize: 13, fontWeight: '800', color: '#0f172a', flex: 1 },
+  doProfileTypePill: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6
+  },
+  doProfileTypeText: { fontSize: 10, fontWeight: '800', color: '#003580' },
+  doProfileClientsLine: {
+    fontSize: 11,
+    color: '#64748b',
+    fontWeight: '600',
+    marginTop: 4,
+    lineHeight: 16
+  },
+  doMasterSetupBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#003580',
+    borderRadius: 12,
+    paddingVertical: 12,
+    marginTop: 12,
+    marginBottom: 4
+  },
+  doMasterSetupBtnText: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  doProfileDoneBtn: {
+    marginTop: 4,
+    marginBottom: 8,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+    backgroundColor: '#e2e8f0'
+  },
+  doProfileDoneBtnText: { color: '#0f172a', fontWeight: '800', fontSize: 14 },
+  doProfileRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0'
+  },
+  doProfileLabel: { fontSize: 12, color: '#64748b', fontWeight: '600', flex: 1 },
+  doProfileValue: {
+    fontSize: 12,
+    color: '#0f172a',
+    fontWeight: '700',
+    flex: 1.4,
+    textAlign: 'right'
+  },
+  doProfileStatRow: { flexDirection: 'row', gap: 8 },
+  doProfileStatPill: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center'
+  },
+  doProfileStatNum: { fontSize: 16, fontWeight: '800' },
+  doProfileStatLbl: { fontSize: 10, fontWeight: '700', marginTop: 2 },
+  warehouseDoList: { marginTop: 10, gap: 6 },
+  warehouseDoChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingVertical: 8,
+    paddingHorizontal: 10
+  },
+  warehouseDoAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#e0efff',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  warehouseDoName: { fontSize: 13, fontWeight: '800', color: '#0f172a' },
+  warehouseDoMeta: { fontSize: 11, fontWeight: '600', color: '#64748b', marginTop: 1 },
   detailHead: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2830,5 +4999,18 @@ const styles = StyleSheet.create({
   },
   detailRow: { marginBottom: 10 },
   detailLabel: { fontSize: 11, color: '#94a3b8', fontWeight: '700' },
-  detailValue: { fontSize: 14, color: '#0f172a', fontWeight: '600', marginTop: 2 }
+  detailValue: { fontSize: 14, color: '#0f172a', fontWeight: '600', marginTop: 2 },
+  logDetailSection: {
+    marginBottom: 14,
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e2e8f0'
+  },
+  logDetailSectionTitle: {
+    fontSize: 13,
+    color: '#003580',
+    fontWeight: '800',
+    marginBottom: 10,
+    letterSpacing: 0.2
+  }
 });

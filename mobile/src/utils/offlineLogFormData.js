@@ -88,6 +88,9 @@ export function buildInwardFormData(record) {
   if (record.warehouse_name) {
     formData.append('warehouse_name', String(record.warehouse_name).trim());
   }
+  if (record.warehouse_code) {
+    formData.append('warehouse_code', String(record.warehouse_code).trim());
+  }
   if (record.operator_email) {
     formData.append('operator_email', String(record.operator_email).trim());
   }
@@ -146,6 +149,9 @@ export function buildOutwardFormData(record) {
 
   if (record.warehouse_name) {
     formData.append('warehouse_name', String(record.warehouse_name).trim());
+  }
+  if (record.warehouse_code) {
+    formData.append('warehouse_code', String(record.warehouse_code).trim());
   }
   if (record.operator_email) {
     formData.append('operator_email', String(record.operator_email).trim());

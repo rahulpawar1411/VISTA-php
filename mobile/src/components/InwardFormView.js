@@ -609,6 +609,7 @@ export default function InwardFormView({
     setSubmitting(true);
     await waitForSubmitUiPaint();
     const warehouseName = String(user?.warehouse_name || '').trim();
+    const warehouseCode = String(user?.warehouse_code || '').trim();
     const operatorEmail = String(user?.email || '').trim();
 
     try {
@@ -617,6 +618,7 @@ export default function InwardFormView({
         photos,
         driverCountryCode,
         warehouse_name: warehouseName || null,
+        warehouse_code: warehouseCode || null,
         operator_email: operatorEmail || null,
       });
       if (!localId) {
@@ -633,6 +635,7 @@ export default function InwardFormView({
             photos_json: JSON.stringify(photos),
             driver_country_code: driverCountryCode,
             warehouse_name: warehouseName,
+            warehouse_code: warehouseCode,
             operator_email: operatorEmail,
           });
 
