@@ -1,4 +1,4 @@
- import React, { useCallback, useEffect, useMemo, useState } from 'react';
+ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -42,6 +42,13 @@ import {
   isBlockingListLoad,
   isSoftListLoad,
 } from '../utils/listPerf';
+import {
+  INVENTORY_REPORT_FIRST_PAGE,
+  INVENTORY_REPORT_MORE_PAGE,
+  buildInventoryReconciliationQuery,
+  parseInventoryReconciliationPayload,
+  inventoryReportHasMore
+} from '../utils/inventoryReportPaging';
 
 const TouchableOpacity = FastTouchable;
 
@@ -240,6 +247,11 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [inventoryRows, setInventoryRows] = useState([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
+  const [inventoryLoadingMore, setInventoryLoadingMore] = useState(false);
+  const [inventoryHasMore, setInventoryHasMore] = useState(false);
+  const inventoryOffsetRef = useRef(0);
+  const inventoryLoadingMoreRef = useRef(false);
+  const inventoryHasMoreRef = useRef(false);
 
   const [reportRows, setReportRows] = useState([]);
   const [reportWarehouses, setReportWarehouses] = useState([]);
@@ -254,6 +266,11 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportsError, setReportsError] = useState('');
   const [reportsRefreshing, setReportsRefreshing] = useState(false);
+  const [reportsLoadingMore, setReportsLoadingMore] = useState(false);
+  const [reportHasMore, setReportHasMore] = useState(false);
+  const reportOffsetRef = useRef(0);
+  const reportsLoadingMoreRef = useRef(false);
+  const reportHasMoreRef = useRef(false);
   const [adminNotes, setAdminNotes] = useState([]);
   const [adminNotesLoading, setAdminNotesLoading] = useState(false);
   const [adminNotesError, setAdminNotesError] = useState('');
@@ -875,16 +892,29 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     loadLogs({ page: logPage + 1 });
   }, [logHasMore, logPage, loadLogs]);
 
-  const loadInventory = useCallback(async () => {
+  const loadInventory = useCallback(async (mode = 'reset') => {
     if (!apiUrl || !token) return;
-    setInventoryLoading(true);
-    setInventoryError('');
+    const reset = mode !== 'more';
+    if (!reset) {
+      if (inventoryLoadingMoreRef.current || !inventoryHasMoreRef.current) return;
+      inventoryLoadingMoreRef.current = true;
+      setInventoryLoadingMore(true);
+    } else {
+      setInventoryLoading(true);
+      setInventoryError('');
+      inventoryOffsetRef.current = 0;
+    }
     try {
-      const qs = new URLSearchParams();
-      if (warehouseFilter && warehouseFilter !== 'All') qs.set('warehouse', warehouseFilter);
-      if (clientFilter && clientFilter !== 'All') qs.set('client', clientFilter);
+      const offset = reset ? 0 : inventoryOffsetRef.current;
+      const limit = reset ? INVENTORY_REPORT_FIRST_PAGE : INVENTORY_REPORT_MORE_PAGE;
+      const qs = buildInventoryReconciliationQuery({
+        offset,
+        limit,
+        warehouse: warehouseFilter,
+        client: clientFilter
+      });
       const res = await fetch(
-        `${apiUrl}/api/dashboard/inventory-reconciliation${qs.toString() ? `?${qs}` : ''}`,
+        `${apiUrl}/api/dashboard/inventory-reconciliation?${qs.toString()}`,
         { headers: authHeaders }
       );
       const data = await res.json().catch(() => ({}));
@@ -894,30 +924,65 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         }
         throw new Error(data.message || data.error || `Failed to load inventory (${res.status})`);
       }
-      const rows = Array.isArray(data?.items)
-        ? data.items
-        : Array.isArray(data)
-          ? data
-          : [];
+      const { rows, total } = parseInventoryReconciliationPayload(data);
       // Double-scope on client (backend also scopes for customer role)
-      setInventoryRows(applyScope(rows, warehouseFilter, clientFilter));
+      const scoped = applyScope(rows, warehouseFilter, clientFilter);
+      inventoryOffsetRef.current = offset + scoped.length;
+      const more = inventoryReportHasMore(offset, scoped.length, total) || !!data.has_more;
+      inventoryHasMoreRef.current = more;
+      setInventoryHasMore(more);
+      setInventoryRows((prev) => (reset ? scoped : [...prev, ...scoped]));
     } catch (err) {
       const msg = formatUserError(err, { apiUrl, context: 'Failed to load inventory' });
       console.warn('Customer inventory load failed:', msg);
-      setInventoryRows([]);
+      if (reset) {
+        setInventoryRows([]);
+        inventoryHasMoreRef.current = false;
+        setInventoryHasMore(false);
+        inventoryOffsetRef.current = 0;
+      }
       setInventoryError(msg);
     } finally {
       setInventoryLoading(false);
       setRefreshing(false);
+      setInventoryLoadingMore(false);
+      inventoryLoadingMoreRef.current = false;
     }
-  }, [apiUrl, token, authHeaders, warehouseFilter, clientFilter, applyScope]);
+  }, [
+    apiUrl,
+    token,
+    authHeaders,
+    warehouseFilter,
+    clientFilter,
+    applyScope
+  ]);
 
-  const loadReports = useCallback(async () => {
+  const loadReports = useCallback(async (mode = 'reset') => {
     if (!apiUrl || !token) return;
-    setReportsLoading(true);
-    setReportsError('');
+    const reset = mode !== 'more';
+    if (!reset) {
+      if (reportsLoadingMoreRef.current || !reportHasMoreRef.current) return;
+      reportsLoadingMoreRef.current = true;
+      setReportsLoadingMore(true);
+    } else {
+      setReportsLoading(true);
+      setReportsError('');
+      reportOffsetRef.current = 0;
+    }
     try {
-      const res = await fetch(`${apiUrl}/api/dashboard/inventory-reconciliation`, { headers: authHeaders });
+      const offset = reset ? 0 : reportOffsetRef.current;
+      const limit = reset ? INVENTORY_REPORT_FIRST_PAGE : INVENTORY_REPORT_MORE_PAGE;
+      const qs = buildInventoryReconciliationQuery({
+        offset,
+        limit,
+        warehouse: reportWarehouseFilter,
+        client: reportClientFilter,
+        view: reportView
+      });
+      const res = await fetch(
+        `${apiUrl}/api/dashboard/inventory-reconciliation?${qs.toString()}`,
+        { headers: authHeaders }
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status === 401) {
@@ -925,30 +990,50 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
         }
         throw new Error(data.message || data.error || `Failed to load inventory (${res.status})`);
       }
-      const rows = Array.isArray(data?.items)
-        ? data.items
-        : Array.isArray(data)
-          ? data
-          : [];
+      const { rows, total } = parseInventoryReconciliationPayload(data);
       const scoped = applyScope(rows);
 
-      const whSet = new Set();
-      const clientSet = new Set();
-      scoped.forEach((r) => {
-        if (r.warehouse_name) whSet.add(String(r.warehouse_name).trim());
-        if (r.client_name) clientSet.add(String(r.client_name).trim());
-      });
-      setReportWarehouses(Array.from(whSet).sort((a, b) => a.localeCompare(b)));
-      setReportClients(Array.from(clientSet).sort((a, b) => a.localeCompare(b)));
-      setReportRows(scoped);
+      if (reset) {
+        const whSet = new Set(allowedWarehouses.map((w) => String(w).trim()).filter(Boolean));
+        const clientSet = new Set(allowedClients.map((c) => String(c).trim()).filter(Boolean));
+        scoped.forEach((r) => {
+          if (r.warehouse_name) whSet.add(String(r.warehouse_name).trim());
+          if (r.client_name) clientSet.add(String(r.client_name).trim());
+        });
+        setReportWarehouses(Array.from(whSet).sort((a, b) => a.localeCompare(b)));
+        setReportClients(Array.from(clientSet).sort((a, b) => a.localeCompare(b)));
+      }
+
+      reportOffsetRef.current = offset + scoped.length;
+      const more = inventoryReportHasMore(offset, scoped.length, total) || !!data.has_more;
+      reportHasMoreRef.current = more;
+      setReportHasMore(more);
+      setReportRows((prev) => (reset ? scoped : [...prev, ...scoped]));
     } catch (err) {
       setReportsError(formatUserError(err, { apiUrl, context: 'Failed to load inventory reports' }));
-      setReportRows([]);
+      if (reset) {
+        setReportRows([]);
+        reportHasMoreRef.current = false;
+        setReportHasMore(false);
+        reportOffsetRef.current = 0;
+      }
     } finally {
       setReportsLoading(false);
       setReportsRefreshing(false);
+      setReportsLoadingMore(false);
+      reportsLoadingMoreRef.current = false;
     }
-  }, [apiUrl, token, authHeaders, applyScope]);
+  }, [
+    apiUrl,
+    token,
+    authHeaders,
+    applyScope,
+    reportWarehouseFilter,
+    reportClientFilter,
+    reportView,
+    allowedWarehouses,
+    allowedClients
+  ]);
 
   /** LIFO: last-in (newest DO audit / update) first on outer Reports list */
   const sortLotsLifo = (rows) =>
@@ -983,30 +1068,9 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   }, [inventoryRows]);
 
   const filteredReportRows = useMemo(() => {
-    let rows = reportRows;
-    if (reportWarehouseFilter && reportWarehouseFilter !== 'All') {
-      const whLower = reportWarehouseFilter.toLowerCase().trim();
-      rows = rows.filter(
-        (r) =>
-          r.warehouse_name &&
-          String(r.warehouse_name).toLowerCase().trim() === whLower
-      );
-    }
-    if (reportClientFilter && reportClientFilter !== 'All') {
-      const cLower = reportClientFilter.toLowerCase().trim();
-      rows = rows.filter(
-        (r) => r.client_name && String(r.client_name).toLowerCase().trim() === cLower
-      );
-    }
-    if (reportView === 'mismatch') {
-      rows = rows.filter((r) => {
-        const bal = Math.max(0, Number(r.calculated_balance) || 0);
-        const phys = Math.max(0, Number(r.physical_audit_count) || 0);
-        return bal - phys !== 0;
-      });
-    }
-    return sortLotsLifo(dedupeInventoryLots(rows));
-  }, [reportRows, reportWarehouseFilter, reportClientFilter, reportView]);
+    // Server already applies warehouse/client/view filters for page payload
+    return sortLotsLifo(dedupeInventoryLots(reportRows));
+  }, [reportRows]);
 
   const reportSummary = useMemo(() => {
     let inward = 0;
@@ -2457,6 +2521,22 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
                 }
                 renderItem={renderLogsInventoryItem}
                 contentContainerStyle={styles.reportsListBody}
+                onEndReachedThreshold={0.35}
+                onEndReached={() => {
+                  if (reportHasMore && !reportsLoading && !reportsLoadingMore) {
+                    loadReports('more');
+                  }
+                }}
+                ListFooterComponent={
+                  reportsLoadingMore ? (
+                    <View style={{ paddingVertical: 14, alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color="#003580" />
+                      <Text style={{ marginTop: 6, fontSize: 11, color: '#64748b', fontWeight: '600' }}>
+                        Loading more…
+                      </Text>
+                    </View>
+                  ) : null
+                }
                 refreshControl={<RefreshControl refreshing={reportsRefreshing} onRefresh={onRefresh} />}
                 ListEmptyComponent={
                   <View style={styles.reportsCenterState}>

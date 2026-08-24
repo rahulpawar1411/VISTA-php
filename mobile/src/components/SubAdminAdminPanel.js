@@ -48,13 +48,18 @@ export default function SubAdminAdminPanel({
   onDenyPermission,
   permissionBusyId = null,
   onOpenDoProfile,
-  initialSection = 'permissions'
+  initialSection = 'permissions',
+  permissionsUpdatedAt = null,
+  initialPermFilter = 'pending'
 }) {
   const [section, setSection] = useState(initialSection);
   useEffect(() => {
     if (initialSection) setSection(initialSection);
   }, [initialSection]);
-  const [permFilter, setPermFilter] = useState('pending'); // pending | decided | all
+  const [permFilter, setPermFilter] = useState(initialPermFilter); // pending | decided | all
+  useEffect(() => {
+    if (initialPermFilter) setPermFilter(initialPermFilter);
+  }, [initialPermFilter]);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
 
@@ -195,11 +200,22 @@ export default function SubAdminAdminPanel({
   const filteredOps = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return operators;
-    return operators.filter((op) =>
-      `${op.full_name || ''} ${op.email || ''} ${op.warehouse_name || ''} ${op.phone_no || ''}`
-        .toLowerCase()
-        .includes(q)
-    );
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return operators.filter((op) => {
+      const hay = [
+        op.full_name,
+        op.name,
+        op.email,
+        op.phone_no,
+        op.warehouse_name,
+        op.warehouse_code,
+        op.chamber_limit != null ? `chambers ${op.chamber_limit}` : ''
+      ]
+        .map((v) => String(v || '').toLowerCase().trim())
+        .filter(Boolean)
+        .join(' · ');
+      return tokens.every((t) => hay.includes(t));
+    });
   }, [operators, search]);
 
   const filteredMasters = useMemo(() => {
@@ -448,7 +464,7 @@ export default function SubAdminAdminPanel({
             section === 'permissions'
               ? 'Search permission requests…'
               : section === 'dos'
-                ? 'Search DOs…'
+                ? 'Search DOs by name, email, warehouse, phone…'
                 : 'Search master…'
           }
           placeholderTextColor="#94a3b8"
@@ -488,6 +504,9 @@ export default function SubAdminAdminPanel({
                 );
               })}
             </View>
+            {permissionsUpdatedAt ? (
+              <Text style={styles.updatedAt}>Updated · {permissionsUpdatedAt}</Text>
+            ) : null}
 
             {permissionLoading && !refreshing ? (
               <ActivityIndicator color="#003580" style={{ marginTop: 24 }} />
@@ -563,7 +582,11 @@ export default function SubAdminAdminPanel({
         {section === 'dos' ? (
           <>
             <View style={styles.toolbar}>
-              <Text style={styles.hint}>{filteredOps.length} operator(s)</Text>
+              <Text style={styles.hint}>
+                {search.trim()
+                  ? `${filteredOps.length} of ${operators.length} DO(s)`
+                  : `${filteredOps.length} operator(s)`}
+              </Text>
               <TouchableOpacity style={styles.addBtn} onPress={openCreateDo}>
                 <Ionicons name="person-add" size={13} color="#fff" />
                 <Text style={styles.addBtnText}>Add DO</Text>
@@ -575,8 +598,21 @@ export default function SubAdminAdminPanel({
               <Text style={styles.error}>{opsError}</Text>
             ) : filteredOps.length === 0 ? (
               <View style={styles.emptyBox}>
-                <Ionicons name="people-outline" size={22} color="#94a3b8" />
-                <Text style={styles.empty}>No data operators yet.</Text>
+                <Ionicons
+                  name={search.trim() ? 'search-outline' : 'people-outline'}
+                  size={22}
+                  color="#94a3b8"
+                />
+                <Text style={styles.empty}>
+                  {search.trim()
+                    ? `No DOs match “${search.trim()}”. Try name, email, warehouse or phone.`
+                    : 'No data operators yet.'}
+                </Text>
+                {search.trim() ? (
+                  <TouchableOpacity style={styles.clearSearchBtn} onPress={() => setSearch('')}>
+                    <Text style={styles.clearSearchText}>Clear search</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             ) : (
               filteredOps.map((op) => (
@@ -594,6 +630,7 @@ export default function SubAdminAdminPanel({
                       <Text style={styles.cardTitle}>{op.full_name || op.email}</Text>
                       <Text style={styles.cardMeta} numberOfLines={1}>
                         {op.email}
+                        {op.phone_no ? ` · ${op.phone_no}` : ''}
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
@@ -603,6 +640,7 @@ export default function SubAdminAdminPanel({
                       <Ionicons name="business-outline" size={11} color="#0369a1" />
                       <Text style={styles.metaChipText} numberOfLines={1}>
                         {op.warehouse_name || 'No warehouse'}
+                        {op.warehouse_code ? ` (${op.warehouse_code})` : ''}
                       </Text>
                     </View>
                   </View>
@@ -989,6 +1027,13 @@ const styles = StyleSheet.create({
   filterChipActive: { backgroundColor: '#003580', borderColor: '#003580' },
   filterText: { fontSize: 10, fontWeight: '700', color: '#64748b' },
   filterTextActive: { color: '#fff' },
+  updatedAt: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600',
+    marginBottom: 8,
+    marginTop: -2
+  },
   toolbar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1042,6 +1087,14 @@ const styles = StyleSheet.create({
   metaChipText: { fontSize: 10, fontWeight: '700', color: '#0369a1', maxWidth: 160 },
   emptyBox: { alignItems: 'center', paddingTop: 28, gap: 6 },
   empty: { textAlign: 'center', color: '#94a3b8', fontWeight: '600', fontSize: 12 },
+  clearSearchBtn: {
+    marginTop: 8,
+    backgroundColor: '#003580',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  clearSearchText: { color: '#fff', fontWeight: '800', fontSize: 12 },
   error: { color: '#dc2626', fontWeight: '700', marginTop: 10, fontSize: 12 },
   actionRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
   actionBtn: {

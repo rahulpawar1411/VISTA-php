@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -104,6 +104,17 @@ import {
   isBlockingListLoad,
   isSoftListLoad,
 } from '../utils/listPerf';
+import {
+  INVENTORY_REPORT_FIRST_PAGE,
+  INVENTORY_REPORT_MORE_PAGE,
+  buildInventoryReconciliationQuery,
+  parseInventoryReconciliationPayload,
+  inventoryReportHasMore
+} from '../utils/inventoryReportPaging';
+import {
+  subscribePushTokenRefresh,
+  clearExpoPushToken
+} from '../services/expoPushRegistration';
 
 const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
 
@@ -269,7 +280,25 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const normalizeChamberTypeValue = (type) => String(type || 'Frozen').trim() || 'Frozen';
 
   const beginChamberEditSession = (ch) => {
-    if (!ch?.id) return;
+    const draft = buildChamberEditDraft(ch);
+    if (!draft) return null;
+    setChamberEditDraft(draft);
+    setNewClientType(draft.type);
+    return draft;
+  };
+
+  const ensureChamberEditSession = (ch) => {
+    if (!ch?.id) return null;
+    setManagerSelectedChamber(ch);
+    setEditingChamberId(ch.id);
+    if (chamberEditDraft && Number(chamberEditDraft.chamberId) === Number(ch.id)) {
+      return chamberEditDraft;
+    }
+    return beginChamberEditSession(ch);
+  };
+
+  const buildChamberEditDraft = (ch) => {
+    if (!ch?.id) return null;
     const liveClients = getClientsForChamber(ch.id);
     const type = normalizeChamberTypeValue(
       ch.chamber_type || liveClients[0]?.chamber_type || 'Frozen'
@@ -280,15 +309,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       chamber_type: c.chamber_type || type,
       _op: 'keep'
     }));
-    setChamberEditDraft({
+    return {
       chamberId: Number(ch.id),
       chamberName: ch.name,
       baselineType: type,
       type,
       baselineClients: clients.map(({ client_name, chamber_type }) => ({ client_name, chamber_type })),
       clients
-    });
-    setNewClientType(type);
+    };
   };
 
   const chamberEditHasChanges = (draft = chamberEditDraft) => {
@@ -690,6 +718,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportsError, setReportsError] = useState('');
   const [reportsRefreshing, setReportsRefreshing] = useState(false);
+  const [reportsLoadingMore, setReportsLoadingMore] = useState(false);
+  const [reportHasMore, setReportHasMore] = useState(false);
+  const reportOffsetRef = useRef(0);
+  const reportsLoadingMoreRef = useRef(false);
+  const reportHasMoreRef = useRef(false);
   const [selectedInventoryReport, setSelectedInventoryReport] = useState(null);
   const [inventoryHistory, setInventoryHistory] = useState([]);
   const [inventoryHistoryLoading, setInventoryHistoryLoading] = useState(false);
@@ -1116,6 +1149,45 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     };
   }, [isMorningCompleted, isEveningCompleted, isLoadingData]);
 
+  // Expo push token refresh on open / foreground (permission Approved/Denied when app closed)
+  useEffect(() => {
+    if (!apiUrl || !token) return undefined;
+    const unsub = subscribePushTokenRefresh({ apiUrl, authToken: token });
+    return () => {
+      try {
+        unsub?.();
+      } catch (_) {
+        /* ignore */
+      }
+    };
+  }, [apiUrl, token]);
+
+  // Tap remote permission-decision push → open notifications
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response?.notification?.request?.content?.data || {};
+      if (data.type === 'permission_decision') {
+        setShowNotificationsModal(true);
+      }
+    });
+    return () => {
+      try {
+        sub.remove();
+      } catch (_) {
+        /* ignore */
+      }
+    };
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await clearExpoPushToken({ apiUrl, authToken: token });
+    } catch (_) {
+      /* ignore */
+    }
+    onLogout?.();
+  }, [apiUrl, token, onLogout]);
+
   const completedChambersCount = useMemo(() => {
     const todayStr = getLocalDateStr();
     return chambersList.filter((chamber) => {
@@ -1412,6 +1484,25 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           n.record_type === 'ChamberType' ||
           n.record_type === 'ClientMaster')
     );
+
+  /** Remark left by Super Admin / Sub Admin when they decide a request. */
+  const extractAdminDecisionRemark = (notif) => {
+    const fromCol = String(notif?.remark || '').trim();
+    const desc = String(notif?.description || '');
+    const fromDesc = (
+      desc.match(/Admin remark:\s*(.+?)(?:\s*·\s*Decided by:|$)/i) ||
+      desc.match(/SA remark:\s*(.+?)(?:\s*·\s*Decided by:|$)/i) ||
+      []
+    )[1];
+    return String(fromCol || fromDesc || '').trim();
+  };
+
+  const buildDeniedAlertBody = (fallbackLine, notif) => {
+    const base = String(fallbackLine || 'Your permission request was denied.').trim();
+    const remark = extractAdminDecisionRemark(notif);
+    if (!remark) return base;
+    return `${base}\n\nAdmin remark:\n${remark}`;
+  };
 
   const markPermissionNotificationComplete = async (notifId) => {
     if (!notifId || !apiUrl || !token) return;
@@ -2295,64 +2386,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
   };
 
-  const handleEditChamberPress = async (ch) => {
+  const handleEditChamberPress = (ch) => {
     if (!ch?.id) return;
-
-    const chamberClients = getClientsForChamber(ch.id);
-    if (chamberClients.length === 0) {
-      setManagerSelectedChamber(ch);
-      setEditingChamberId(ch.id);
-      setNewClientInput('');
-      setEditingClientName(null);
-      setShowClientSuggestions(false);
-      beginChamberEditSession(ch);
-      return;
-    }
-
-    if (!apiUrl || !token) {
-      Alert.alert('Offline', 'Connect to server to edit a chamber that already has clients.');
-      return;
-    }
-
-    try {
-      setMasterAccessLoading(true);
-      const checkRes = await fetch(
-        `${apiUrl}/api/permission-requests/check?record_type=${encodeURIComponent('ChamberMaster')}&record_id=${encodeURIComponent(ch.id)}&action=Edit`,
-        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
-      );
-      const checkData = await checkRes.json().catch(() => ({}));
-      setMasterAccessLoading(false);
-
-      if (!checkRes.ok) {
-        throw new Error(checkData.error || checkData.message || 'Permission check failed');
-      }
-
-      if (checkData.approved) {
-        setManagerSelectedChamber(ch);
-        setEditingChamberId(ch.id);
-        setNewClientInput('');
-        setEditingClientName(null);
-        setShowClientSuggestions(false);
-        beginChamberEditSession(ch);
-        return;
-      }
-
-      setPermissionModal({
-        isOpen: true,
-        status: checkData.status || 'None',
-        log: null,
-        taskItem: null,
-        loading: false,
-        mode: 'chamber_edit',
-        chamber: ch,
-        nextType: null,
-        oldType: null,
-        remark: ''
-      });
-    } catch (err) {
-      setMasterAccessLoading(false);
-      Alert.alert('Error', err.message || 'Could not verify edit permission.');
-    }
+    setManagerSelectedChamber(ch);
+    setEditingChamberId(ch.id);
+    setNewClientInput('');
+    setEditingClientName(null);
+    setShowClientSuggestions(false);
+    beginChamberEditSession(ch);
   };
 
   const handleUpdateChamberType = async (chamberId, type, remark = '') => {
@@ -2531,7 +2572,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         await markPermissionNotificationComplete(notif.id);
         Alert.alert(
           'Type Change Denied',
-          desc || `Super Admin denied chamber type change for "${chamberName}".`
+          buildDeniedAlertBody(
+            `Your chamber type change for "${chamberName}" was denied.`,
+            notif
+          )
         );
       }
       return;
@@ -2568,7 +2612,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         } else {
           await clearPendingChamberType(notif.record_id);
           await markPermissionNotificationComplete(notif.id);
-          Alert.alert('Type Change Denied', desc || `Super Admin denied chamber type change.`);
+          Alert.alert(
+            'Type Change Denied',
+            buildDeniedAlertBody('Your chamber type change was denied.', notif)
+          );
         }
         return;
       }
@@ -2580,7 +2627,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         } else {
           Alert.alert(
             'Edit Denied',
-            desc || `Super Admin denied edit of chamber.`
+            buildDeniedAlertBody('Your chamber edit request was denied.', notif)
           );
           await markPermissionNotificationComplete(notif.id);
         }
@@ -2611,7 +2658,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         } else {
           Alert.alert(
             'Add Denied',
-            desc || `Super Admin denied add of "${chamberName || 'chamber'}".`
+            buildDeniedAlertBody(
+              `Your request to add "${chamberName || 'chamber'}" was denied.`,
+              notif
+            )
           );
           await markPermissionNotificationComplete(notif.id);
         }
@@ -2641,7 +2691,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       } else {
         Alert.alert(
           'Delete Denied',
-          notif.description || `Super Admin denied delete of "${chamber.name}".`
+          buildDeniedAlertBody(
+            `Your request to delete "${chamber.name}" was denied.`,
+            notif
+          )
         );
         await markPermissionNotificationComplete(notif.id);
       }
@@ -2677,7 +2730,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         await markPermissionNotificationComplete(notif.id);
         Alert.alert(
           'Client Change Denied',
-          desc || `Super Admin denied client change for "${clientLabel}" on ${chamberLabel}.`
+          buildDeniedAlertBody(
+            `Your client change for "${clientLabel}" on ${chamberLabel} was denied.`,
+            notif
+          )
         );
       }
       return;
@@ -2726,7 +2782,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     } else {
       Alert.alert(
         'Edit Denied',
-        `Super Admin denied edit for ${taskItem.chamber_name} · ${taskItem.client_name} · ${shiftName}.`
+        buildDeniedAlertBody(
+          `Your edit request for ${taskItem.chamber_name} · ${taskItem.client_name} · ${shiftName} was denied.`,
+          notif
+        )
       );
     }
   };
@@ -2757,7 +2816,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         Alert.alert(
           'Session Revoked',
           'Your account has been deleted or disabled. Logging you out.',
-          [{ text: 'OK', onPress: onLogout }]
+          [{ text: 'OK', onPress: handleLogout }]
         );
         return;
       }
@@ -3721,18 +3780,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     if (!managerSelectedChamber) return;
     if (nextType === newClientType) return;
 
-    setPermissionModal({
-      isOpen: true,
-      status: 'None',
-      log: null,
-      taskItem: null,
-      loading: false,
-      mode: 'chamber_type',
-      chamber: managerSelectedChamber,
-      nextType,
-      oldType: newClientType,
-      remark: ''
+    const draft = ensureChamberEditSession(managerSelectedChamber);
+    if (!draft) return;
+    setChamberEditDraft((prev) => {
+      const base = prev && Number(prev.chamberId) === Number(managerSelectedChamber.id) ? prev : draft;
+      return {
+        ...base,
+        type: nextType,
+        clients: (base.clients || []).map((c) => ({ ...c, chamber_type: nextType }))
+      };
     });
+    setNewClientType(nextType);
   };
 
   const handleAddNewClient = () => {
@@ -3778,7 +3836,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return;
     }
 
-    const duplicateExists = getClientsForChamber(managerSelectedChamber.id).some(
+    const duplicateExists = getMasterSetupClients(managerSelectedChamber.id).some(
       (item) => item.client_name.toLowerCase() === clientName.toLowerCase()
     );
     if (duplicateExists) {
@@ -3786,20 +3844,29 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return;
     }
 
-    setPermissionModal({
-      isOpen: true,
-      status: 'None',
-      log: null,
-      taskItem: null,
-      loading: false,
-      mode: 'client_add',
-      chamber: managerSelectedChamber,
-      nextType: null,
-      oldType: null,
-      remark: '',
-      pendingClientName: clientName,
-      pendingClientType: newClientType
+    const draft = ensureChamberEditSession(managerSelectedChamber);
+    if (!draft) return;
+    setChamberEditDraft((prev) => {
+      const base = prev && Number(prev.chamberId) === Number(managerSelectedChamber.id) ? prev : draft;
+      const already = (base.clients || []).some(
+        (c) => String(c.client_name).toLowerCase() === clientName.toLowerCase() && c._op !== 'delete'
+      );
+      if (already) return base;
+      return {
+        ...base,
+        clients: [
+          ...base.clients,
+          {
+            key: `add_${clientName}_${Date.now()}`,
+            client_name: clientName,
+            chamber_type: base.type,
+            _op: 'add'
+          }
+        ]
+      };
     });
+    setNewClientInput('');
+    setShowClientSuggestions(false);
   };
 
   const handleRenameChamberClient = async () => {
@@ -3845,19 +3912,23 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return;
     }
 
-    setPermissionModal({
-      isOpen: true,
-      status: 'None',
-      log: null,
-      taskItem: null,
-      loading: false,
-      mode: 'client_rename',
-      chamber: managerSelectedChamber,
-      nextType: null,
-      oldType: null,
-      remark: '',
-      oldName,
-      newName
+    setEditingClientName(null);
+    setEditClientDraft('');
+    const draft = ensureChamberEditSession(managerSelectedChamber);
+    if (!draft) return;
+    setChamberEditDraft((prev) => {
+      const base = prev && Number(prev.chamberId) === Number(managerSelectedChamber.id) ? prev : draft;
+      return {
+        ...base,
+        clients: base.clients.map((c) => {
+          const match =
+            String(c.client_name) === String(oldName) ||
+            String(c.oldName || '') === String(oldName);
+          if (!match) return c;
+          if (c._op === 'add') return { ...c, client_name: newName };
+          return { ...c, client_name: newName, oldName: c.oldName || oldName, _op: 'rename' };
+        })
+      };
     });
   };
 
@@ -3881,13 +3952,22 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       });
       return;
     }
-    setClientToDelete({
-      chamberId: chamber.id,
-      chamberName: chamber.name,
-      clientName
+    const draft = ensureChamberEditSession(chamber);
+    if (!draft) return;
+    setChamberEditDraft((prev) => {
+      const base = prev && Number(prev.chamberId) === Number(chamber.id) ? prev : draft;
+      const nextClients = [];
+      for (const c of base.clients) {
+        const match = String(c.client_name) === String(clientName);
+        if (!match) {
+          nextClients.push(c);
+          continue;
+        }
+        if (c._op === 'add') continue;
+        nextClients.push({ ...c, _op: 'delete' });
+      }
+      return { ...base, clients: nextClients };
     });
-    setDeleteRemarkInput('');
-    setShowDeleteConfirmModal(true);
   };
 
   /** Delete client master from task form (same flow as Master Setup). */
@@ -6433,12 +6513,28 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     };
   }, [user?.warehouse_name, assignments]);
 
-  const loadInventoryReports = useCallback(async () => {
+  const loadInventoryReports = useCallback(async (mode = 'reset') => {
     if (!apiUrl || !token) return;
-    setReportsLoading(true);
-    setReportsError('');
+    const reset = mode !== 'more';
+    if (!reset) {
+      if (reportsLoadingMoreRef.current || !reportHasMoreRef.current) return;
+      reportsLoadingMoreRef.current = true;
+      setReportsLoadingMore(true);
+    } else {
+      setReportsLoading(true);
+      setReportsError('');
+      reportOffsetRef.current = 0;
+    }
     try {
-      const res = await fetch(`${apiUrl}/api/dashboard/inventory-reconciliation`, {
+      const offset = reset ? 0 : reportOffsetRef.current;
+      const limit = reset ? INVENTORY_REPORT_FIRST_PAGE : INVENTORY_REPORT_MORE_PAGE;
+      const qs = buildInventoryReconciliationQuery({
+        offset,
+        limit,
+        warehouse: user?.warehouse_name || doAccessScope.warehouse,
+        client: reportClientFilter
+      });
+      const res = await fetch(`${apiUrl}/api/dashboard/inventory-reconciliation?${qs.toString()}`, {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'application/json'
@@ -6448,11 +6544,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       if (!res.ok) {
         throw new Error(data.message || data.error || `Failed to load inventory (${res.status})`);
       }
-      let rows = Array.isArray(data?.items)
-        ? data.items
-        : Array.isArray(data)
-          ? data
-          : [];
+      let { rows, total } = parseInventoryReconciliationPayload(data);
 
       // Soft DO access (same as backend chamber-temp):
       // warehouse match OR blank warehouse; then assigned clients when possible
@@ -6471,42 +6563,56 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }
 
       // Client filter options = DO-accessible clients (assignments first)
-      const clientsFromRows = Array.from(
-        new Set(
-          rows
-            .map((r) => String(r.client_name || '').trim())
-            .filter((n) => n && n.toLowerCase() !== 'general')
-        )
-      ).sort((a, b) => a.localeCompare(b));
-      const accessibleClients =
-        doAccessScope.clients.length > 0 ? doAccessScope.clients : clientsFromRows;
+      if (reset) {
+        const clientsFromRows = Array.from(
+          new Set(
+            rows
+              .map((r) => String(r.client_name || '').trim())
+              .filter((n) => n && n.toLowerCase() !== 'general')
+          )
+        ).sort((a, b) => a.localeCompare(b));
+        const accessibleClients =
+          doAccessScope.clients.length > 0 ? doAccessScope.clients : clientsFromRows;
 
-      setInventoryReportWarehouses(
-        doAccessScope.warehouse ? [doAccessScope.warehouse] : []
-      );
-      setInventoryReportClients(accessibleClients);
-      setInventoryReportRows(rows);
-
-      // Drop selected client if no longer in access list
-      setReportClientFilter((prev) => {
-        if (!prev || prev === 'All' || prev === 'all') return 'All';
-        const ok = accessibleClients.some(
-          (c) => c.toLowerCase() === String(prev).toLowerCase()
+        setInventoryReportWarehouses(
+          doAccessScope.warehouse ? [doAccessScope.warehouse] : []
         );
-        return ok ? prev : 'All';
-      });
+        setInventoryReportClients(accessibleClients);
+
+        // Drop selected client if no longer in access list
+        setReportClientFilter((prev) => {
+          if (!prev || prev === 'All' || prev === 'all') return 'All';
+          const ok = accessibleClients.some(
+            (c) => c.toLowerCase() === String(prev).toLowerCase()
+          );
+          return ok ? prev : 'All';
+        });
+      }
+
+      reportOffsetRef.current = offset + rows.length;
+      const more = inventoryReportHasMore(offset, rows.length, total) || !!data.has_more;
+      reportHasMoreRef.current = more;
+      setReportHasMore(more);
+      setInventoryReportRows((prev) => (reset ? rows : [...prev, ...rows]));
     } catch (err) {
-      setInventoryReportRows([]);
-      setInventoryReportClients(doAccessScope.clients);
-      setInventoryReportWarehouses(
-        doAccessScope.warehouse ? [doAccessScope.warehouse] : []
-      );
+      if (reset) {
+        setInventoryReportRows([]);
+        reportHasMoreRef.current = false;
+        setReportHasMore(false);
+        reportOffsetRef.current = 0;
+        setInventoryReportClients(doAccessScope.clients);
+        setInventoryReportWarehouses(
+          doAccessScope.warehouse ? [doAccessScope.warehouse] : []
+        );
+      }
       setReportsError(err.message || 'Failed to load inventory reports.');
     } finally {
       setReportsLoading(false);
       setReportsRefreshing(false);
+      setReportsLoadingMore(false);
+      reportsLoadingMoreRef.current = false;
     }
-  }, [apiUrl, token, doAccessScope]);
+  }, [apiUrl, token, doAccessScope, user?.warehouse_name, reportClientFilter]);
 
   const loadChamberReportLogs = useCallback(async () => {
     if (!apiUrl || !token) return;
@@ -7938,12 +8044,28 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 }
                 renderItem={renderInventoryItem}
                 contentContainerStyle={styles.reportsListBody}
+                onEndReachedThreshold={0.35}
+                onEndReached={() => {
+                  if (reportHasMore && !reportsLoading && !reportsLoadingMore) {
+                    loadInventoryReports('more');
+                  }
+                }}
+                ListFooterComponent={
+                  reportsLoadingMore ? (
+                    <View style={{ paddingVertical: 14, alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color="#003580" />
+                      <Text style={{ marginTop: 6, fontSize: 11, color: '#64748b', fontWeight: '600' }}>
+                        Loading more…
+                      </Text>
+                    </View>
+                  ) : null
+                }
                 refreshControl={
                   <RefreshControl
                     refreshing={reportsRefreshing}
                     onRefresh={() => {
                       setReportsRefreshing(true);
-                      Promise.all([loadInventoryReports(), loadChamberReportLogs()]).finally(() =>
+                      Promise.all([loadInventoryReports('reset'), loadChamberReportLogs()]).finally(() =>
                         setReportsRefreshing(false)
                       );
                     }}
@@ -8478,7 +8600,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           <Text style={styles.appInfoVersion}>Version 1.1.0 (SQLite Active)</Text>
         </View>
 
-        <TouchableOpacity style={styles.moreLogoutBtn} onPress={onLogout}>
+        <TouchableOpacity style={styles.moreLogoutBtn} onPress={handleLogout}>
           <Ionicons name="log-out" size={20} color="#ffffff" style={{ marginRight: 8 }} />
           <Text style={styles.moreLogoutBtnText}>Log Out Account</Text>
         </TouchableOpacity>
@@ -12442,7 +12564,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 style={styles.drawerLogoutBtn}
                 onPress={() => {
                   closeDrawer();
-                  onLogout();
+                  handleLogout();
                 }}
               >
                 <Ionicons name="log-out-outline" size={20} color="#ef4444" style={{ marginRight: 12 }} />

@@ -862,11 +862,6 @@ export default function SubAdminDoMasterSetup({
                         }
                         activeOpacity={0.85}
                       >
-                        <View style={styles.chamberBadge}>
-                          <Text style={styles.chamberBadgeText}>
-                            {String(ch.name || '').replace(/chamber\s*/i, '') || '#'}
-                          </Text>
-                        </View>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.chamberName}>{ch.name}</Text>
                           <Text style={styles.chamberMeta}>
@@ -1191,15 +1186,6 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 10
   },
-  chamberBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: '#003580',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  chamberBadgeText: { color: '#fff', fontWeight: '800', fontSize: 12 },
   chamberName: { fontSize: 14, fontWeight: '800', color: '#0f172a' },
   chamberMeta: { fontSize: 11, color: '#64748b', fontWeight: '600', marginTop: 2 },
   chamberBody: {
