@@ -1,3 +1,14 @@
+// ====================================================================
+// DO (Data Operator) — mobile/src/screens/DashboardScreen.js
+// --------------------------------------------------------------------
+// Field app for role `do_operator`.
+// Daily work comes from chamber_client_assignments for THIS DO warehouse
+// (not the global catalog). Offline: SQLite queue → syncEngine.
+// Chamber / client master edits: request permission; after approve/deny
+// a popup (and push) shows — deny includes Admin remark.
+// Errors: prefer user-safe Alerts; network/sync failures stay in the queue.
+// ====================================================================
+
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   StyleSheet,
@@ -80,6 +91,8 @@ import {
   queueLocalActivity,
   markActivitySynced,
   upsertSyncedInspectionFromServer,
+  reconcileSyncedInspectionsFromServer,
+  clearSyncedInspectionsLocally,
 } from '../database/db';
 import { subscribeToSync, triggerSync, formatLastSyncLabel, getLastSyncAt } from '../services/syncEngine';
 import { ensureCameraPermission } from '../utils/permissions';
@@ -224,6 +237,10 @@ function normalizeNavTabForSection(tab, section) {
   return tab;
 }
 
+/**
+ * DO field screen — warehouse assignments drive tasks; offline SQLite + sync.
+ * Master edits go through permission requests (not direct catalog writes).
+ */
 export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserUpdate }) {
   const displayName = user.full_name || user.email || 'Data Operator';
   const [chamberLimitOverride, setChamberLimitOverride] = useState(null);
@@ -1182,6 +1199,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const handleLogout = useCallback(async () => {
     try {
       await clearExpoPushToken({ apiUrl, authToken: token });
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      clearSyncedInspectionsLocally();
     } catch (_) {
       /* ignore */
     }
@@ -2309,25 +2331,33 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       );
       const checkData = await checkRes.json().catch(() => ({}));
       if (checkRes.ok && checkData.approved) {
+        // Only auto-apply if THIS change was already requested (pending stored).
+        // Live DBs often have leftover GRANTs — applying without pending would
+        // update Master Setup without a new Super Admin allow.
         let pendingMeta = null;
+        let hadPending = false;
         try {
           const raw = await AsyncStorage.getItem(PENDING_CLIENT_MASTER_KEY);
           const map = raw ? JSON.parse(raw) : {};
-          pendingMeta = map[String(recordId)] || pendingPayload;
+          pendingMeta = map[String(recordId)] || null;
+          hadPending = !!pendingMeta;
         } catch (_) {
-          pendingMeta = pendingPayload;
+          pendingMeta = null;
         }
-        await applyApprovedClientMasterOnDevice(recordId, pendingMeta);
-        if (checkData.request?.id) {
-          await markPermissionNotificationComplete(checkData.request.id);
+        if (hadPending) {
+          await applyApprovedClientMasterOnDevice(recordId, pendingMeta || pendingPayload);
+          if (checkData.request?.id) {
+            await markPermissionNotificationComplete(checkData.request.id);
+          }
+          if (!silent) {
+            Alert.alert(
+              'Client Updated',
+              `"${clientName}"${permAction === 'edit' ? ` renamed to "${newName}"` : ''} on ${chamber.name} after Super Admin approval.`
+            );
+          }
+          return true;
         }
-        if (!silent) {
-          Alert.alert(
-            'Client Updated',
-            `"${clientName}"${permAction === 'edit' ? ` renamed to "${newName}"` : ''} on ${chamber.name} after Super Admin approval.`
-          );
-        }
-        return true;
+        // Stale allow — fall through and send a fresh request
       }
       if (checkRes.ok && checkData.status === 'Pending') {
         await persistPendingClientMasterOp(recordId, pendingPayload);
@@ -2358,8 +2388,19 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (data.request?.status === 'Approved') {
-          await applyApprovedClientMasterOnDevice(recordId);
-          return true;
+          // Stale GRANT without a stored pending request — do not apply silently.
+          // Backend now consumes leftover ClientMaster grants; send a fresh request below
+          // only if this is not ClientMaster. For safety, still refuse silent apply.
+          let hadPending = false;
+          try {
+            const raw = await AsyncStorage.getItem(PENDING_CLIENT_MASTER_KEY);
+            const map = raw ? JSON.parse(raw) : {};
+            hadPending = !!map[String(recordId)];
+          } catch (_) {}
+          if (hadPending) {
+            await applyApprovedClientMasterOnDevice(recordId, pendingPayload);
+            return true;
+          }
         }
         if (data.request?.status === 'Pending') {
           await persistPendingClientMasterOp(recordId, pendingPayload);
@@ -3141,6 +3182,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           warehouseName: user?.warehouse_name
         });
       });
+      reconcileSyncedInspectionsFromServer(items, {
+        fromDate: fromStr,
+        toDate: todayStr < selected ? selected : todayStr,
+        operatorEmail: user?.email
+      });
       loadInspectionsAndSummary();
     } catch (_) {}
   };
@@ -3179,6 +3225,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           operatorEmail: user?.email,
           warehouseName: user?.warehouse_name
         });
+      });
+      reconcileSyncedInspectionsFromServer(items, {
+        fromDate: dateStr,
+        toDate: dateStr,
+        operatorEmail: user?.email
       });
       loadInspectionsAndSummary();
     } catch (_) {}
@@ -5577,28 +5628,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   />
 
                   <View style={[styles.taskCardBody, isChamberRow && { alignItems: 'flex-start' }]}>
-                    <TouchableOpacity
-                      style={styles.taskCardMain}
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        if (isCompleted) {
-                          handleOpenTaskDetail(item, log);
-                          return;
-                        }
-                        if (isChamberRow) {
-                          const chamber =
-                            chambersList.find((c) => Number(c.id) === Number(item.chamber_id)) || {
-                              id: item.chamber_id,
-                              name: item.chamber_name
-                            };
-                          if (item.shift_time === '16:00') handleSelectShift('Evening');
-                          else handleSelectShift('Morning');
-                          handleOpenChamberLogFormDirect(chamber);
-                        } else {
-                          handleOpenTaskLogForm(item);
-                        }
-                      }}
-                    >
+                    {/* Card body is display-only — All / Pending / Completed: only Record Log or Edit buttons act */}
+                    <View style={styles.taskCardMain} pointerEvents="none">
                       <Text style={styles.taskClientName} numberOfLines={1}>
                         {titleText}
                       </Text>
@@ -5630,12 +5661,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                           </Text>
                         </View>
                       ) : null}
-                      {isCompleted ? (
-                        <Text style={{ fontSize: 10, fontWeight: '700', color: '#003580', marginTop: 6 }}>
-                          Tap to view details
-                        </Text>
-                      ) : null}
-                    </TouchableOpacity>
+                    </View>
 
                     <View style={styles.taskCardActions}>
                       <Text

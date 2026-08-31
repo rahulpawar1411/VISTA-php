@@ -1,3 +1,15 @@
+// ====================================================================
+// Sub Admin — mobile/src/screens/SubAdminScreen.js
+// --------------------------------------------------------------------
+// Role `sub_admin`: mobile mini-admin (same data scope as Super Admin).
+// Tabs: Dashboard | Logs | Reports | Admin | More
+// Admin → Master = catalog (warehouse_master / client_master).
+// DO profile → Edit chambers & clients = assignments (operational).
+// Permissions: approve free; deny requires remark. Push on new request
+// even if this app is closed. No overdue push — overdue is dashboard only.
+// Errors: formatUserError + InlineErrorState; reports keep last cache offline.
+// ====================================================================
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
@@ -25,11 +37,13 @@ import * as FileSystem from 'expo-file-system/legacy';
 import FastTouchable from '../components/FastTouchable';
 import { dedupeInventoryLots } from '../utils/dedupeInventoryLots';
 import { buildReportReadingRows, latestReadingQty } from '../utils/buildReportReadingRows';
-import { GpsDetailRow, PhotoGridWithLocation } from '../components/LogDetailPhotoLocation';
+import { PhotoGridWithLocation } from '../components/LogDetailPhotoLocation';
 import {
   resolveLogImageUrl,
   DOCK_REPORT_PAGE_SIZE,
-  buildInwardOutwardPhotoItems
+  buildInwardOutwardPhotoItems,
+  formatPhotoGps,
+  openLocationInMaps
 } from '../utils/customerLogReportHelpers';
 import { formatUserError } from '../utils/userFacingError';
 import ListLoadingOverlay from '../components/ListLoadingOverlay';
@@ -130,7 +144,7 @@ async function downloadImageToDevice(uri) {
   return localUri;
 }
 
-function SmallLogImage({ rawPath, apiUrl, folderHint }) {
+function SmallLogImage({ rawPath, apiUrl, folderHint, latitude, longitude, accuracy }) {
   const uri = useMemo(() => {
     const primary = resolveImageUrl(rawPath, apiUrl, folderHint);
     if (primary) return primary;
@@ -139,6 +153,16 @@ function SmallLogImage({ rawPath, apiUrl, folderHint }) {
   const [failed, setFailed] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
+
+  const locationText = useMemo(
+    () => formatPhotoGps(latitude, longitude, accuracy),
+    [latitude, longitude, accuracy]
+  );
+  const hasGps =
+    latitude != null &&
+    longitude != null &&
+    Number.isFinite(parseFloat(latitude)) &&
+    Number.isFinite(parseFloat(longitude));
 
   useEffect(() => {
     setFailed(false);
@@ -162,6 +186,17 @@ function SmallLogImage({ rawPath, apiUrl, folderHint }) {
       <View style={styles.smallImgEmpty}>
         <Ionicons name="image-outline" size={18} color="#94a3b8" />
         <Text style={styles.smallImgEmptyText}>No image</Text>
+        {locationText ? (
+          <TouchableOpacity
+            onPress={() => openLocationInMaps(latitude, longitude)}
+            disabled={!hasGps}
+            activeOpacity={hasGps ? 0.75 : 1}
+          >
+            <Text style={[styles.smallImgLocation, hasGps && styles.smallImgLocationLink]}>
+              Location: {locationText}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     );
   }
@@ -177,6 +212,21 @@ function SmallLogImage({ rawPath, apiUrl, folderHint }) {
         />
         <Text style={styles.smallImgHint}>Tap to view</Text>
       </TouchableOpacity>
+      {locationText ? (
+        <TouchableOpacity
+          onPress={() => openLocationInMaps(latitude, longitude)}
+          disabled={!hasGps}
+          activeOpacity={hasGps ? 0.75 : 1}
+          style={styles.smallImgLocationWrap}
+        >
+          <Ionicons name="location-outline" size={12} color={hasGps ? '#0369a1' : '#64748b'} />
+          <Text style={[styles.smallImgLocation, hasGps && styles.smallImgLocationLink]}>
+            Location: {locationText}
+          </Text>
+        </TouchableOpacity>
+      ) : (
+        <Text style={styles.smallImgLocationMuted}>Location: not recorded</Text>
+      )}
 
       <Modal
         visible={viewerOpen}
@@ -218,6 +268,17 @@ function SmallLogImage({ rawPath, apiUrl, folderHint }) {
           >
             <Image source={{ uri }} style={styles.imgViewerImage} resizeMode="contain" />
           </ScrollView>
+          {locationText ? (
+            <TouchableOpacity
+              style={styles.imgViewerLocationBar}
+              onPress={() => openLocationInMaps(latitude, longitude)}
+              disabled={!hasGps}
+              activeOpacity={hasGps ? 0.75 : 1}
+            >
+              <Ionicons name="location-outline" size={14} color="#fff" />
+              <Text style={styles.imgViewerLocationText}>Location: {locationText}</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </Modal>
     </>
@@ -225,8 +286,8 @@ function SmallLogImage({ rawPath, apiUrl, folderHint }) {
 }
 
 /**
- * Mobile Sub-Admin (mini-admin) — full data visibility.
- * Tabs: Dashboard | Logs | Reports | Admin | More
+ * Mobile Sub-Admin — overview, permission approve/deny, catalog Master,
+ * and per-DO chamber/client assignments (not mixed with catalog CRUD).
  */
 export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const [activeTab, setActiveTab] = useState('Dashboard');
@@ -1099,7 +1160,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               reportHasMoreRef.current = false;
               setReportHasMore(false);
             } else {
-              setReportRows([]);
+      setReportRows([]);
               reportRowsRef.current = [];
               reportHasMoreRef.current = false;
               setReportHasMore(false);
@@ -1680,8 +1741,17 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           deactive: []
         });
       }
-      const inactive =
-        String(a.status || 'active').trim().toLowerCase() === 'inactive';
+      const inactive = (() => {
+        const s = String(a.status || 'active').trim().toLowerCase();
+        return (
+          s === 'inactive' ||
+          s === 'deactive' ||
+          s === 'deactivated' ||
+          s === 'disabled' ||
+          s === '0' ||
+          s === 'false'
+        );
+      })();
       const label = a.client_name || a.client_code || 'Client';
       if (inactive) map.get(key).deactive.push(label);
       else map.get(key).active.push(label);
@@ -2331,7 +2401,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       </TouchableOpacity>
                     </View>
                   ) : null
-                }
+              }
               ListEmptyComponent={
                 <View style={styles.centerState}>
                   <Ionicons name="document-text-outline" size={28} color="#94a3b8" />
@@ -2711,17 +2781,17 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           onPress={() => setHomeListFocus(card.key)}
                           activeOpacity={0.85}
                         >
-                          <View style={[styles.statIcon, { backgroundColor: `${card.color}18` }]}>
-                            <Ionicons name={card.icon} size={12} color={card.color} />
-                          </View>
-                          <Text style={[styles.statValue, { color: card.color }]}>{card.value}</Text>
-                          <Text style={styles.statLabel} numberOfLines={1}>
-                            {card.label}
-                          </Text>
-                        </TouchableOpacity>
+                        <View style={[styles.statIcon, { backgroundColor: `${card.color}18` }]}>
+                          <Ionicons name={card.icon} size={12} color={card.color} />
+                        </View>
+                        <Text style={[styles.statValue, { color: card.color }]}>{card.value}</Text>
+                        <Text style={styles.statLabel} numberOfLines={1}>
+                          {card.label}
+                        </Text>
+                    </TouchableOpacity>
                       );
                     })}
-                        </View>
+                  </View>
 
                   <View style={styles.doSection}>
                     <View style={styles.doOverviewCard}>
@@ -3357,11 +3427,8 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                         rawPath={pickLogImage(selectedLog)}
                         apiUrl={apiUrl}
                         folderHint="daily_temp_monitor_images"
-                      />
-                      <GpsDetailRow
-                        label="Photo location (GPS)"
-                        lat={selectedLog.photo_capture_latitude}
-                        lng={selectedLog.photo_capture_longitude}
+                        latitude={selectedLog.photo_capture_latitude}
+                        longitude={selectedLog.photo_capture_longitude}
                         accuracy={selectedLog.photo_capture_accuracy}
                       />
                     </View>
@@ -5381,6 +5448,42 @@ const styles = StyleSheet.create({
   },
   smallImgEmptyText: { fontSize: 10, color: '#94a3b8', fontWeight: '600' },
   smallImgHint: { marginTop: 4, fontSize: 10, color: '#0284c7', fontWeight: '700' },
+  smallImgLocationWrap: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4
+  },
+  smallImgLocation: {
+    fontSize: 11,
+    color: '#64748b',
+    fontWeight: '700',
+    flexShrink: 1
+  },
+  smallImgLocationLink: {
+    color: '#0369a1',
+    textDecorationLine: 'underline'
+  },
+  smallImgLocationMuted: {
+    marginTop: 6,
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600'
+  },
+  imgViewerLocationBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(15,23,42,0.92)'
+  },
+  imgViewerLocationText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700'
+  },
   imgViewerOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.92)',

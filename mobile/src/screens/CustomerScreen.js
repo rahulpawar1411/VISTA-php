@@ -1,4 +1,14 @@
- import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// ====================================================================
+// Customer — mobile/src/screens/CustomerScreen.js
+// --------------------------------------------------------------------
+// Role `customer`: read-only scoped portal.
+// Super Admin sets allowed_warehouses + allowed_clients — this screen
+// never edits catalog masters or DO assignments.
+// Lists: chamber / inward / outward / inventory (first 50, then +20).
+// Errors: formatUserError + InlineErrorState + Retry.
+// ====================================================================
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -191,8 +201,8 @@ function SensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_ima
 }
 
 /**
- * Customer mobile home — separate from DO Dashboard.
- * Logs tab filters by allowed warehouse + client access.
+ * Customer portal — scoped read-only logs/inventory (allowed WH + clients only).
+ * Does not edit masters or DO assignments.
  */
 export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [activeTab, setActiveTab] = useState('Dashboard'); // Dashboard | Logs | Reports | More

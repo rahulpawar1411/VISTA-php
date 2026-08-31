@@ -1,10 +1,10 @@
 // ====================================================================
 // ReeferON Mobile Entry (mobile/App.js)
 // --------------------------------------------------------------------
-// Roles after login:
-//   do_operator → DashboardScreen (offline SQLite + sync)
-//   customer    → CustomerScreen (scoped logs / inventory)
-//   sub_admin   → SubAdminScreen (full mobile admin)
+// After login, ONE screen per role (do not mix their jobs):
+//   do_operator → DashboardScreen  — field logs + offline SQLite sync
+//   customer    → CustomerScreen   — read-only allowed WH/clients
+//   sub_admin   → SubAdminScreen   — overview, permissions, DO masters
 //
 // API URL:
 //   - Dev: getLocalApiUrl() from Metro LAN IP → http://IP:5000
@@ -21,6 +21,7 @@ import DashboardScreen from './src/screens/DashboardScreen';
 import CustomerScreen from './src/screens/CustomerScreen';
 import SubAdminScreen from './src/screens/SubAdminScreen';
 import SplashScreen from './src/screens/SplashScreen';
+import { clearSyncedInspectionsLocally, initDatabase } from './src/database/db';
 
 /** Minimum splash time so the landing screen doesn’t flash away. */
 const SPLASH_MIN_MS = 4000;
@@ -233,6 +234,12 @@ export default function App() {
       await AsyncStorage.removeItem('user_profile');
     } catch (err) {
       console.warn('Failed to clear session cache:', err);
+    }
+    try {
+      initDatabase();
+      clearSyncedInspectionsLocally();
+    } catch (err) {
+      console.warn('Failed to clear synced SQLite inspections:', err);
     }
   };
 

@@ -1,5 +1,9 @@
 # ReeferON CRM — Roles & Access
 
+**Keep this straight:** catalog masters (`warehouse_master` / `client_master`) are lists of names+codes. Daily DO work uses **chamber ↔ client assignments** for that warehouse. Customers never edit either.
+
+**Yaad rakho:** Master Data = catalog. DO Master Setup = assignments. Customer = sirf allowed scope read.
+
 ## super_admin (Web — Super Admin Secure Window)
 
 | Area | Access |

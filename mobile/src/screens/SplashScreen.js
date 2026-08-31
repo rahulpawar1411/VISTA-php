@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import {
   View,
   Image,
+  Text,
   StyleSheet,
   ActivityIndicator,
   Animated,
@@ -9,7 +10,7 @@ import {
 } from 'react-native';
 
 /**
- * First-open / data loading: logo + spinner only.
+ * First-open / data loading: logo → tagline → spinner.
  */
 export default function SplashScreen() {
   const fade = useRef(new Animated.Value(0)).current;
@@ -31,6 +32,12 @@ export default function SplashScreen() {
           style={styles.logo}
           resizeMode="contain"
         />
+        <View style={styles.vistaBlock}>
+          <Text style={styles.vistaName}>VISTA</Text>
+          <Text style={styles.vistaLine}>
+            Visibility · Inspection · Stock · Trust · Audit
+          </Text>
+        </View>
         <ActivityIndicator size="small" color="#003580" style={styles.spinner} />
       </Animated.View>
     </View>
@@ -45,13 +52,38 @@ const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   center: {
-    alignItems: 'center'
+    alignItems: 'center',
+    paddingHorizontal: 28
   },
   logo: {
     width: 120,
     height: 120
   },
+  vistaBlock: {
+    marginTop: 14,
+    alignItems: 'center',
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e2e8f0',
+    minWidth: 220
+  },
+  vistaName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0f172a',
+    letterSpacing: 3,
+    textAlign: 'center'
+  },
+  vistaLine: {
+    marginTop: 4,
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#64748b',
+    textAlign: 'center',
+    lineHeight: 14,
+    paddingHorizontal: 8
+  },
   spinner: {
-    marginTop: 24
+    marginTop: 20
   }
 });

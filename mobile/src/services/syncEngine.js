@@ -14,6 +14,7 @@ import {
   markOutwardSyncError,
   countPendingSyncItems,
   upsertSyncedInspectionFromServer,
+  reconcileSyncedInspectionsFromServer,
   getPendingActivities,
   markActivitySynced,
 } from '../database/db';
@@ -376,6 +377,11 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
             pulled += 1;
           }
         }
+        reconcileSyncedInspectionsFromServer(items, {
+          fromDate: fromStr,
+          toDate: toStr,
+          operatorEmail,
+        });
         if (pulled > 0) {
           console.log(`⬇️ Sync Engine: mirrored ${pulled} server inspection(s) to SQLite (${fromStr}→${toStr})`);
         }

@@ -11,7 +11,8 @@ import {
   ScrollView,
   StatusBar,
   useWindowDimensions,
-  Alert
+  Alert,
+  ActivityIndicator
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import FastTouchable from '../components/FastTouchable';
@@ -165,9 +166,9 @@ export default function LoginScreen({
               <Ionicons name="snow" size={12} color="#93c5fd" />
               <Text style={styles.badgeText}>COLD CHAIN</Text>
             </View>
-            <Text style={styles.headerTitle}>Warehouse Ops</Text>
+            <Text style={styles.headerTitle}>VISTA</Text>
             <Text style={styles.headerSubtitle}>
-              Monitor chambers, log inventory, stay in control.
+              Visibility · Inspection · Stock · Trust · Audit
             </Text>
           </View>
         </ImageBackground>
@@ -198,6 +199,7 @@ export default function LoginScreen({
               onChangeText={setEmail}
               autoCapitalize="none"
               keyboardType="email-address"
+              editable={!loading}
             />
           </View>
 
@@ -213,10 +215,12 @@ export default function LoginScreen({
               onChangeText={setPassword}
               secureTextEntry={secureTextEntry}
               autoCapitalize="none"
+              editable={!loading}
             />
             <TouchableOpacity
               onPress={() => setSecureTextEntry(!secureTextEntry)}
               style={styles.eyeIcon}
+              disabled={loading}
             >
               <Ionicons
                 name={secureTextEntry ? 'eye-off-outline' : 'eye-outline'}
@@ -227,10 +231,24 @@ export default function LoginScreen({
           </View>
 
           {/* Submit Sign-In button */}
-          <TouchableOpacity style={styles.signInButton} onPress={handleSignIn}>
+          <TouchableOpacity
+            style={[styles.signInButton, loading && styles.signInButtonDisabled]}
+            onPress={handleSignIn}
+            disabled={loading}
+            activeOpacity={0.85}
+          >
             <View style={styles.signInButtonContent}>
-              <Text style={styles.signInButtonText}>Sign In</Text>
-              <Ionicons name="arrow-forward-outline" size={16} color="#ffffff" style={styles.buttonArrow} />
+              {loading ? (
+                <>
+                  <ActivityIndicator size="small" color="#ffffff" style={styles.buttonSpinner} />
+                  <Text style={styles.signInButtonText}>Signing in…</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.signInButtonText}>Sign In</Text>
+                  <Ionicons name="arrow-forward-outline" size={16} color="#ffffff" style={styles.buttonArrow} />
+                </>
+              )}
             </View>
           </TouchableOpacity>
 
@@ -350,17 +368,17 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     color: '#ffffff',
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: '800',
     textAlign: 'center',
     marginBottom: 4,
-    letterSpacing: -0.5,
+    letterSpacing: 3,
   },
   headerSubtitle: {
     color: 'rgba(255, 255, 255, 0.85)',
-    fontSize: 12,
+    fontSize: 11,
     textAlign: 'center',
-    lineHeight: 16,
+    lineHeight: 15,
     paddingHorizontal: 12,
   },
   cardContainer: {
@@ -436,6 +454,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 24
   },
+  signInButtonDisabled: {
+    opacity: 0.85
+  },
   signInButtonContent: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -444,6 +465,9 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 15,
     fontWeight: '700',
+  },
+  buttonSpinner: {
+    marginRight: 8
   },
   buttonArrow: {
     marginLeft: 6,

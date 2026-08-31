@@ -33,9 +33,22 @@ export function cloudinaryUrlToUploadsPath(raw) {
   return `uploads/${rest}`;
 }
 
+/** Map uploads/… path → Cloudinary CDN URL when dual-upload naming matches. */
+export function uploadsPathToCloudinaryUrl(raw, cloudName = 'de9ba8bpk') {
+  if (raw == null) return null;
+  const value = String(raw).trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!value.startsWith('uploads/')) return null;
+  const match = value.match(
+    /^uploads\/(outward_images|inward_images|daily_temp_monitor_images)\/(.+)$/i
+  );
+  if (!match || !match[2]) return null;
+  return `https://res.cloudinary.com/${cloudName}/image/upload/crm/${match[1]}/${match[2]}`;
+}
+
 /**
  * Resolve image URL for React Native.
- * Prefers local API /uploads when Cloudinary CRM URLs are stored (CDN often 404s).
+ * Live DB often stores uploads/… paths; prefer Cloudinary when that mapping exists,
+ * otherwise serve from API base /uploads.
  */
 export function resolveLogImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
   if (raw == null) return null;
@@ -56,18 +69,22 @@ export function resolveLogImageUrl(raw, baseUrl, folderHint = 'daily_temp_monito
 
   const base = String(baseUrl || '').replace(/\/$/, '');
   if (/^https?:\/\//i.test(value)) {
-    const local = cloudinaryUrlToUploadsPath(value);
-    if (local && base) return `${base}/${local}`;
+    // Prefer original CDN/http URL (local /uploads often missing for live DB rows)
     return value;
   }
-  if (!base) return null;
   value = value.replace(/\\/g, '/').replace(/^\/+/, '');
-  if (value.startsWith('uploads/')) return `${base}/${value}`;
+  if (value.startsWith('uploads/')) {
+    const cloudUrl = uploadsPathToCloudinaryUrl(value);
+    if (cloudUrl) return cloudUrl;
+    if (!base) return null;
+    return `${base}/${value}`;
+  }
+  if (!base) return null;
   if (!value.includes('/')) return `${base}/uploads/${folderHint}/${value}`;
   return `${base}/${value}`;
 }
 
-/** Ordered candidates: local uploads first, then original CDN URL. */
+/** Ordered candidates: Cloudinary (if mapped), then API uploads, then original URL. */
 export function resolveLogImageUrlCandidates(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
   const out = [];
   const push = (u) => {
@@ -80,8 +97,17 @@ export function resolveLogImageUrlCandidates(raw, baseUrl, folderHint = 'daily_t
   const primary = resolveLogImageUrl(value, baseUrl, folderHint);
   push(primary);
 
-  if (/^https?:\/\/res\.cloudinary\.com\//i.test(value)) {
+  const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (normalized.startsWith('uploads/')) {
+    const cloudUrl = uploadsPathToCloudinaryUrl(normalized);
+    push(cloudUrl);
+    const base = String(baseUrl || '').replace(/\/$/, '');
+    if (base) push(`${base}/${normalized}`);
+  } else if (/^https?:\/\/res\.cloudinary\.com\//i.test(value)) {
     push(value);
+    const local = cloudinaryUrlToUploadsPath(value);
+    const base = String(baseUrl || '').replace(/\/$/, '');
+    if (local && base) push(`${base}/${local}`);
   }
   return out;
 }

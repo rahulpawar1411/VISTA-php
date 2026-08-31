@@ -35,7 +35,11 @@ function StatusBadge({ status }) {
 }
 
 /**
- * Sub-Admin Admin panel — Role & Permission, DO CRUD, Master Data.
+ * Sub-Admin Admin panel — three sections:
+ *   1) Permissions — approve/deny DO requests
+ *   2) DOs — create/edit operators (warehouse + chamber_limit)
+ *   3) Master — catalog warehouse_master / client_master CRUD
+ * Chamber↔client assignments for a DO are edited in SubAdminDoMasterSetup, not here.
  */
 export default function SubAdminAdminPanel({
   apiUrl,
@@ -81,6 +85,7 @@ export default function SubAdminAdminPanel({
   const [masterTab, setMasterTab] = useState('warehouses');
   const [warehouses, setWarehouses] = useState([]);
   const [clients, setClients] = useState([]);
+  const [clientAssignments, setClientAssignments] = useState([]);
   const [mastersLoading, setMastersLoading] = useState(false);
   const [mastersError, setMastersError] = useState('');
   const [masterFormOpen, setMasterFormOpen] = useState(false);
@@ -139,24 +144,110 @@ export default function SubAdminAdminPanel({
     setMastersLoading(true);
     setMastersError('');
     try {
-      const [whRes, clRes] = await Promise.all([
+      const [whRes, clRes, asgRes] = await Promise.all([
         fetch(`${apiUrl}/api/masters/warehouses?active_only=0`, { headers }),
-        fetch(`${apiUrl}/api/masters/clients?active_only=0`, { headers })
+        fetch(`${apiUrl}/api/masters/clients?active_only=0`, { headers }),
+        // Include inactive chamber-client rows (soft-deactivated clients)
+        fetch(`${apiUrl}/api/chambers/assignments`, { headers })
       ]);
       const whData = await whRes.json().catch(() => ({}));
       const clData = await clRes.json().catch(() => ({}));
+      const asgData = await asgRes.json().catch(() => ({}));
       if (!whRes.ok) throw new Error(whData.message || `Warehouses failed (${whRes.status})`);
       if (!clRes.ok) throw new Error(clData.message || `Clients failed (${clRes.status})`);
       setWarehouses(Array.isArray(whData.data) ? whData.data : []);
       setClients(Array.isArray(clData.data) ? clData.data : []);
+      const assigns = Array.isArray(asgData.data)
+        ? asgData.data
+        : Array.isArray(asgData)
+          ? asgData
+          : [];
+      setClientAssignments(assigns);
     } catch (err) {
       setMastersError(err.message || 'Failed to load master data.');
       setWarehouses([]);
       setClients([]);
+      setClientAssignments([]);
     } finally {
       setMastersLoading(false);
     }
   }, [apiUrl, token, headers]);
+
+  /** Catalog + chamber assignments — so soft-deactivated clients also appear. */
+  const displayClients = useMemo(() => {
+    const isAssignInactive = (row) => {
+      const s = String(row?.status || 'active').trim().toLowerCase();
+      return (
+        s === 'inactive' ||
+        s === 'deactive' ||
+        s === 'deactivated' ||
+        s === 'disabled' ||
+        s === '0' ||
+        s === 'false'
+      );
+    };
+
+    const keyOf = (name, warehouse, code) =>
+      `${String(name || '').trim().toLowerCase()}|${String(warehouse || '')
+        .trim()
+        .toLowerCase()}`;
+
+    const map = new Map();
+
+    (clients || []).forEach((c) => {
+      const name = String(c.client_name || '').trim();
+      if (!name) return;
+      const key = keyOf(name, c.warehouse_name);
+      map.set(key, {
+        id: c.id,
+        client_code: c.client_code || null,
+        client_name: name,
+        warehouse_name: c.warehouse_name || null,
+        warehouse_code: c.warehouse_code || null,
+        is_active: Number(c.is_active) === 0 ? 0 : 1,
+        _fromCatalog: true,
+        _hasActiveAssign: false,
+        _hasDeactiveAssign: false
+      });
+    });
+
+    (clientAssignments || []).forEach((a) => {
+      const name = String(a.client_name || '').trim();
+      if (!name) return;
+      const inactive = isAssignInactive(a);
+      const key = keyOf(name, a.warehouse_name);
+      const prev = map.get(key);
+      if (!prev) {
+        map.set(key, {
+          id: `asg-${a.chamber_id}-${name}`,
+          client_code: a.client_code || null,
+          client_name: name,
+          warehouse_name: a.warehouse_name || null,
+          warehouse_code: a.warehouse_code || null,
+          is_active: inactive ? 0 : 1,
+          _fromCatalog: false,
+          _hasActiveAssign: !inactive,
+          _hasDeactiveAssign: inactive,
+          chamber_name: a.chamber_name || null
+        });
+        return;
+      }
+      if (inactive) prev._hasDeactiveAssign = true;
+      else prev._hasActiveAssign = true;
+      if (a.client_code && !prev.client_code) prev.client_code = a.client_code;
+      if (a.chamber_name) prev.chamber_name = a.chamber_name;
+    });
+
+    return Array.from(map.values()).map((row) => {
+      // Prefer operational assignment status: deactive assignment → show Deactive
+      // even if catalog is_active is still 1
+      let is_active = row.is_active;
+      if (row._hasDeactiveAssign && !row._hasActiveAssign) is_active = 0;
+      else if (row._hasActiveAssign) is_active = 1;
+      else if (!row._fromCatalog && row._hasDeactiveAssign) is_active = 0;
+      return { ...row, is_active };
+    });
+  }, [clients, clientAssignments]);
 
   useEffect(() => {
     if (section === 'dos') {
@@ -218,14 +309,43 @@ export default function SubAdminAdminPanel({
     });
   }, [operators, search]);
 
+  const isMasterActive = (row) => {
+    const v = row?.is_active;
+    if (v === false || v === 0 || v === '0') return false;
+    return Number(v) !== 0;
+  };
+
   const filteredMasters = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const src = masterTab === 'warehouses' ? warehouses : clients;
-    if (!q) return src;
-    return src.filter((row) =>
-      JSON.stringify(row).toLowerCase().includes(q)
-    );
-  }, [masterTab, warehouses, clients, search]);
+    const src = masterTab === 'warehouses' ? warehouses : displayClients;
+    const list = !q
+      ? [...src]
+      : src.filter((row) => JSON.stringify(row).toLowerCase().includes(q));
+    // Active first, then Deactive — both always visible
+    return list.sort((a, b) => {
+      const aActive = isMasterActive(a) ? 0 : 1;
+      const bActive = isMasterActive(b) ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      const an =
+        masterTab === 'warehouses'
+          ? String(a.warehouse_name || '')
+          : String(a.client_name || '');
+      const bn =
+        masterTab === 'warehouses'
+          ? String(b.warehouse_name || '')
+          : String(b.client_name || '');
+      return an.localeCompare(bn, undefined, { numeric: true });
+    });
+  }, [masterTab, warehouses, displayClients, search]);
+
+  const activeMasterRows = useMemo(
+    () => filteredMasters.filter((r) => isMasterActive(r)),
+    [filteredMasters]
+  );
+  const deactiveMasterRows = useMemo(
+    () => filteredMasters.filter((r) => !isMasterActive(r)),
+    [filteredMasters]
+  );
 
   const pendingCount = permissionItems.filter((n) => n.status === 'Pending').length;
 
@@ -709,19 +829,62 @@ export default function SubAdminAdminPanel({
                 <Text style={styles.empty}>No master records.</Text>
               </View>
             ) : (
-              filteredMasters.map((row) => (
-                <View key={String(row.id)} style={styles.card}>
-                  <Text style={styles.cardTitle}>
-                    {masterTab === 'warehouses' ? row.warehouse_name : row.client_name}
-                  </Text>
-                  <Text style={styles.cardMeta}>
-                    {masterTab === 'warehouses'
-                      ? `${row.warehouse_code}${row.city ? ` · ${row.city}` : ''}`
-                      : `${row.client_code}${row.warehouse_name ? ` · ${row.warehouse_name}` : ''}`}
-                    {` · ${Number(row.is_active) === 1 ? 'Active' : 'Inactive'}`}
-                  </Text>
-                </View>
-              ))
+              <>
+                <Text style={styles.masterGroupTitle}>
+                  Active ({activeMasterRows.length})
+                </Text>
+                {activeMasterRows.length === 0 ? (
+                  <Text style={styles.masterGroupEmpty}>No active records.</Text>
+                ) : (
+                  activeMasterRows.map((row) => (
+                    <View key={`a-${String(row.id)}`} style={styles.card}>
+                      <Text style={styles.cardTitle}>
+                        {masterTab === 'warehouses' ? row.warehouse_name : row.client_name}
+                      </Text>
+                      <Text style={styles.cardMeta}>
+                        {masterTab === 'warehouses'
+                          ? `${row.warehouse_code || '—'}${row.city ? ` · ${row.city}` : ''}`
+                          : `${row.client_code || '—'}${
+                              row.warehouse_name ? ` · ${row.warehouse_name}` : ''
+                            }${row.chamber_name ? ` · ${row.chamber_name}` : ''}`}
+                      </Text>
+                      <View style={[styles.statusPill, styles.statusActive]}>
+                        <Text style={[styles.statusPillText, styles.statusActiveText]}>Active</Text>
+                      </View>
+                    </View>
+                  ))
+                )}
+
+                <Text style={[styles.masterGroupTitle, styles.masterGroupTitleDeactive]}>
+                  Deactive ({deactiveMasterRows.length})
+                </Text>
+                {deactiveMasterRows.length === 0 ? (
+                  <Text style={styles.masterGroupEmpty}>No deactive records.</Text>
+                ) : (
+                  deactiveMasterRows.map((row) => (
+                    <View
+                      key={`d-${String(row.id)}`}
+                      style={[styles.card, styles.cardDeactive]}
+                    >
+                      <Text style={[styles.cardTitle, styles.cardTitleDeactive]}>
+                        {masterTab === 'warehouses' ? row.warehouse_name : row.client_name}
+                      </Text>
+                      <Text style={styles.cardMeta}>
+                        {masterTab === 'warehouses'
+                          ? `${row.warehouse_code || '—'}${row.city ? ` · ${row.city}` : ''}`
+                          : `${row.client_code || '—'}${
+                              row.warehouse_name ? ` · ${row.warehouse_name}` : ''
+                            }${row.chamber_name ? ` · ${row.chamber_name}` : ''}`}
+                      </Text>
+                      <View style={[styles.statusPill, styles.statusDeactive]}>
+                        <Text style={[styles.statusPillText, styles.statusDeactiveText]}>
+                          Deactive
+                        </Text>
+                      </View>
+                    </View>
+                  ))
+                )}
+              </>
             )}
           </>
         ) : null}
@@ -1059,6 +1222,10 @@ const styles = StyleSheet.create({
     padding: 9,
     marginBottom: 7
   },
+  cardDeactive: {
+    backgroundColor: '#fffafa',
+    borderColor: '#fecaca'
+  },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   cardIcon: {
     width: 28,
@@ -1069,7 +1236,39 @@ const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   cardTitle: { fontSize: 12, fontWeight: '800', color: '#0f172a' },
+  cardTitleDeactive: { color: '#64748b', textDecorationLine: 'line-through' },
   cardMeta: { fontSize: 10, color: '#64748b', fontWeight: '600', marginTop: 1 },
+  masterGroupTitle: {
+    marginTop: 4,
+    marginBottom: 6,
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#059669',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
+  },
+  masterGroupTitleDeactive: {
+    marginTop: 14,
+    color: '#dc2626'
+  },
+  masterGroupEmpty: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600',
+    marginBottom: 8
+  },
+  statusPill: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999
+  },
+  statusActive: { backgroundColor: '#ecfdf5' },
+  statusDeactive: { backgroundColor: '#fef2f2' },
+  statusPillText: { fontSize: 9, fontWeight: '800' },
+  statusActiveText: { color: '#059669' },
+  statusDeactiveText: { color: '#dc2626' },
   cardBody: { fontSize: 11, color: '#475569', fontWeight: '600', marginTop: 5, lineHeight: 15 },
   badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
   badgeText: { fontSize: 9, fontWeight: '800' },

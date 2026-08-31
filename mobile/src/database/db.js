@@ -790,6 +790,133 @@ export const upsertSyncedInspectionFromServer = (serverLog, opts = {}) => {
   }
 };
 
+/**
+ * After a successful chamber-temp pull: remove local *synced* rows in the date range
+ * that no longer exist on the server (e.g. Super Admin deleted from MySQL).
+ * Never deletes pending offline uploads.
+ * @returns {number} rows deleted
+ */
+export const reconcileSyncedInspectionsFromServer = (serverItems, opts = {}) => {
+  if (!db) return 0;
+  const fromDate = String(opts.fromDate || '').slice(0, 10);
+  const toDate = String(opts.toDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+    return 0;
+  }
+
+  try {
+    const serverIds = new Set();
+    const serverKeys = new Set();
+
+    (Array.isArray(serverItems) ? serverItems : []).forEach((item) => {
+      if (!item) return;
+      const sid = item.id != null && item.id !== '' ? parseInt(item.id, 10) : NaN;
+      if (Number.isFinite(sid) && sid > 0) serverIds.add(sid);
+
+      const formatted = String(item.formatted_date || '').trim().slice(0, 10);
+      const entryDate = /^\d{4}-\d{2}-\d{2}$/.test(formatted)
+        ? formatted
+        : toLocalYmd(item.entry_date);
+      const clientName = String(item.client_name || '').trim();
+      if (!entryDate || !clientName) return;
+
+      let chamberId = parseInt(item.chamber_id, 10);
+      if (!Number.isFinite(chamberId) || chamberId <= 0) {
+        const m = String(item.chamber_name || '').match(/(\d+)/);
+        chamberId = m ? parseInt(m[1], 10) : NaN;
+      }
+      if (!Number.isFinite(chamberId) || chamberId <= 0) return;
+
+      const shift = resolveShiftFromServerLog(item);
+      serverKeys.add(
+        `${entryDate}|${chamberId}|${clientName.toLowerCase()}|${shift}`
+      );
+    });
+
+    const email = String(opts.operatorEmail || '').trim();
+    const rows = email
+      ? db.getAllSync(
+          `SELECT id, server_log_id, entry_date, chamber_id, client_name, shift
+           FROM local_inspections
+           WHERE IFNULL(sync_status, 'synced') != 'pending'
+             AND substr(entry_date, 1, 10) >= ?
+             AND substr(entry_date, 1, 10) <= ?
+             AND (
+               operator_email IS NULL OR TRIM(operator_email) = ''
+               OR LOWER(operator_email) = LOWER(?)
+             );`,
+          [fromDate, toDate, email]
+        )
+      : db.getAllSync(
+          `SELECT id, server_log_id, entry_date, chamber_id, client_name, shift
+           FROM local_inspections
+           WHERE IFNULL(sync_status, 'synced') != 'pending'
+             AND substr(entry_date, 1, 10) >= ?
+             AND substr(entry_date, 1, 10) <= ?;`,
+          [fromDate, toDate]
+        );
+
+    let deleted = 0;
+    (rows || []).forEach((row) => {
+      const sid =
+        row.server_log_id != null && row.server_log_id !== ''
+          ? parseInt(row.server_log_id, 10)
+          : NaN;
+      let keep = false;
+      if (Number.isFinite(sid) && sid > 0) {
+        keep = serverIds.has(sid);
+      } else {
+        const key = `${String(row.entry_date || '').slice(0, 10)}|${parseInt(row.chamber_id, 10)}|${String(row.client_name || '').trim().toLowerCase()}|${String(row.shift || 'Morning').trim() || 'Morning'}`;
+        keep = serverKeys.has(key);
+      }
+      if (keep) return;
+      db.runSync(
+        `DELETE FROM local_inspections WHERE id = ? AND IFNULL(sync_status, 'synced') != 'pending';`,
+        [row.id]
+      );
+      deleted += 1;
+    });
+
+    if (deleted > 0) {
+      console.log(
+        `🗑️ Reconciled SQLite: removed ${deleted} synced inspection(s) missing on server (${fromDate}→${toDate})`
+      );
+    }
+    return deleted;
+  } catch (error) {
+    console.warn(
+      '⚠️ reconcileSyncedInspectionsFromServer:',
+      error?.message || error
+    );
+    return 0;
+  }
+};
+
+/**
+ * Logout / fresh session: drop mirrored server inspections so next login re-reads MySQL.
+ * Keeps pending offline upload queue rows.
+ * @returns {number} rows deleted
+ */
+export const clearSyncedInspectionsLocally = () => {
+  if (!db) return 0;
+  try {
+    const before = db.getFirstSync(
+      `SELECT COUNT(*) AS c FROM local_inspections
+       WHERE IFNULL(sync_status, 'synced') != 'pending';`
+    );
+    db.runSync(
+      `DELETE FROM local_inspections WHERE IFNULL(sync_status, 'synced') != 'pending';`
+    );
+    const n = Number(before?.c) || 0;
+    if (n > 0) {
+      console.log(`🗑️ Cleared ${n} synced local inspection(s) (pending queue kept)`);
+    }
+    return n;
+  } catch (error) {
+    console.warn('⚠️ clearSyncedInspectionsLocally:', error?.message || error);
+    return 0;
+  }
+};
 
 /**
  * Marks a queued inspection as synced in the local database.

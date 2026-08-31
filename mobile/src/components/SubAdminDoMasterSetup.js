@@ -31,7 +31,13 @@ const sameClient = (a, b) =>
     : String(a.client_name || '').toLowerCase() === String(b.client_name || '').toLowerCase();
 
 /**
- * Editable DO Master Setup — chambers + clients for a warehouse.
+ * Sub Admin — editable Master Setup for one DO warehouse.
+ *
+ * Edits chambers + chamber_client_assignments (operational graph).
+ * Client picker prefers client_master for that warehouse; custom names
+ * are allowed and land on assignments (catalog backfill may catch up later).
+ * Sub Admin / Super Admin can save without DO permission requests.
+ * Prefer unique chamber names per warehouse (chamber names are globally unique in DB).
  */
 export default function SubAdminDoMasterSetup({
   visible,
@@ -259,8 +265,17 @@ export default function SubAdminDoMasterSetup({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, warehouseName]);
 
-  const isInactive = (row) =>
-    String(row?.status || 'active').trim().toLowerCase() === 'inactive';
+  const isInactive = (row) => {
+    const s = String(row?.status || 'active').trim().toLowerCase();
+    return (
+      s === 'inactive' ||
+      s === 'deactive' ||
+      s === 'deactivated' ||
+      s === 'disabled' ||
+      s === '0' ||
+      s === 'false'
+    );
+  };
 
   const chambersWithClients = useMemo(() => {
     const byId = new Map();
@@ -675,11 +690,11 @@ export default function SubAdminDoMasterSetup({
   }, [busyKey, onClose, persistAllChanges]);
 
   const renderClientRow = (row, idx, mode) => {
-    const deactive = mode === 'deactive';
+    const deactive = mode === 'deactive' || isInactive(row);
     const saving = busyKey === 'save-all';
     return (
       <View
-        key={`${mode}-${row.client_code || row.client_name}-${idx}`}
+        key={`${mode}-${row.client_code || row.client_name}-${row.id || idx}`}
         style={[styles.clientRow, deactive && styles.clientRowDeactive]}
       >
         <View style={[styles.clientDot, deactive && styles.clientDotDeactive]} />

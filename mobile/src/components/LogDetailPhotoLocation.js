@@ -71,8 +71,13 @@ export function PhotoCaptureMetaSection({ metadata }) {
 }
 
 /** Full-screen image viewer — tap photo in details to open. */
-export function ImagePreviewModal({ visible, uri, label, onClose }) {
+export function ImagePreviewModal({ visible, uri, label, onClose, locationText, lat, lng }) {
   if (!uri) return null;
+  const hasGps =
+    lat != null &&
+    lng != null &&
+    Number.isFinite(parseFloat(lat)) &&
+    Number.isFinite(parseFloat(lng));
   return (
     <Modal
       visible={!!visible}
@@ -106,6 +111,17 @@ export function ImagePreviewModal({ visible, uri, label, onClose }) {
             resizeMode="contain"
           />
         </TouchableOpacity>
+        {locationText ? (
+          <TouchableOpacity
+            style={previewStyles.locationBar}
+            onPress={() => openLocationInMaps(lat, lng)}
+            disabled={!hasGps}
+            activeOpacity={hasGps ? 0.75 : 1}
+          >
+            <Ionicons name="location-outline" size={14} color="#fff" />
+            <Text style={previewStyles.locationText}>Location: {locationText}</Text>
+          </TouchableOpacity>
+        ) : null}
         <Text style={previewStyles.hint}>Tap anywhere to close</Text>
       </SafeAreaView>
     </Modal>
@@ -125,7 +141,15 @@ export function PhotoGridWithLocation({ photoItems, folderHint, photoMeta, resol
             folderHint={folderHint}
             photoMeta={photoMeta}
             resolveUri={resolveUri}
-            onOpenPreview={(uri, label) => setPreview({ uri, label })}
+            onOpenPreview={(uri, label, loc) =>
+              setPreview({
+                uri,
+                label,
+                locationText: loc?.locationText || '',
+                lat: loc?.lat,
+                lng: loc?.lng
+              })
+            }
           />
         ))}
       </View>
@@ -133,6 +157,9 @@ export function PhotoGridWithLocation({ photoItems, folderHint, photoMeta, resol
         visible={!!preview}
         uri={preview?.uri}
         label={preview?.label}
+        locationText={preview?.locationText}
+        lat={preview?.lat}
+        lng={preview?.lng}
         onClose={() => setPreview(null)}
       />
     </>
@@ -159,7 +186,14 @@ function PhotoGridCell({ photo, folderHint, photoMeta, resolveUri, onOpenPreview
         style={styles.frame}
         activeOpacity={uri ? 0.85 : 1}
         disabled={!uri}
-        onPress={() => uri && onOpenPreview(uri, photo.label)}
+        onPress={() =>
+          uri &&
+          onOpenPreview(uri, photo.label, {
+            locationText: gps || '',
+            lat: metaEntry?.latitude,
+            lng: metaEntry?.longitude
+          })
+        }
       >
         {uri ? (
           <Image
@@ -179,16 +213,18 @@ function PhotoGridCell({ photo, folderHint, photoMeta, resolveUri, onOpenPreview
           </View>
         ) : null}
       </TouchableOpacity>
-      {time ? <Text style={styles.meta}>{time}</Text> : null}
+      {time ? <Text style={styles.meta}>Time: {time}</Text> : null}
       {gps ? (
         <TouchableOpacity
           onPress={() => openLocationInMaps(metaEntry.latitude, metaEntry.longitude)}
           disabled={!hasGps}
           activeOpacity={hasGps ? 0.75 : 1}
         >
-          <Text style={[styles.meta, hasGps && styles.linkActive]}>{gps}</Text>
+          <Text style={[styles.meta, hasGps && styles.linkActive]}>Location: {gps}</Text>
         </TouchableOpacity>
-      ) : null}
+      ) : (
+        <Text style={styles.metaMuted}>Location: not recorded</Text>
+      )}
     </View>
   );
 }
@@ -236,6 +272,20 @@ const previewStyles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     paddingBottom: 16,
+  },
+  locationBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(15,23,42,0.85)',
+  },
+  locationText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });
 
@@ -332,6 +382,12 @@ const styles = StyleSheet.create({
   meta: {
     fontSize: 10,
     color: '#64748b',
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  metaMuted: {
+    fontSize: 10,
+    color: '#94a3b8',
     fontWeight: '600',
     marginTop: 4,
   },
