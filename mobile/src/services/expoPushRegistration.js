@@ -1,12 +1,16 @@
 /**
  * Shared Expo push token registration / refresh for Sub-Admin + DO.
  * Call on every app open / foreground so the server always has a live token.
+ *
+ * Note: Android remote push is NOT supported in Expo Go (SDK 53+).
+ * In that environment we skip token registration and rely on local alerts.
  */
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import { AppState, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ensureNotificationPermission } from '../utils/permissions';
+import { isExpoGoAndroid } from '../utils/notificationsEnv';
 
 const LAST_TOKEN_KEY = 'reeferon_last_expo_push_token';
 const MIN_REFRESH_MS = 30_000;
@@ -14,6 +18,11 @@ const MIN_REFRESH_MS = 30_000;
 let lastRegisterAt = 0;
 let lastRegisterFingerprint = '';
 let appStateSub = null;
+
+/** Remote FCM push token APIs throw on Android Expo Go — never call them there. */
+export function canUseRemotePush() {
+  return !isExpoGoAndroid();
+}
 
 function getExpoProjectId() {
   return (
@@ -24,7 +33,7 @@ function getExpoProjectId() {
 }
 
 async function ensurePermissionChannel() {
-  if (Platform.OS !== 'android') return;
+  if (Platform.OS !== 'android' || isExpoGoAndroid()) return;
   try {
     await Notifications.setNotificationChannelAsync('permission-alerts', {
       name: 'Permission alerts',
@@ -41,10 +50,15 @@ async function ensurePermissionChannel() {
 
 /**
  * Fetch current device Expo token and POST to backend.
- * @returns {Promise<{ ok: boolean, token?: string, refreshed?: boolean }>}
+ * @returns {Promise<{ ok: boolean, token?: string, refreshed?: boolean, skipped?: boolean }>}
  */
 export async function registerExpoPushToken({ apiUrl, authToken, force = false } = {}) {
   if (!apiUrl || !authToken) return { ok: false };
+
+  if (!canUseRemotePush()) {
+    // Local notifications still work in Expo Go; remote Android push needs a dev/production build.
+    return { ok: false, skipped: true };
+  }
 
   const now = Date.now();
   const fingerprint = `${apiUrl}|${String(authToken).slice(0, 16)}`;
@@ -63,9 +77,11 @@ export async function registerExpoPushToken({ apiUrl, authToken, force = false }
 
   try {
     const projectId = getExpoProjectId();
-    const push = await Notifications.getExpoPushTokenAsync(
-      projectId ? { projectId } : undefined
-    );
+    if (!projectId) {
+      console.warn('registerExpoPushToken: missing EAS projectId');
+      return { ok: false };
+    }
+    const push = await Notifications.getExpoPushTokenAsync({ projectId });
     const expoPushToken = push?.data;
     if (!expoPushToken) return { ok: false };
 

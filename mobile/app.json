@@ -7,11 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "reeferon",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.reeferon.crm",
@@ -44,7 +39,10 @@
       "intentFilters": [
         {
           "action": "VIEW",
-          "category": ["BROWSABLE", "DEFAULT"],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ],
           "data": [
             {
               "scheme": "reeferon"
@@ -80,7 +78,16 @@
         {
           "locationWhenInUsePermission": "ReeferON records GPS when you capture verification photos to verify where they were taken."
         }
-      ]
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "expo-font"
     ],
     "extra": {
       "eas": {

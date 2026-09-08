@@ -656,14 +656,23 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     }
   }, [allowedWarehouses, allowedClients, reportWarehouseFilter, reportClientFilter]);
 
-  const handleLogoutPress = async () => {
+  const handleLogoutPress = () => {
     if (busy) return;
-    setBusy(true);
-    try {
-      await onLogout?.();
-    } finally {
-      setBusy(false);
-    }
+    Alert.alert('Logout', 'Do you want to end this session and go to login?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Logout',
+        style: 'destructive',
+        onPress: async () => {
+          setBusy(true);
+          try {
+            await onLogout?.();
+          } finally {
+            setBusy(false);
+          }
+        }
+      }
+    ]);
   };
 
   const loadHomeOverview = useCallback(async () => {

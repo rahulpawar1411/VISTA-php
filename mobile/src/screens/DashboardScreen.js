@@ -97,6 +97,7 @@ import {
 import { subscribeToSync, triggerSync, formatLastSyncLabel, getLastSyncAt } from '../services/syncEngine';
 import { ensureCameraPermission } from '../utils/permissions';
 import { compressImageOnly } from '../utils/compressImage';
+import { appendLocalFile, multipartRequest } from '../utils/formDataAppendFile';
 import { buildPhotoCaptureMeta, beginPhotoLocationCapture } from '../utils/photoCaptureMeta';
 import SplashScreen from './SplashScreen';
 import { dedupeInventoryLots, chamberZoneStyle, normalizeChamberZone, pickComplianceZone } from '../utils/dedupeInventoryLots';
@@ -213,10 +214,11 @@ function DoSensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_i
   );
 }
 
-// Configure Notifications Handler
+// Configure Notifications Handler (SDK 57 requires banner/list flags)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
   }),
@@ -664,6 +666,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [inwardReportSearch, setInwardReportSearch] = useState('');
   const [inwardReportDateFrom, setInwardReportDateFrom] = useState(() => getLocalDateStr());
   const [inwardReportDateTo, setInwardReportDateTo] = useState(() => getLocalDateStr());
+  const [inwardReportMissingPod, setInwardReportMissingPod] = useState(false);
   const [inwardReportPage, setInwardReportPage] = useState(1);
   const [inwardReportTotal, setInwardReportTotal] = useState(0);
   const [inwardReportHasMore, setInwardReportHasMore] = useState(false);
@@ -1196,19 +1199,30 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     };
   }, []);
 
-  const handleLogout = useCallback(async () => {
-    try {
-      await clearExpoPushToken({ apiUrl, authToken: token });
-    } catch (_) {
-      /* ignore */
-    }
+  const performLogout = useCallback(() => {
+    // End session immediately — never block logout on network / push cleanup
+    const done = onLogout?.();
+    clearExpoPushToken({ apiUrl, authToken: token }).catch(() => {});
     try {
       clearSyncedInspectionsLocally();
     } catch (_) {
       /* ignore */
     }
-    onLogout?.();
+    return done;
   }, [apiUrl, token, onLogout]);
+
+  const handleLogout = useCallback(() => {
+    Alert.alert('Logout', 'Do you want to end this session and go to login?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Logout',
+        style: 'destructive',
+        onPress: () => {
+          performLogout();
+        }
+      }
+    ]);
+  }, [performLogout]);
 
   const completedChambersCount = useMemo(() => {
     const todayStr = getLocalDateStr();
@@ -2857,7 +2871,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         Alert.alert(
           'Session Revoked',
           'Your account has been deleted or disabled. Logging you out.',
-          [{ text: 'OK', onPress: handleLogout }]
+          [{ text: 'OK', onPress: performLogout }]
         );
         return;
       }
@@ -3250,27 +3264,54 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   // Launch phone camera — then compress only (no resize)
   const handleLaunchCamera = async () => {
     try {
-      const locationPromise = beginPhotoLocationCapture();
+      // Permission + GPS services first (blocks camera if Location is OFF)
       const allowed = await ensureCameraPermission();
       if (!allowed) return;
 
+      const locationPromise = beginPhotoLocationCapture();
+
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaTypeOptions?.Images
+          ? ImagePicker.MediaTypeOptions.Images
+          : ImagePicker.MediaType?.Images || 'images',
         allowsEditing: false,
-        quality: 1
+        quality: 1,
+        exif: true,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const originalUri = result.assets[0].uri;
         const compressedUri = await compressImageOnly(originalUri, 0.5);
         const meta = await buildPhotoCaptureMeta(locationPromise);
+
+        // EXIF GPS fallback (some devices embed coords in the photo)
+        let geo =
+          meta.latitude != null && meta.longitude != null
+            ? {
+                latitude: meta.latitude,
+                longitude: meta.longitude,
+                accuracy: meta.accuracy,
+              }
+            : null;
+        if (!geo) {
+          const exif = result.assets[0].exif || {};
+          const lat = parseFloat(exif.GPSLatitude ?? exif.gpsLatitude);
+          const lng = parseFloat(exif.GPSLongitude ?? exif.gpsLongitude);
+          if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
+            geo = { latitude: lat, longitude: lng, accuracy: null };
+          }
+        }
+
         setCapturedImage(compressedUri);
         setCapturedImageTimestamp(meta.capturedAt);
-        setCapturedImageGeo(
-          meta.latitude != null && meta.longitude != null
-            ? { latitude: meta.latitude, longitude: meta.longitude, accuracy: meta.accuracy }
-            : null
-        );
+        setCapturedImageGeo(geo);
+
+        if (!geo) {
+          Alert.alert(
+            'Location not saved',
+            'Photo saved, but GPS coordinates were not available. Turn on Location/GPS, wait a few seconds, and capture again if coordinates are required.'
+          );
+        }
       }
     } catch (error) {
       Alert.alert('Camera Error', 'Could not access device camera.');
@@ -3544,14 +3585,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           );
           if (capturedImage && !String(capturedImage).startsWith('http') && !String(capturedImage).startsWith('uploads/')) {
             const filename = String(capturedImage).split('/').pop() || `edit-${serverLogId}.jpg`;
-            formData.append('temp_sensor_image', {
-              uri: capturedImage,
+            appendLocalFile(formData, 'temp_sensor_image', capturedImage, {
               name: filename,
-              type: 'image/jpeg'
+              type: 'image/jpeg',
             });
           }
 
-          const res = await fetch(`${apiUrl}/api/chamber-temp/${serverLogId}`, {
+          const res = await multipartRequest(`${apiUrl}/api/chamber-temp/${serverLogId}`, {
             method: 'PUT',
             headers: {
               Authorization: `Bearer ${token}`,
@@ -3559,7 +3599,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             },
             body: formData
           });
-          const data = await res.json().catch(() => ({}));
+          const data = await res.json();
           if (!res.ok) {
             throw new Error(data.message || data.error || `Update failed (${res.status})`);
           }
@@ -8628,7 +8668,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
         <TouchableOpacity style={styles.moreLogoutBtn} onPress={handleLogout}>
           <Ionicons name="log-out" size={20} color="#ffffff" style={{ marginRight: 8 }} />
-          <Text style={styles.moreLogoutBtnText}>Log Out Account</Text>
+          <Text style={styles.moreLogoutBtnText}>Logout</Text>
         </TouchableOpacity>
 
         <View style={{ height: 100 }} />
@@ -11113,8 +11153,18 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }
       const page = overrides.page ?? inwardReportPage;
       const search = overrides.search ?? inwardReportSearch;
-      const fromDate = overrides.fromDate ?? inwardReportDateFrom;
-      const toDate = overrides.toDate ?? inwardReportDateTo;
+      const fromDate =
+        Object.prototype.hasOwnProperty.call(overrides, 'fromDate')
+          ? overrides.fromDate
+          : inwardReportDateFrom;
+      const toDate =
+        Object.prototype.hasOwnProperty.call(overrides, 'toDate')
+          ? overrides.toDate
+          : inwardReportDateTo;
+      const missingPod =
+        Object.prototype.hasOwnProperty.call(overrides, 'missingPod')
+          ? Boolean(overrides.missingPod)
+          : inwardReportMissingPod;
 
       setInwardReportsLoading(true);
       setInwardReportsError('');
@@ -11127,6 +11177,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         if (trimmedSearch) qs.set('search', trimmedSearch);
         if (fromDate?.trim()) qs.set('fromDate', fromDate.trim());
         if (toDate?.trim()) qs.set('toDate', toDate.trim());
+        if (missingPod) qs.set('missingPod', '1');
 
         const res = await fetch(`${apiUrl}/api/inward-logs?${qs.toString()}`, {
           headers: {
@@ -11156,6 +11207,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           });
         }
 
+        // Client-side safety net if older API ignores missingPod
+        if (missingPod) {
+          rows = rows.filter((r) => {
+            const pod = String(r.inward_pod_photo || '').trim();
+            return !pod || pod === 'null' || pod === 'undefined';
+          });
+        }
+
         setInwardReportRows(rows);
         setInwardReportPage(page);
         setInwardReportTotal(Number(data.total) || rows.length);
@@ -11175,6 +11234,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       inwardReportSearch,
       inwardReportDateFrom,
       inwardReportDateTo,
+      inwardReportMissingPod,
     ]
   );
 
@@ -11187,8 +11247,41 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     setInwardReportSearch('');
     setInwardReportDateFrom(today);
     setInwardReportDateTo(today);
-    loadInwardReports({ page: 1, search: '', fromDate: today, toDate: today });
+    setInwardReportMissingPod(false);
+    loadInwardReports({
+      page: 1,
+      search: '',
+      fromDate: today,
+      toDate: today,
+      missingPod: false,
+    });
   }, [loadInwardReports]);
+
+  const toggleInwardMissingPodFilter = useCallback(() => {
+    const next = !inwardReportMissingPod;
+    setInwardReportMissingPod(next);
+    if (next) {
+      // Show full missing-POD list (all dates) when filter is turned on
+      setInwardReportDateFrom('');
+      setInwardReportDateTo('');
+      loadInwardReports({
+        page: 1,
+        missingPod: true,
+        fromDate: '',
+        toDate: '',
+      });
+    } else {
+      const today = getLocalDateStr();
+      setInwardReportDateFrom(today);
+      setInwardReportDateTo(today);
+      loadInwardReports({
+        page: 1,
+        missingPod: false,
+        fromDate: today,
+        toDate: today,
+      });
+    }
+  }, [inwardReportMissingPod, loadInwardReports]);
 
   const goInwardReportPrevPage = useCallback(() => {
     if (inwardReportPage <= 1) return;
@@ -11249,18 +11342,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         setPodUploadBusy(true);
         const compressedUri = await compressImageOnly(result.assets[0].uri, 0.5);
         const formData = new FormData();
-        formData.append('inward_pod_photo', {
-          uri: compressedUri,
+        appendLocalFile(formData, 'inward_pod_photo', compressedUri, {
           name: `inward-pod-${inwardId}.jpg`,
           type: 'image/jpeg',
         });
 
-        const res = await fetch(`${apiUrl}/api/inward-logs/${inwardId}/pod-photo`, {
+        const res = await multipartRequest(`${apiUrl}/api/inward-logs/${inwardId}/pod-photo`, {
           method: 'PUT',
           headers: { Authorization: `Bearer ${token}` },
           body: formData,
         });
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json();
         if (!res.ok) {
           throw new Error(data.error || data.message || `Upload failed (${res.status})`);
         }
@@ -11575,13 +11667,50 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 : 'All'}
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.doFilterChip,
+              inwardReportMissingPod && styles.doFilterChipActiveWarn,
+            ]}
+            onPress={toggleInwardMissingPodFilter}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.doFilterChipLabel}>POD</Text>
+            <Text
+              style={[
+                styles.doFilterChipValue,
+                inwardReportMissingPod && { color: '#b91c1c' },
+              ]}
+              numberOfLines={1}
+            >
+              {inwardReportMissingPod ? 'Missing' : 'All'}
+            </Text>
+          </TouchableOpacity>
         </View>
         <View style={styles.dockReportFilterActions}>
           <TouchableOpacity
-            style={styles.dockReportFilterBtnPrimary}
+            style={[
+              styles.dockReportFilterBtnPrimary,
+              inwardReportMissingPod && { backgroundColor: '#b91c1c' },
+              { flexDirection: 'row', alignItems: 'center' },
+            ]}
+            onPress={toggleInwardMissingPodFilter}
+          >
+            <Ionicons
+              name="image-outline"
+              size={14}
+              color="#fff"
+              style={{ marginRight: 6 }}
+            />
+            <Text style={styles.dockReportFilterBtnPrimaryText}>
+              {inwardReportMissingPod ? 'Show All Inwards' : 'POD Img Missing'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.dockReportFilterBtnOutline}
             onPress={applyInwardReportFilters}
           >
-            <Text style={styles.dockReportFilterBtnPrimaryText}>Apply</Text>
+            <Text style={styles.dockReportFilterBtnOutlineText}>Apply</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.dockReportFilterBtnOutline} onPress={clearInwardReportFilters}>
             <Text style={styles.dockReportFilterBtnOutlineText}>Clear</Text>
@@ -11658,9 +11787,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <View style={{ alignItems: 'center', paddingTop: 48, paddingHorizontal: 24 }}>
               <Ionicons name="document-text-outline" size={40} color="#94a3b8" />
               <Text style={{ marginTop: 10, color: '#64748b', fontSize: 13, textAlign: 'center' }}>
-                {inwardReportSearch || inwardReportDateFrom || inwardReportDateTo
-                  ? 'No inward records match your filters.'
-                  : 'No saved inward records yet. Submit an Inward Task to see it here.'}
+                {inwardReportMissingPod
+                  ? 'No inward records are missing a POD photo.'
+                  : inwardReportSearch || inwardReportDateFrom || inwardReportDateTo
+                    ? 'No inward records match your filters.'
+                    : 'No saved inward records yet. Submit an Inward Task to see it here.'}
               </Text>
             </View>
           }
@@ -11669,6 +11800,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             const shortQty = parseInt(item.inward_short_received_boxes_qty, 10) || 0;
             const excessQty = parseInt(item.inward_excess_received_boxes_qty, 10) || 0;
             const received = item.inward_received_boxes_qty ?? item.inward_received_qty;
+            const podVal = String(item.inward_pod_photo || '').trim();
+            const podMissing = !podVal || podVal === 'null' || podVal === 'undefined';
             return (
               <TouchableOpacity
                 style={styles.inwardReportCard}
@@ -11677,13 +11810,20 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               >
                 <View style={styles.inwardReportCardTop}>
                   <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={styles.inwardReportRef} numberOfLines={1}>
-                      {item.reference_no || `INW-${item.inward_id}`}
-                      <Text style={styles.inwardReportDateInline}>
-                        {'  '}
-                        {item.inward_entry_date || ''}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Text style={styles.inwardReportRef} numberOfLines={1}>
+                        {item.reference_no || `INW-${item.inward_id}`}
+                        <Text style={styles.inwardReportDateInline}>
+                          {'  '}
+                          {item.inward_entry_date || ''}
+                        </Text>
                       </Text>
-                    </Text>
+                      {podMissing ? (
+                        <View style={styles.inwardPodMissingBadge}>
+                          <Text style={styles.inwardPodMissingBadgeText}>POD Missing</Text>
+                        </View>
+                      ) : null}
+                    </View>
                     <Text style={styles.inwardReportClient} numberOfLines={1}>
                       {item.inward_client_name || '—'}
                       {item.inward_vehicle_no ? ` · ${item.inward_vehicle_no}` : ''}
@@ -11886,18 +12026,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         setPodUploadBusy(true);
         const compressedUri = await compressImageOnly(result.assets[0].uri, 0.5);
         const formData = new FormData();
-        formData.append('outward_pod_photo', {
-          uri: compressedUri,
+        appendLocalFile(formData, 'outward_pod_photo', compressedUri, {
           name: `outward-pod-${outwardId}.jpg`,
           type: 'image/jpeg',
         });
 
-        const res = await fetch(`${apiUrl}/api/outward-logs/${outwardId}/pod-photo`, {
+        const res = await multipartRequest(`${apiUrl}/api/outward-logs/${outwardId}/pod-photo`, {
           method: 'PUT',
           headers: { Authorization: `Bearer ${token}` },
           body: formData,
         });
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json();
         if (!res.ok) {
           throw new Error(data.error || data.message || `Upload failed (${res.status})`);
         }
@@ -12594,7 +12733,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 }}
               >
                 <Ionicons name="log-out-outline" size={20} color="#ef4444" style={{ marginRight: 12 }} />
-                <Text style={styles.drawerLogoutText}>Logout Session</Text>
+                <Text style={styles.drawerLogoutText}>Logout</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -14693,14 +14832,18 @@ const styles = StyleSheet.create({
   },
   dockReportFilterActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   dockReportFilterBtnPrimary: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: '48%',
+    minWidth: 140,
     backgroundColor: '#003580',
     borderRadius: 10,
     paddingVertical: 10,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   dockReportFilterBtnPrimaryText: {
     color: '#fff',
@@ -14796,6 +14939,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
     color: '#003580',
+    flexShrink: 1,
+  },
+  inwardPodMissingBadge: {
+    marginLeft: 8,
+    marginTop: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  inwardPodMissingBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#b91c1c',
+    letterSpacing: 0.2,
   },
   inwardReportDateInline: {
     fontSize: 11,
@@ -15644,6 +15804,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5
   },
   doFilterChipActive: { borderColor: '#93c5fd', backgroundColor: '#eff6ff' },
+  doFilterChipActiveWarn: { borderColor: '#fca5a5', backgroundColor: '#fef2f2' },
   doFilterChipLabel: {
     fontSize: 8,
     color: '#94a3b8',

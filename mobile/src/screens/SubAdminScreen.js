@@ -1432,16 +1432,27 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     }
   };
 
-  const handleLogoutPress = async () => {
+  const handleLogoutPress = () => {
     if (busy) return;
-    setBusy(true);
-    try {
-      await clearSubAdminPushToken({ apiUrl, token });
-      resetSubAdminPushAlerts();
-      await onLogout?.();
-    } finally {
-      setBusy(false);
-    }
+    Alert.alert('Logout', 'Do you want to end this session and go to login?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Logout',
+        style: 'destructive',
+        onPress: async () => {
+          setBusy(true);
+          try {
+            // Session first — don't block on push cleanup
+            const done = onLogout?.();
+            clearSubAdminPushToken({ apiUrl, token }).catch(() => {});
+            resetSubAdminPushAlerts();
+            await done;
+          } finally {
+            setBusy(false);
+          }
+        }
+      }
+    ]);
   };
 
   const overviewCards = useMemo(() => {
@@ -4192,7 +4203,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   color="#ef4444"
                   style={{ marginRight: 12 }}
                 />
-                <Text style={styles.drawerLogoutText}>Logout Session</Text>
+                <Text style={styles.drawerLogoutText}>Logout</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>

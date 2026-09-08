@@ -1,8 +1,12 @@
 /**
  * Photo capture timestamp + GPS helpers for DO camera flows.
  */
+import { Platform } from 'react-native';
 import * as Location from 'expo-location';
-import { ensureLocationPermission } from './permissions';
+import {
+  ensureLocationPermission,
+  ensureLocationServicesEnabled,
+} from './permissions';
 
 export function formatCaptureDateTime(timestamp = Date.now()) {
   const dateObj = new Date(timestamp);
@@ -35,8 +39,57 @@ async function readFreshPosition(accuracy) {
   return coordsFromPosition(position);
 }
 
+/** Watch GPS briefly when getCurrentPosition fails (common indoors / cold start). */
+function watchForPosition(timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    let sub = null;
+    let settled = false;
+
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        sub?.remove?.();
+      } catch (_) {
+        /* ignore */
+      }
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+
+    Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.Lowest,
+        distanceInterval: 0,
+        timeInterval: 800,
+        mayShowUserSettingsDialog: true,
+      },
+      (pos) => {
+        const coords = coordsFromPosition(pos);
+        if (coords) finish(coords);
+      }
+    )
+      .then((subscription) => {
+        sub = subscription;
+        if (settled) {
+          try {
+            subscription?.remove?.();
+          } catch (_) {
+            /* ignore */
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('watchForPosition failed:', err?.message || err);
+        finish(null);
+      });
+  });
+}
+
 /**
- * Read GPS — cached last-known first, then fresh fix (low → balanced accuracy).
+ * Read GPS — last-known → Lowest → Low → Balanced → short watch.
  */
 export async function readCaptureLocation() {
   try {
@@ -46,31 +99,52 @@ export async function readCaptureLocation() {
       return null;
     }
 
+    if (Platform.OS === 'android' && Location.enableNetworkProviderAsync) {
+      try {
+        await Location.enableNetworkProviderAsync();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
     const servicesEnabled = await Location.hasServicesEnabledAsync();
     if (!servicesEnabled) {
       console.warn('readCaptureLocation: device location services are off');
       return null;
     }
 
-    const lastKnown = await Location.getLastKnownPositionAsync({
-      maxAge: 600000,
-      requiredAccuracy: 1000,
-    });
-    const cached = coordsFromPosition(lastKnown);
-    if (cached) return cached;
-
     try {
-      return await readFreshPosition(Location.Accuracy.Low);
-    } catch (lowErr) {
-      console.warn('readCaptureLocation low accuracy failed:', lowErr?.message || lowErr);
+      const lastKnown = await Location.getLastKnownPositionAsync({
+        maxAge: 15 * 60 * 1000,
+        requiredAccuracy: 2000,
+      });
+      const cached = coordsFromPosition(lastKnown);
+      if (cached) return cached;
+    } catch (_) {
+      /* ignore */
     }
 
-    try {
-      return await readFreshPosition(Location.Accuracy.Balanced);
-    } catch (balancedErr) {
-      console.warn('readCaptureLocation balanced accuracy failed:', balancedErr?.message || balancedErr);
-      return null;
+    const accuracies = [
+      Location.Accuracy.Lowest,
+      Location.Accuracy.Low,
+      Location.Accuracy.Balanced,
+    ];
+    for (const accuracy of accuracies) {
+      try {
+        const coords = await readFreshPosition(accuracy);
+        if (coords) return coords;
+      } catch (err) {
+        console.warn(
+          `readCaptureLocation accuracy=${accuracy} failed:`,
+          err?.message || err
+        );
+      }
     }
+
+    const watched = await watchForPosition(12000);
+    if (watched) return watched;
+
+    return null;
   } catch (err) {
     console.warn('readCaptureLocation skipped:', err?.message || err);
     return null;
@@ -78,8 +152,8 @@ export async function readCaptureLocation() {
 }
 
 /**
- * Call BEFORE opening the camera so GPS can resolve while the user takes the photo.
- * Returns a promise — await it after the photo is captured/compressed.
+ * Call AFTER location permission/services are confirmed, BEFORE opening camera,
+ * so GPS can resolve while the user takes the photo.
  */
 export function beginPhotoLocationCapture() {
   return (async () => {
@@ -89,13 +163,9 @@ export function beginPhotoLocationCapture() {
       return null;
     }
 
-    try {
-      const servicesEnabled = await Location.hasServicesEnabledAsync();
-      if (!servicesEnabled) {
-        console.warn('beginPhotoLocationCapture: location services off');
-        return null;
-      }
-    } catch (_) {
+    const servicesOk = await ensureLocationServicesEnabled({ required: false });
+    if (!servicesOk) {
+      console.warn('beginPhotoLocationCapture: location services off');
       return null;
     }
 
@@ -111,11 +181,18 @@ export async function buildPhotoCaptureMeta(locationPromise = null) {
   try {
     if (locationPromise) {
       location = await locationPromise;
-    } else {
-      location = await readCaptureLocation();
     }
   } catch (err) {
-    console.warn('buildPhotoCaptureMeta location failed:', err?.message || err);
+    console.warn('buildPhotoCaptureMeta locationPromise failed:', err?.message || err);
+  }
+
+  // Always retry after camera — GPS often unlocks once user is outdoors / after cold start
+  if (!location?.latitude || !location?.longitude) {
+    try {
+      location = await readCaptureLocation();
+    } catch (err) {
+      console.warn('buildPhotoCaptureMeta retry failed:', err?.message || err);
+    }
   }
 
   return {

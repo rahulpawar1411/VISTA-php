@@ -1,5 +1,6 @@
 import { convertYYYYMMDDToDDMMYYYY } from './inwardValidation';
 import { buildPhotoMetadataPayload } from './photoCaptureMeta';
+import { appendLocalFile } from './formDataAppendFile';
 
 export const INWARD_PHOTO_FIELDS = [
   { key: 'inward_invoice_photos', multi: true },
@@ -29,8 +30,7 @@ function appendPhotoToFormData(formData, fieldKey, photoValue, multi) {
   if (multi) {
     (photoValue || []).forEach((item, idx) => {
       if (!item?.uri) return;
-      formData.append(fieldKey, {
-        uri: item.uri,
+      appendLocalFile(formData, fieldKey, item.uri, {
         name: `${fieldKey}-${idx + 1}.jpg`,
         type: 'image/jpeg',
       });
@@ -38,8 +38,7 @@ function appendPhotoToFormData(formData, fieldKey, photoValue, multi) {
     return;
   }
   if (photoValue?.uri) {
-    formData.append(fieldKey, {
-      uri: photoValue.uri,
+    appendLocalFile(formData, fieldKey, photoValue.uri, {
       name: `${fieldKey}.jpg`,
       type: 'image/jpeg',
     });

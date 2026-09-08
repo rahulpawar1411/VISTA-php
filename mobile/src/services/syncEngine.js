@@ -24,6 +24,11 @@ import {
   describeInwardQueueItem,
   describeOutwardQueueItem,
 } from '../utils/offlineLogFormData';
+import {
+  appendLocalFile,
+  localFileExists,
+  multipartRequest,
+} from '../utils/formDataAppendFile';
 
 function toLocalYmd(d = new Date()) {
   const y = d.getFullYear();
@@ -250,21 +255,26 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
         if (opEmail) formData.append('operator_email', String(opEmail).trim());
 
         if (log.temp_sensor_image) {
+          const photoOk = await localFileExists(log.temp_sensor_image);
+          if (!photoOk) {
+            throw new Error(
+              'Sensor photo file missing on device. Open the task, capture photo again, then sync.'
+            );
+          }
           const filename = log.temp_sensor_image.split('/').pop() || `inspection-${log.id}.jpg`;
-          formData.append('sensor_photo', {
-            uri: log.temp_sensor_image,
+          appendLocalFile(formData, 'sensor_photo', log.temp_sensor_image, {
             name: filename,
             type: 'image/jpeg',
           });
         }
 
-        const response = await fetch(`${apiBaseUrl}/api/chambers/inspections`, {
+        const response = await multipartRequest(`${apiBaseUrl}/api/chambers/inspections`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
           body: formData,
         });
 
-        const resData = await response.json().catch(() => ({}));
+        const resData = await response.json();
 
         if (response.status === 200 || response.status === 201) {
           markInspectionAsSynced(log.id, resData.reference_no, resData.logId);
@@ -289,7 +299,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
     for (const record of pendingInwards) {
       try {
         const formData = buildInwardFormData(record);
-        const response = await fetch(`${apiBaseUrl}/api/inward-logs`, {
+        const response = await multipartRequest(`${apiBaseUrl}/api/inward-logs`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
@@ -297,7 +307,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           },
           body: formData,
         });
-        const resData = await response.json().catch(() => ({}));
+        const resData = await response.json();
         if (response.status === 200 || response.status === 201) {
           markInwardAsSynced(record.id, resData.reference_no, resData.id);
           syncedCount += 1;
@@ -317,7 +327,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
     for (const record of pendingOutwards) {
       try {
         const formData = buildOutwardFormData(record);
-        const response = await fetch(`${apiBaseUrl}/api/outward-logs`, {
+        const response = await multipartRequest(`${apiBaseUrl}/api/outward-logs`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
@@ -325,7 +335,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           },
           body: formData,
         });
-        const resData = await response.json().catch(() => ({}));
+        const resData = await response.json();
         if (response.status === 200 || response.status === 201) {
           markOutwardAsSynced(record.id, resData.reference_no, resData.id);
           syncedCount += 1;

@@ -38,6 +38,7 @@ import {
 } from '../utils/outwardValidation';
 import { saveOutwardLocally, markOutwardAsSynced } from '../database/db';
 import { buildOutwardFormData } from '../utils/offlineLogFormData';
+import { appendLocalFile, multipartRequest } from '../utils/formDataAppendFile';
 import { saveFormDraft, loadFormDraft, clearFormDraft, stabilizePhotoForDraft } from '../utils/formDraftStorage';
 
 const TouchableOpacity = FastTouchable;
@@ -164,14 +165,15 @@ function appendPhotoToFormData(formData, fieldKey, photoValue, multi) {
   if (multi) {
     (photoValue || []).forEach((item, idx) => {
       if (!item?.uri) return;
-      const name = `${fieldKey}-${idx + 1}.jpg`;
-      formData.append(fieldKey, { uri: item.uri, name, type: 'image/jpeg' });
+      appendLocalFile(formData, fieldKey, item.uri, {
+        name: `${fieldKey}-${idx + 1}.jpg`,
+        type: 'image/jpeg',
+      });
     });
     return;
   }
   if (photoValue?.uri) {
-    formData.append(fieldKey, {
-      uri: photoValue.uri,
+    appendLocalFile(formData, fieldKey, photoValue.uri, {
       name: `${fieldKey}.jpg`,
       type: 'image/jpeg',
     });
@@ -465,28 +467,54 @@ export default function OutwardFormView({
   const capturePhoto = async (fieldKey, multi) => {
     try {
       setPickingPhoto(fieldKey);
-      const locationPromise = beginPhotoLocationCapture();
       const allowed = await ensureCameraPermission();
       if (!allowed) return;
 
+      const locationPromise = beginPhotoLocationCapture();
+
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaTypeOptions?.Images
+          ? ImagePicker.MediaTypeOptions.Images
+          : ImagePicker.MediaType?.Images || 'images',
         allowsEditing: false,
         quality: 1,
+        exif: true,
       });
 
       if (result.canceled || !result.assets?.length) return;
 
       const compressedUri = await compressImageOnly(result.assets[0].uri, 0.5);
       const meta = await buildPhotoCaptureMeta(locationPromise);
-      const stableUri = (await stabilizePhotoForDraft({ uri: compressedUri }, fieldKey, multi ? (photos[fieldKey] || []).length : 0))?.uri || compressedUri;
+
+      let latitude = meta.latitude;
+      let longitude = meta.longitude;
+      let accuracy = meta.accuracy;
+      if (latitude == null || longitude == null) {
+        const exif = result.assets[0].exif || {};
+        const lat = parseFloat(exif.GPSLatitude ?? exif.gpsLatitude);
+        const lng = parseFloat(exif.GPSLongitude ?? exif.gpsLongitude);
+        if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
+          latitude = lat;
+          longitude = lng;
+          accuracy = null;
+        }
+      }
+
+      const stableUri =
+        (
+          await stabilizePhotoForDraft(
+            { uri: compressedUri },
+            fieldKey,
+            multi ? (photos[fieldKey] || []).length : 0
+          )
+        )?.uri || compressedUri;
       const asset = {
         uri: stableUri,
         capturedAt: meta.capturedAt,
         capturedAtStr: meta.capturedAtStr,
-        latitude: meta.latitude,
-        longitude: meta.longitude,
-        accuracy: meta.accuracy,
+        latitude,
+        longitude,
+        accuracy,
       };
 
       setPhotos((prev) => {
@@ -502,6 +530,13 @@ export default function OutwardFormView({
         delete next[fieldKey];
         return next;
       });
+
+      if (latitude == null || longitude == null) {
+        Alert.alert(
+          'Location not saved',
+          'Photo saved, but GPS was unavailable. Turn on Location/GPS and capture again if coordinates are required.'
+        );
+      }
     } catch (_) {
       Alert.alert('Camera Error', 'Could not capture photo.');
     } finally {
@@ -639,7 +674,7 @@ export default function OutwardFormView({
             operator_email: operatorEmail,
           });
 
-          const res = await fetch(`${apiUrl}/api/outward-logs`, {
+          const res = await multipartRequest(`${apiUrl}/api/outward-logs`, {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${token}`,
@@ -648,7 +683,7 @@ export default function OutwardFormView({
             body: formData,
           });
 
-          const data = await res.json().catch(() => ({}));
+          const data = await res.json();
           if (res.ok) {
             referenceNo = data.reference_no || null;
             markOutwardAsSynced(localId, referenceNo, data.id);

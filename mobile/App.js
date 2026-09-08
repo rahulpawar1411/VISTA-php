@@ -227,11 +227,16 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // Clear in-memory session first so UI returns to login immediately
     setUser(null);
     setToken(null);
     try {
-      await AsyncStorage.removeItem('user_token');
-      await AsyncStorage.removeItem('user_profile');
+      await AsyncStorage.multiRemove([
+        'user_token',
+        'user_profile',
+        'active_mobile_nav_tab',
+        'active_mobile_nav_section'
+      ]);
     } catch (err) {
       console.warn('Failed to clear session cache:', err);
     }

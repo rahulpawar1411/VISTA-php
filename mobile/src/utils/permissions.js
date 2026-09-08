@@ -5,13 +5,72 @@ import { Alert, Linking, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
+import { isExpoGoAndroid } from './notificationsEnv';
 
 function openAppSettings() {
   Linking.openSettings().catch(() => {});
 }
 
+function openLocationSettings() {
+  if (Platform.OS === 'android') {
+    Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => {
+      openAppSettings();
+    });
+    return;
+  }
+  openAppSettings();
+}
+
+/**
+ * Device GPS / Location toggle must be ON (permission alone is not enough).
+ */
+export async function ensureLocationServicesEnabled({ required = false } = {}) {
+  try {
+    if (Platform.OS === 'android' && Location.enableNetworkProviderAsync) {
+      try {
+        await Location.enableNetworkProviderAsync();
+      } catch (_) {
+        /* ignore — may still be off */
+      }
+    }
+
+    const enabled = await Location.hasServicesEnabledAsync();
+    if (enabled) return true;
+
+    if (required) {
+      Alert.alert(
+        'Turn on Location',
+        'Phone Location / GPS is OFF. Turn it ON so verification photos can save coordinates. Camera will not open until Location is enabled.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Location Settings', onPress: openLocationSettings },
+        ]
+      );
+    }
+    return false;
+  } catch (err) {
+    console.warn('ensureLocationServicesEnabled failed:', err?.message || err);
+    if (required) {
+      Alert.alert(
+        'Location Error',
+        'Could not check Location services. Turn on GPS and try again.'
+      );
+    }
+    return false;
+  }
+}
+
+/**
+ * Camera + location permission + GPS services required before opening camera.
+ */
 export async function ensureCameraPermission() {
   try {
+    const locationOk = await ensureLocationPermission({ required: true });
+    if (!locationOk) return false;
+
+    const servicesOk = await ensureLocationServicesEnabled({ required: true });
+    if (!servicesOk) return false;
+
     const current = await ImagePicker.getCameraPermissionsAsync();
     if (current.granted) return true;
 
@@ -43,7 +102,7 @@ export async function ensureCameraPermission() {
 }
 
 /**
- * Ask for location when capturing verification photos (optional — photo still saves without GPS).
+ * Ask for location permission (and optionally require GPS on).
  * @param {{ required?: boolean }} [opts]
  * @returns {Promise<boolean>}
  */
@@ -56,7 +115,7 @@ export async function ensureLocationPermission({ required = false } = {}) {
       if (required) {
         Alert.alert(
           'Location permission required',
-          'ReeferON needs location access to record where verification photos were taken. Please enable Location in Settings.',
+          'Allow Location to open the camera. Verification photos need GPS. Enable Location in Settings.',
           [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Open Settings', onPress: openAppSettings },
@@ -71,13 +130,19 @@ export async function ensureLocationPermission({ required = false } = {}) {
 
     if (required) {
       Alert.alert(
-        'Location permission denied',
-        'Without location access, photos will be saved without GPS coordinates.'
+        'Location permission required',
+        'Camera will not open without Location access. Allow Location to capture verification photos.'
       );
     }
     return false;
   } catch (err) {
     console.warn('ensureLocationPermission failed:', err?.message || err);
+    if (required) {
+      Alert.alert(
+        'Location Error',
+        'Could not request location permission. Camera will not open.'
+      );
+    }
     return false;
   }
 }
@@ -87,6 +152,8 @@ export async function ensureLocationPermission({ required = false } = {}) {
  */
 export async function ensureNotificationChannel() {
   if (Platform.OS !== 'android') return;
+  // Expo Go Android: native ChannelsProvider is null — skip (local schedule still works).
+  if (isExpoGoAndroid()) return;
   try {
     await Notifications.setNotificationChannelAsync('task-reminders', {
       name: 'Task reminders',

@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { ensureNotificationPermission } from '../utils/permissions';
+import { isExpoGoAndroid } from '../utils/notificationsEnv';
 import {
   registerExpoPushToken,
   clearExpoPushToken,
@@ -18,7 +19,8 @@ function ensureHandler() {
   handlerSet = true;
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
-      shouldShowAlert: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
       shouldPlaySound: true,
       shouldSetBadge: true
     })
@@ -26,7 +28,7 @@ function ensureHandler() {
 }
 
 async function ensurePermissionChannel() {
-  if (Platform.OS !== 'android') return;
+  if (Platform.OS !== 'android' || isExpoGoAndroid()) return;
   try {
     await Notifications.setNotificationChannelAsync('permission-alerts', {
       name: 'Permission requests',
