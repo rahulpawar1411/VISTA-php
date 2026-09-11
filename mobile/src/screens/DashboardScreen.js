@@ -29,6 +29,7 @@ import {
   Animated,
   BackHandler,
   Dimensions,
+  InteractionManager,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -237,6 +238,87 @@ function normalizeNavTabForSection(tab, section) {
     if (tab === 'InwardReports' || tab === 'OutwardReports') return 'Reports';
   }
   return tab;
+}
+
+const BOTTOM_TAB_COUNT = 5;
+
+function isMoreMenuTab(tab) {
+  return (
+    tab === 'More' ||
+    tab === 'Profile' ||
+    tab === 'Reports' ||
+    tab === 'InwardReports' ||
+    tab === 'OutwardReports'
+  );
+}
+
+function getBottomTabIndex(tab) {
+  if (tab === 'Dashboard') return 0;
+  if (tab === 'Tasks') return 1;
+  if (tab === 'Inwards') return 2;
+  if (tab === 'Outwards') return 3;
+  return 4;
+}
+
+const HIDDEN_NAV_TAB_STYLE = {
+  position: 'absolute',
+  left: 0,
+  right: 0,
+  top: 0,
+  bottom: 0,
+  opacity: 0,
+  zIndex: -1,
+};
+
+function LazyNavTabPanel({ isActive, isMounted, paintReady, dataLoading, loadingLabel, render }) {
+  if (!isActive && !isMounted) return null;
+  const showLoader = isActive && (!paintReady || dataLoading);
+  return (
+    <View
+      style={isActive ? { flex: 1 } : HIDDEN_NAV_TAB_STYLE}
+      pointerEvents={isActive ? 'auto' : 'none'}
+      collapsable={false}
+    >
+      {isMounted && paintReady ? render() : null}
+      {showLoader ? (
+        <View
+          pointerEvents="none"
+          style={
+            paintReady
+              ? {
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 64,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 20,
+                }
+              : {
+                  flex: 1,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingBottom: 64,
+                  backgroundColor: '#f1f5f9',
+                }
+          }
+        >
+          <Text
+            style={{
+              fontSize: 14,
+              color: '#64748b',
+              textAlign: 'center',
+              textAlignVertical: 'center',
+              includeFontPadding: false,
+            }}
+          >
+            {loadingLabel || 'Loading…'}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 /**
@@ -656,6 +738,15 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [currentNavTab, setCurrentNavTab] = useState('Dashboard');
   // Section mode switches bottom tabs: daily (Tasks) vs inwards vs outwards
   const [navSection, setNavSection] = useState('daily'); // 'daily' | 'inwards' | 'outwards'
+  const navHistoryRef = useRef([]);
+  const handleNavTabChangeRef = useRef(async () => {});
+  const mountedNavTabsRef = useRef({ Dashboard: true });
+  const [mountedNavTabs, setMountedNavTabs] = useState({ Dashboard: true });
+  const tabPaintReadyRef = useRef({ Dashboard: true });
+  const [tabPaintReady, setTabPaintReady] = useState({ Dashboard: true });
+  const tabIndicatorX = useRef(new Animated.Value(0)).current;
+  const tabBarWidthRef = useRef(0);
+  const [tabIndicatorWidth, setTabIndicatorWidth] = useState(0);
 
   // Inward Reports
   const [inwardReportRows, setInwardReportRows] = useState([]);
@@ -684,6 +775,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [outwardReportSearch, setOutwardReportSearch] = useState('');
   const [outwardReportDateFrom, setOutwardReportDateFrom] = useState(() => getLocalDateStr());
   const [outwardReportDateTo, setOutwardReportDateTo] = useState(() => getLocalDateStr());
+  const [outwardReportMissingPod, setOutwardReportMissingPod] = useState(false);
   const [outwardReportPage, setOutwardReportPage] = useState(1);
   const [outwardReportTotal, setOutwardReportTotal] = useState(0);
   const [outwardReportHasMore, setOutwardReportHasMore] = useState(false);
@@ -1093,6 +1185,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         setSelectedInwardReport(null);
         return true;
       }
+      if (selectedOutwardReport) {
+        setSelectedOutwardReport(null);
+        return true;
+      }
       if (editingExistingLog) {
         setEditingExistingLog(null);
         return true;
@@ -1112,8 +1208,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         setDailyReportChamberFilter('all');
         return true;
       }
+      if (navHistoryRef.current.length > 0) {
+        const prev = navHistoryRef.current.pop();
+        handleNavTabChangeRef.current(prev.tab, prev.section, { fromBack: true });
+        return true;
+      }
       if (currentNavTab !== 'Dashboard') {
-        setCurrentNavTab('Dashboard');
+        handleNavTabChangeRef.current('Dashboard', 'daily', { fromBack: true });
         return true;
       }
       return false;
@@ -1140,6 +1241,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     showDailyReportCalendar,
     selectedReportLog,
     selectedInwardReport,
+    selectedOutwardReport,
     editingExistingLog,
     taskOpenFilter,
     dailyReportOpenFilter,
@@ -1324,6 +1426,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         }
         if (savedTab) {
           const normalizedTab = normalizeNavTabForSection(savedTab, resolvedSection || 'daily');
+          if (normalizedTab) {
+            mountedNavTabsRef.current[normalizedTab] = true;
+            tabPaintReadyRef.current[normalizedTab] = true;
+            setMountedNavTabs((prev) => ({ ...prev, [normalizedTab]: true }));
+            setTabPaintReady((prev) => ({ ...prev, [normalizedTab]: true }));
+          }
           setCurrentNavTab(normalizedTab);
         }
       } catch (e) {
@@ -1333,8 +1441,35 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     loadNavTab();
   }, []);
 
+  useEffect(() => {
+    if (!mountedNavTabsRef.current[currentNavTab]) {
+      mountedNavTabsRef.current[currentNavTab] = true;
+      setMountedNavTabs((prev) => (
+        prev[currentNavTab] ? prev : { ...prev, [currentNavTab]: true }
+      ));
+    }
+    if (tabPaintReadyRef.current[currentNavTab]) return undefined;
+
+    let cancelled = false;
+    const markReady = () => {
+      if (cancelled || tabPaintReadyRef.current[currentNavTab]) return;
+      tabPaintReadyRef.current[currentNavTab] = true;
+      setTabPaintReady((prev) => (
+        prev[currentNavTab] ? prev : { ...prev, [currentNavTab]: true }
+      ));
+    };
+
+    const handle = InteractionManager.runAfterInteractions(markReady);
+    const timeout = setTimeout(markReady, 80);
+    return () => {
+      cancelled = true;
+      handle.cancel();
+      clearTimeout(timeout);
+    };
+  }, [currentNavTab]);
+
   // Handler to switch tabs and save in AsyncStorage
-  const handleNavTabChange = async (tab, sectionOverride = null) => {
+  const handleNavTabChange = async (tab, sectionOverride = null, options = {}) => {
     let nextSection = sectionOverride;
     if (!nextSection) {
       if (tab === 'Inwards' || tab === 'InwardReports') nextSection = 'inwards';
@@ -1344,6 +1479,22 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
 
     let nextTab = normalizeNavTabForSection(tab, nextSection);
+
+    if (nextTab === currentNavTab && nextSection === navSection) {
+      return;
+    }
+
+    if (!options.fromBack) {
+      navHistoryRef.current = [
+        ...navHistoryRef.current.slice(-19),
+        { tab: currentNavTab, section: navSection },
+      ];
+    }
+
+    if (!mountedNavTabsRef.current[nextTab]) {
+      mountedNavTabsRef.current[nextTab] = true;
+      setMountedNavTabs((prev) => (prev[nextTab] ? prev : { ...prev, [nextTab]: true }));
+    }
 
     setNavSection(nextSection);
     setCurrentNavTab(nextTab);
@@ -1370,6 +1521,28 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       console.warn('Failed to save active navigation tab:', e);
     }
   };
+  handleNavTabChangeRef.current = handleNavTabChange;
+
+  const slideTabIndicator = useCallback((index, barWidth, animated) => {
+    if (!barWidth) return;
+    const tabW = barWidth / BOTTOM_TAB_COUNT;
+    const lineW = Math.max(28, tabW * 0.5);
+    const x = index * tabW + (tabW - lineW) / 2;
+    if (!animated) {
+      tabIndicatorX.setValue(x);
+      return;
+    }
+    Animated.spring(tabIndicatorX, {
+      toValue: x,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 90,
+    }).start();
+  }, [tabIndicatorX]);
+
+  useEffect(() => {
+    slideTabIndicator(getBottomTabIndex(currentNavTab), tabBarWidthRef.current, true);
+  }, [currentNavTab, slideTabIndicator]);
 
   // Sync state update when prop changes — removed (IP config is on Login only)
 
@@ -5321,14 +5494,25 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         <View style={styles.filterTabsRow}>
           {['All', 'Pending', 'Completed', 'Overdue'].map((tab) => {
             const count = getTasksScreenList(tab).length;
+            const isActive = activeTab === tab;
             return (
               <TouchableOpacity
                 key={tab}
-                style={[styles.filterTabButton, activeTab === tab && styles.filterTabButtonActive]}
+                style={[styles.filterTabButton, isActive && styles.filterTabButtonActive]}
                 onPress={() => setActiveTab(tab)}
+                activeOpacity={0.85}
               >
-                <Text style={[styles.filterTabButtonText, activeTab === tab && styles.filterTabButtonTextActive]}>
-                  {tab} ({count})
+                <Text
+                  style={[styles.filterTabButtonText, isActive && styles.filterTabButtonTextActive]}
+                  numberOfLines={1}
+                >
+                  {tab}
+                </Text>
+                <Text
+                  style={[styles.filterTabButtonCount, isActive && styles.filterTabButtonCountActive]}
+                  numberOfLines={1}
+                >
+                  {count}
                 </Text>
               </TouchableOpacity>
             );
@@ -8650,14 +8834,75 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
 
         <View style={styles.moreSectionCard}>
-          <Text style={styles.moreSectionTitle}>Master Setup</Text>
+          <View style={styles.moreSectionTitleRow}>
+            <Text style={[styles.moreSectionTitle, { marginBottom: 0, flex: 1 }]}>Master Setup</Text>
+            <TouchableOpacity
+              style={styles.moreMasterAddBtn}
+              onPress={openMasterManager}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="add" size={22} color="#ffffff" />
+            </TouchableOpacity>
+          </View>
           <Text style={styles.ipSettingsDesc}>Add chambers and manage client names for each chamber separately.</Text>
           <TouchableOpacity 
-            style={[styles.ipUpdateActionBtn, { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0', borderWidth: 1 }]}
+            style={[styles.ipUpdateActionBtn, styles.moreMasterOpenBtn]}
             onPress={openMasterManager}
           >
-            <Ionicons name="cube-outline" size={16} color="#15803d" style={{ marginRight: 6 }} />
-            <Text style={[styles.ipUpdateActionBtnText, { color: '#15803d' }]}>Open Master Setup</Text>
+            <Ionicons name="cube-outline" size={16} color="#ffffff" style={{ marginRight: 6 }} />
+            <Text style={[styles.ipUpdateActionBtnText, { color: '#ffffff' }]}>Open Master Setup</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.moreSectionCard}>
+          <Text style={styles.moreSectionTitle}>Reports</Text>
+          <Text style={styles.ipSettingsDesc}>Open any report from here without switching sections first.</Text>
+
+          <TouchableOpacity
+            style={styles.moreReportRow}
+            onPress={() => handleNavTabChange('Reports', 'daily')}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.moreReportIcon, { backgroundColor: '#eff6ff' }]}>
+              <Ionicons name="clipboard-outline" size={18} color="#003580" />
+            </View>
+            <View style={styles.moreReportMeta}>
+              <Text style={styles.moreReportTitle}>Task Reports</Text>
+              <Text style={styles.moreReportSub}>Daily chamber temperature reports</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.moreReportRow}
+            onPress={() => handleNavTabChange('InwardReports', 'inwards')}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.moreReportIcon, { backgroundColor: '#f0fdfa' }]}>
+              <Ionicons name="download-outline" size={18} color="#0D9488" />
+            </View>
+            <View style={styles.moreReportMeta}>
+              <Text style={styles.moreReportTitle}>Inward Reports</Text>
+              <Text style={styles.moreReportSub}>Receiving & unloading history</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.moreReportRow, { marginBottom: 0 }]}
+            onPress={() => handleNavTabChange('OutwardReports', 'outwards')}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.moreReportIcon, { backgroundColor: '#fff7ed' }]}>
+              <View style={{ transform: [{ rotate: '180deg' }] }}>
+                <Ionicons name="download-outline" size={18} color="#d97706" />
+              </View>
+            </View>
+            <View style={styles.moreReportMeta}>
+              <Text style={styles.moreReportTitle}>Outward Reports</Text>
+              <Text style={styles.moreReportSub}>Loading & dispatch history</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
           </TouchableOpacity>
         </View>
 
@@ -11542,39 +11787,21 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 Add or replace POD later — no need to re-fill the full inward form.
               </Text>
               {podPaths.length > 0 ? (
-                <View style={styles.inwardDetailPhotoGrid}>
-                  {podPaths.map((path, idx) => {
-                    const uri =
-                      resolveDoImageUrl(path, apiUrl, 'inward_images') ||
-                      resolveDoImageUrl(path, PRODUCTION_API_URL, 'inward_images');
-                    const label = `POD${podPaths.length > 1 ? ` ${idx + 1}` : ''}`;
-                    return (
-                      <View key={`pod-${idx}`} style={styles.inwardDetailPhotoCell}>
-                        <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
-                          {label}
-                        </Text>
-                        <TouchableOpacity
-                          style={styles.inwardDetailPhotoFrame}
-                          activeOpacity={uri ? 0.85 : 1}
-                          disabled={!uri}
-                          onPress={() => uri && setImagePreview({ uri, label })}
-                        >
-                          {uri ? (
-                            <Image
-                              source={{ uri }}
-                              style={styles.inwardDetailPhotoImage}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <View style={styles.inwardDetailPhotoPlaceholder}>
-                              <Ionicons name="image-outline" size={22} color="#94a3b8" />
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                      </View>
-                    );
-                  })}
-                </View>
+                <PhotoGridWithLocation
+                  photoItems={podPaths.map((path, idx) => ({
+                    key: `inward-pod-${idx}`,
+                    label: podPaths.length > 1 ? `POD ${idx + 1}` : 'POD',
+                    path,
+                    fieldKey: 'inward_pod_photo',
+                    photoIndex: idx,
+                  }))}
+                  folderHint="inward_images"
+                  photoMeta={item.photo_capture_metadata}
+                  resolveUri={(path, folderHint) =>
+                    resolveDoImageUrl(path, apiUrl, folderHint) ||
+                    resolveDoImageUrl(path, PRODUCTION_API_URL, folderHint)
+                  }
+                />
               ) : (
                 <Text style={styles.podUpdateEmpty}>No POD photo yet</Text>
               )}
@@ -11603,6 +11830,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 <PhotoGridWithLocation
                   photoItems={photoItems}
                   folderHint="inward_images"
+                  photoMeta={item.photo_capture_metadata}
                   resolveUri={(path, folderHint) =>
                     resolveDoImageUrl(path, apiUrl, folderHint) ||
                     resolveDoImageUrl(path, PRODUCTION_API_URL, folderHint)
@@ -11618,16 +11846,16 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
   const renderInwardReportsView = () => (
     <View style={{ flex: 1, backgroundColor: '#f1f5f9' }}>
-      <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 }}>
-        <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Inward Reports</Text>
-        <Text style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+      <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 }}>
+        <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Inward Reports</Text>
+        <Text style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
           Saved inward entries · tap a card for full details
         </Text>
       </View>
 
       <View style={styles.dockReportFilterBar}>
         <View style={styles.dockReportSearchRow}>
-          <Ionicons name="search-outline" size={18} color="#64748b" />
+          <Ionicons name="search-outline" size={14} color="#64748b" />
           <TextInput
             style={styles.dockReportSearchInput}
             placeholder="Search vehicle, client, ref…"
@@ -11698,11 +11926,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           >
             <Ionicons
               name="image-outline"
-              size={14}
+              size={12}
               color="#fff"
-              style={{ marginRight: 6 }}
+              style={{ marginRight: 4 }}
             />
-            <Text style={styles.dockReportFilterBtnPrimaryText}>
+            <Text style={styles.dockReportFilterBtnPrimaryText} numberOfLines={1}>
               {inwardReportMissingPod ? 'Show All Inwards' : 'POD Img Missing'}
             </Text>
           </TouchableOpacity>
@@ -11890,8 +12118,18 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }
       const page = overrides.page ?? outwardReportPage;
       const search = overrides.search ?? outwardReportSearch;
-      const fromDate = overrides.fromDate ?? outwardReportDateFrom;
-      const toDate = overrides.toDate ?? outwardReportDateTo;
+      const fromDate =
+        Object.prototype.hasOwnProperty.call(overrides, 'fromDate')
+          ? overrides.fromDate
+          : outwardReportDateFrom;
+      const toDate =
+        Object.prototype.hasOwnProperty.call(overrides, 'toDate')
+          ? overrides.toDate
+          : outwardReportDateTo;
+      const missingPod =
+        Object.prototype.hasOwnProperty.call(overrides, 'missingPod')
+          ? Boolean(overrides.missingPod)
+          : outwardReportMissingPod;
 
       setOutwardReportsLoading(true);
       setOutwardReportsError('');
@@ -11904,6 +12142,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         if (trimmedSearch) qs.set('search', trimmedSearch);
         if (fromDate?.trim()) qs.set('fromDate', fromDate.trim());
         if (toDate?.trim()) qs.set('toDate', toDate.trim());
+        if (missingPod) qs.set('missingPod', '1');
 
         const res = await fetch(`${apiUrl}/api/outward-logs?${qs.toString()}`, {
           headers: {
@@ -11933,6 +12172,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           });
         }
 
+        if (missingPod) {
+          rows = rows.filter((r) => {
+            const pod = String(r.outward_pod_photo || '').trim();
+            return !pod || pod === 'null' || pod === 'undefined';
+          });
+        }
+
         setOutwardReportRows(rows);
         setOutwardReportPage(page);
         setOutwardReportTotal(Number(data.total) || rows.length);
@@ -11952,6 +12198,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       outwardReportSearch,
       outwardReportDateFrom,
       outwardReportDateTo,
+      outwardReportMissingPod,
     ]
   );
 
@@ -11964,8 +12211,40 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     setOutwardReportSearch('');
     setOutwardReportDateFrom(today);
     setOutwardReportDateTo(today);
-    loadOutwardReports({ page: 1, search: '', fromDate: today, toDate: today });
+    setOutwardReportMissingPod(false);
+    loadOutwardReports({
+      page: 1,
+      search: '',
+      fromDate: today,
+      toDate: today,
+      missingPod: false,
+    });
   }, [loadOutwardReports]);
+
+  const toggleOutwardMissingPodFilter = useCallback(() => {
+    const next = !outwardReportMissingPod;
+    setOutwardReportMissingPod(next);
+    if (next) {
+      setOutwardReportDateFrom('');
+      setOutwardReportDateTo('');
+      loadOutwardReports({
+        page: 1,
+        missingPod: true,
+        fromDate: '',
+        toDate: '',
+      });
+    } else {
+      const today = getLocalDateStr();
+      setOutwardReportDateFrom(today);
+      setOutwardReportDateTo(today);
+      loadOutwardReports({
+        page: 1,
+        missingPod: false,
+        fromDate: today,
+        toDate: today,
+      });
+    }
+  }, [outwardReportMissingPod, loadOutwardReports]);
 
   const goOutwardReportPrevPage = useCallback(() => {
     if (outwardReportPage <= 1) return;
@@ -12227,39 +12506,21 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 Add or replace POD later — no need to re-fill the full outward form.
               </Text>
               {podPaths.length > 0 ? (
-                <View style={styles.inwardDetailPhotoGrid}>
-                  {podPaths.map((path, idx) => {
-                    const uri =
-                      resolveDoImageUrl(path, apiUrl, 'outward_images') ||
-                      resolveDoImageUrl(path, PRODUCTION_API_URL, 'outward_images');
-                    const label = `POD${podPaths.length > 1 ? ` ${idx + 1}` : ''}`;
-                    return (
-                      <View key={`pod-${idx}`} style={styles.inwardDetailPhotoCell}>
-                        <Text style={styles.inwardDetailPhotoLabel} numberOfLines={2}>
-                          {label}
-                        </Text>
-                        <TouchableOpacity
-                          style={styles.inwardDetailPhotoFrame}
-                          activeOpacity={uri ? 0.85 : 1}
-                          disabled={!uri}
-                          onPress={() => uri && setImagePreview({ uri, label })}
-                        >
-                          {uri ? (
-                            <Image
-                              source={{ uri }}
-                              style={styles.inwardDetailPhotoImage}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <View style={styles.inwardDetailPhotoPlaceholder}>
-                              <Ionicons name="image-outline" size={22} color="#94a3b8" />
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                      </View>
-                    );
-                  })}
-                </View>
+                <PhotoGridWithLocation
+                  photoItems={podPaths.map((path, idx) => ({
+                    key: `outward-pod-${idx}`,
+                    label: podPaths.length > 1 ? `POD ${idx + 1}` : 'POD',
+                    path,
+                    fieldKey: 'outward_pod_photo',
+                    photoIndex: idx,
+                  }))}
+                  folderHint="outward_images"
+                  photoMeta={item.photo_capture_metadata}
+                  resolveUri={(path, folderHint) =>
+                    resolveDoImageUrl(path, apiUrl, folderHint) ||
+                    resolveDoImageUrl(path, PRODUCTION_API_URL, folderHint)
+                  }
+                />
               ) : (
                 <Text style={styles.podUpdateEmpty}>No POD photo yet</Text>
               )}
@@ -12288,6 +12549,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 <PhotoGridWithLocation
                   photoItems={photoItems}
                   folderHint="outward_images"
+                  photoMeta={item.photo_capture_metadata}
                   resolveUri={(path, folderHint) =>
                     resolveDoImageUrl(path, apiUrl, folderHint) ||
                     resolveDoImageUrl(path, PRODUCTION_API_URL, folderHint)
@@ -12303,16 +12565,16 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
   const renderOutwardReportsView = () => (
     <View style={{ flex: 1, backgroundColor: '#f1f5f9' }}>
-      <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 }}>
-        <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Outward Reports</Text>
-        <Text style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+      <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 }}>
+        <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Outward Reports</Text>
+        <Text style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
           Saved outward entries · tap a card for full details
         </Text>
       </View>
 
       <View style={styles.dockReportFilterBar}>
         <View style={styles.dockReportSearchRow}>
-          <Ionicons name="search-outline" size={18} color="#64748b" />
+          <Ionicons name="search-outline" size={14} color="#64748b" />
           <TextInput
             style={styles.dockReportSearchInput}
             placeholder="Search vehicle, client, ref…"
@@ -12352,13 +12614,50 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 : 'All'}
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.doFilterChip,
+              outwardReportMissingPod && styles.doFilterChipActiveWarn,
+            ]}
+            onPress={toggleOutwardMissingPodFilter}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.doFilterChipLabel}>POD</Text>
+            <Text
+              style={[
+                styles.doFilterChipValue,
+                outwardReportMissingPod && { color: '#b91c1c' },
+              ]}
+              numberOfLines={1}
+            >
+              {outwardReportMissingPod ? 'Missing' : 'All'}
+            </Text>
+          </TouchableOpacity>
         </View>
         <View style={styles.dockReportFilterActions}>
           <TouchableOpacity
-            style={styles.dockReportFilterBtnPrimary}
+            style={[
+              styles.dockReportFilterBtnPrimary,
+              outwardReportMissingPod && { backgroundColor: '#b91c1c' },
+              { flexDirection: 'row', alignItems: 'center' },
+            ]}
+            onPress={toggleOutwardMissingPodFilter}
+          >
+            <Ionicons
+              name="image-outline"
+              size={12}
+              color="#fff"
+              style={{ marginRight: 4 }}
+            />
+            <Text style={styles.dockReportFilterBtnPrimaryText} numberOfLines={1}>
+              {outwardReportMissingPod ? 'Show All Outwards' : 'POD Img Missing'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.dockReportFilterBtnOutline}
             onPress={applyOutwardReportFilters}
           >
-            <Text style={styles.dockReportFilterBtnPrimaryText}>Apply</Text>
+            <Text style={styles.dockReportFilterBtnOutlineText}>Apply</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.dockReportFilterBtnOutline} onPress={clearOutwardReportFilters}>
             <Text style={styles.dockReportFilterBtnOutlineText}>Clear</Text>
@@ -12435,9 +12734,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <View style={{ alignItems: 'center', paddingTop: 48, paddingHorizontal: 24 }}>
               <Ionicons name="document-text-outline" size={40} color="#94a3b8" />
               <Text style={{ marginTop: 10, color: '#64748b', fontSize: 13, textAlign: 'center' }}>
-                {outwardReportSearch || outwardReportDateFrom || outwardReportDateTo
-                  ? 'No outward records match your filters.'
-                  : 'No saved outward records yet. Submit an Outward Task to see it here.'}
+                {outwardReportMissingPod
+                  ? 'No outward records are missing a POD photo.'
+                  : outwardReportSearch || outwardReportDateFrom || outwardReportDateTo
+                    ? 'No outward records match your filters.'
+                    : 'No saved outward records yet. Submit an Outward Task to see it here.'}
               </Text>
             </View>
           }
@@ -12447,6 +12748,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             const excessQty = parseInt(item.outward_excess_received_boxes_qty, 10) || 0;
             const loaded = item.outward_received_boxes_qty ?? item.outward_received_qty;
             const preVehicleTemp = item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp;
+            const podVal = String(item.outward_pod_photo || '').trim();
+            const podMissing = !podVal || podVal === 'null' || podVal === 'undefined';
             return (
               <TouchableOpacity
                 style={styles.inwardReportCard}
@@ -12455,13 +12758,20 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               >
                 <View style={styles.inwardReportCardTop}>
                   <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={styles.inwardReportRef} numberOfLines={1}>
-                      {item.reference_no || `OUT-${item.outward_id}`}
-                      <Text style={styles.inwardReportDateInline}>
-                        {'  '}
-                        {item.outward_entry_date || ''}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Text style={styles.inwardReportRef} numberOfLines={1}>
+                        {item.reference_no || `OUT-${item.outward_id}`}
+                        <Text style={styles.inwardReportDateInline}>
+                          {'  '}
+                          {item.outward_entry_date || ''}
+                        </Text>
                       </Text>
-                    </Text>
+                      {podMissing ? (
+                        <View style={styles.inwardPodMissingBadge}>
+                          <Text style={styles.inwardPodMissingBadgeText}>POD Missing</Text>
+                        </View>
+                      ) : null}
+                    </View>
                     <Text style={styles.inwardReportClient} numberOfLines={1}>
                       {item.outward_client_name || '—'}
                       {item.outward_vehicle_no ? ` · ${item.outward_vehicle_no}` : ''}
@@ -12674,7 +12984,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <TouchableOpacity 
                 style={[
                   styles.drawerMenuItem, 
-                  isInwardsActive && styles.drawerMenuItemActive
+                  isInwardsActive && styles.drawerMenuItemActiveInward
                 ]}
                 onPress={() => {
                   handleNavTabChange('Inwards', 'inwards');
@@ -12684,12 +12994,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 <Ionicons 
                   name={isInwardsActive ? 'download' : 'download-outline'} 
                   size={20} 
-                  color={isInwardsActive ? '#003580' : '#475569'} 
+                  color={isInwardsActive ? '#0D9488' : '#475569'} 
                   style={{ marginRight: 12 }}
                 />
                 <Text style={[
                   styles.drawerMenuText,
-                  isInwardsActive && styles.drawerMenuTextActive
+                  isInwardsActive && styles.drawerMenuTextActiveInward
                 ]}>
                   Inwards
                 </Text>
@@ -12925,115 +13235,125 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     );
   };
 
-  // 3. BOTTOM NAVIGATION TAB BAR WITH FAB CENTER '+'
+  // 3. BOTTOM NAVIGATION TAB BAR
   const renderBottomTabBar = () => {
-    const isInwardsSection = navSection === 'inwards';
-    const isOutwardsSection = navSection === 'outwards';
-    const secondTab = isInwardsSection
-      ? { id: 'Inwards', label: 'Inward', iconOn: 'create', iconOff: 'create-outline' }
-      : isOutwardsSection
-        ? { id: 'Outwards', label: 'Outward', iconOn: 'create', iconOff: 'create-outline' }
-        : { id: 'Tasks', label: 'Tasks', iconOn: 'clipboard', iconOff: 'clipboard-outline' };
-    const reportsTabId = isInwardsSection
-      ? 'InwardReports'
-      : isOutwardsSection
-        ? 'OutwardReports'
-        : 'Reports';
-    const reportsTabLabel = 'Reports';
+    const inwardTabActive = currentNavTab === 'Inwards';
+    const outwardTabActive = currentNavTab === 'Outwards';
+    const tasksActive = currentNavTab === 'Tasks';
+    const dashboardActive = currentNavTab === 'Dashboard';
+    const moreActive = isMoreMenuTab(currentNavTab);
+    const activeColor = '#003580';
+    const idleColor = '#64748b';
+
+    const onTabBarLayout = (e) => {
+      const w = e.nativeEvent.layout.width;
+      if (!w || Math.abs(w - tabBarWidthRef.current) < 1) return;
+      tabBarWidthRef.current = w;
+      const tabW = w / BOTTOM_TAB_COUNT;
+      setTabIndicatorWidth(Math.max(28, tabW * 0.5));
+      slideTabIndicator(getBottomTabIndex(currentNavTab), w, false);
+    };
 
     return (
-      <View style={styles.tabBarContainer}>
-        <View style={styles.tabBarLeft}>
-          <TouchableOpacity
-            style={styles.tabBarItem}
-            onPress={() => handleNavTabChange('Dashboard')}
+      <View style={styles.tabBarContainer} onLayout={onTabBarLayout}>
+        {tabIndicatorWidth > 0 ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.tabBarActiveLine,
+              {
+                width: tabIndicatorWidth,
+                transform: [{ translateX: tabIndicatorX }],
+              },
+            ]}
+          />
+        ) : null}
+        <TouchableOpacity
+          style={styles.tabBarItem}
+          onPress={() => handleNavTabChange('Dashboard')}
+        >
+          <Ionicons
+            name={dashboardActive ? 'home' : 'home-outline'}
+            size={20}
+            color={dashboardActive ? activeColor : idleColor}
+          />
+          <Text
+            style={[styles.tabBarLabel, dashboardActive && styles.tabBarLabelActive]}
+            numberOfLines={1}
           >
+            Dashboard
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.tabBarItem}
+          onPress={() => handleNavTabChange('Tasks', 'daily')}
+        >
+          <Ionicons
+            name={tasksActive ? 'clipboard' : 'clipboard-outline'}
+            size={20}
+            color={tasksActive ? activeColor : idleColor}
+          />
+          <Text
+            style={[styles.tabBarLabel, tasksActive && styles.tabBarLabelActive]}
+            numberOfLines={1}
+          >
+            Tasks
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.tabBarItem}
+          onPress={() => handleNavTabChange('Inwards', 'inwards')}
+        >
+          <Ionicons
+            name={inwardTabActive ? 'download' : 'download-outline'}
+            size={20}
+            color={inwardTabActive ? activeColor : idleColor}
+          />
+          <Text
+            style={[styles.tabBarLabel, inwardTabActive && styles.tabBarLabelActive]}
+            numberOfLines={1}
+          >
+            Inward
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.tabBarItem}
+          onPress={() => handleNavTabChange('Outwards', 'outwards')}
+        >
+          <View style={{ transform: [{ rotate: '180deg' }] }}>
             <Ionicons
-              name={currentNavTab === 'Dashboard' ? 'home' : 'home-outline'}
-              size={22}
-              color={currentNavTab === 'Dashboard' ? '#003580' : '#64748b'}
+              name={outwardTabActive ? 'download' : 'download-outline'}
+              size={20}
+              color={outwardTabActive ? activeColor : idleColor}
             />
-            <Text
-              style={[styles.tabBarLabel, currentNavTab === 'Dashboard' && styles.tabBarLabelActive]}
-              numberOfLines={1}
-            >
-              Dashboard
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.tabBarItem}
-            onPress={() => handleNavTabChange(secondTab.id, navSection)}
+          </View>
+          <Text
+            style={[styles.tabBarLabel, outwardTabActive && styles.tabBarLabelActive]}
+            numberOfLines={1}
           >
-            <Ionicons
-              name={currentNavTab === secondTab.id ? secondTab.iconOn : secondTab.iconOff}
-              size={22}
-              color={currentNavTab === secondTab.id ? '#003580' : '#64748b'}
-            />
-            <Text
-              style={[
-                styles.tabBarLabel,
-                currentNavTab === secondTab.id && styles.tabBarLabelActive,
-              ]}
-              numberOfLines={1}
-            >
-              {secondTab.label}
-            </Text>
-          </TouchableOpacity>
-        </View>
+            Outward
+          </Text>
+        </TouchableOpacity>
 
-        <View style={styles.fabContainer}>
-          <TouchableOpacity
-            style={styles.fabBtn}
-            activeOpacity={0.8}
-            onPress={openMasterManager}
+        <TouchableOpacity
+          style={styles.tabBarItem}
+          onPress={() => handleNavTabChange('More')}
+        >
+          <Ionicons
+            name={moreActive ? 'ellipsis-horizontal' : 'ellipsis-horizontal-outline'}
+            size={20}
+            color={moreActive ? activeColor : idleColor}
+          />
+          <Text
+            style={[styles.tabBarLabel, moreActive && styles.tabBarLabelActive]}
+            numberOfLines={1}
           >
-            <Ionicons name="add" size={32} color="#ffffff" />
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.tabBarRight}>
-          {reportsTabId ? (
-            <TouchableOpacity
-              style={styles.tabBarItem}
-              onPress={() => handleNavTabChange(reportsTabId, navSection)}
-            >
-              <Ionicons
-                name={currentNavTab === reportsTabId ? 'stats-chart' : 'stats-chart-outline'}
-                size={22}
-                color={currentNavTab === reportsTabId ? '#003580' : '#64748b'}
-              />
-              <Text
-                style={[
-                  styles.tabBarLabel,
-                  currentNavTab === reportsTabId && styles.tabBarLabelActive,
-                ]}
-                numberOfLines={1}
-              >
-                {reportsTabLabel}
-              </Text>
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.tabBarItem} />
-          )}
-
-          <TouchableOpacity
-            style={styles.tabBarItem}
-            onPress={() => handleNavTabChange('More')}
-          >
-            <Ionicons
-              name={currentNavTab === 'More' ? 'ellipsis-horizontal' : 'ellipsis-horizontal-outline'}
-              size={22}
-              color={currentNavTab === 'More' ? '#003580' : '#64748b'}
-            />
-            <Text
-              style={[styles.tabBarLabel, currentNavTab === 'More' && styles.tabBarLabelActive]}
-              numberOfLines={1}
-            >
-              More
-            </Text>
-          </TouchableOpacity>
-        </View>
+            More
+          </Text>
+        </TouchableOpacity>
       </View>
     );
   };
@@ -13118,51 +13438,67 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
       </View>
 
-      {/* Conditional View Rendering */}
-      {currentNavTab === 'Dashboard' && renderDashboardView()}
-      {/* Keep inward/outward forms always mounted so tab switch / refresh does not wipe in-progress data */}
-      <View
-        style={
-          currentNavTab === 'Inwards'
-            ? { flex: 1 }
-            : {
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                top: 0,
-                bottom: 0,
-                opacity: 0,
-                zIndex: -1,
-              }
-        }
-        pointerEvents={currentNavTab === 'Inwards' ? 'auto' : 'none'}
-      >
-        {renderInwardsView()}
-      </View>
-      <View
-        style={
-          currentNavTab === 'Outwards'
-            ? { flex: 1 }
-            : {
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                top: 0,
-                bottom: 0,
-                opacity: 0,
-                zIndex: -1,
-              }
-        }
-        pointerEvents={currentNavTab === 'Outwards' ? 'auto' : 'none'}
-      >
-        {renderOutwardsView()}
-      </View>
-      {currentNavTab === 'InwardReports' && renderInwardReportsView()}
-      {currentNavTab === 'OutwardReports' && renderOutwardReportsView()}
-      {currentNavTab === 'Profile' && renderProfileView()}
-      {currentNavTab === 'Tasks' && renderTasksView()}
-      {currentNavTab === 'Reports' && renderDailyReportsView()}
-      {currentNavTab === 'More' && renderMoreView()}
+      {/* Conditional View Rendering — switch with menu; lazy-load heavy content/data */}
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'Dashboard'}
+        isMounted={!!mountedNavTabs.Dashboard}
+        paintReady={!!tabPaintReady.Dashboard}
+        render={renderDashboardView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'Inwards'}
+        isMounted={!!mountedNavTabs.Inwards}
+        paintReady={!!tabPaintReady.Inwards}
+        render={renderInwardsView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'Outwards'}
+        isMounted={!!mountedNavTabs.Outwards}
+        paintReady={!!tabPaintReady.Outwards}
+        render={renderOutwardsView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'InwardReports'}
+        isMounted={!!mountedNavTabs.InwardReports}
+        paintReady={!!tabPaintReady.InwardReports}
+        dataLoading={isBlockingListLoad(inwardReportsLoading, inwardReportsRefreshing, inwardReportRows.length)}
+        loadingLabel="Loading reports…"
+        render={renderInwardReportsView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'OutwardReports'}
+        isMounted={!!mountedNavTabs.OutwardReports}
+        paintReady={!!tabPaintReady.OutwardReports}
+        dataLoading={isBlockingListLoad(outwardReportsLoading, outwardReportsRefreshing, outwardReportRows.length)}
+        loadingLabel="Loading reports…"
+        render={renderOutwardReportsView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'Profile'}
+        isMounted={!!mountedNavTabs.Profile}
+        paintReady={!!tabPaintReady.Profile}
+        render={renderProfileView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'Tasks'}
+        isMounted={!!mountedNavTabs.Tasks}
+        paintReady={!!tabPaintReady.Tasks}
+        render={renderTasksView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'Reports'}
+        isMounted={!!mountedNavTabs.Reports}
+        paintReady={!!tabPaintReady.Reports}
+        dataLoading={isBlockingListLoad(reportsLoading, reportsRefreshing, inventoryReportRows.length)}
+        loadingLabel="Loading reports…"
+        render={renderDailyReportsView}
+      />
+      <LazyNavTabPanel
+        isActive={currentNavTab === 'More'}
+        isMounted={!!mountedNavTabs.More}
+        paintReady={!!tabPaintReady.More}
+        render={renderMoreView}
+      />
 
       {/* Global Modals */}
       {renderTaskProfileModal()}
@@ -14727,27 +15063,23 @@ const styles = StyleSheet.create({
     borderTopColor: '#e2e8f0',
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
+    justifyContent: 'space-around',
+    paddingHorizontal: 0,
     elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.08,
     shadowRadius: 5,
   },
-  tabBarLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-evenly',
-    alignItems: 'center',
-    paddingRight: 36,
-  },
-  tabBarRight: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-evenly',
-    alignItems: 'center',
-    paddingLeft: 36,
+  tabBarActiveLine: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    height: 3,
+    backgroundColor: '#003580',
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+    zIndex: 2,
   },
   tabBarItem: {
     flex: 1,
@@ -14767,13 +15099,21 @@ const styles = StyleSheet.create({
     color: '#003580', 
     fontWeight: 'bold',
   },
+  tabBarLabelActiveInward: {
+    color: '#0D9488',
+    fontWeight: 'bold',
+  },
+  tabBarLabelActiveOutward: {
+    color: '#d97706',
+    fontWeight: 'bold',
+  },
   tabBarLabelCompact: {
     fontSize: 9,
   },
   dockReportFilterBar: {
     paddingHorizontal: 12,
-    paddingBottom: 10,
-    gap: 8,
+    paddingBottom: 6,
+    gap: 5,
   },
   dockReportSearchRow: {
     flexDirection: 'row',
@@ -14781,14 +15121,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 10 : 6,
-    gap: 8,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: Platform.OS === 'ios' ? 5 : 2,
+    minHeight: 32,
+    gap: 6,
   },
   dockReportSearchInput: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 12,
     color: '#0f172a',
     paddingVertical: 0,
   },
@@ -14832,37 +15173,44 @@ const styles = StyleSheet.create({
   },
   dockReportFilterActions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    gap: 5,
   },
   dockReportFilterBtnPrimary: {
     flexGrow: 1,
-    flexBasis: '48%',
-    minWidth: 140,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
     backgroundColor: '#003580',
-    borderRadius: 10,
-    paddingVertical: 10,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
   dockReportFilterBtnPrimaryText: {
     color: '#fff',
     fontWeight: '700',
-    fontSize: 13,
+    fontSize: 11,
   },
   dockReportFilterBtnOutline: {
-    flex: 1,
+    flexGrow: 0.55,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#003580',
-    borderRadius: 10,
-    paddingVertical: 10,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
     alignItems: 'center',
   },
   dockReportFilterBtnOutlineText: {
     color: '#003580',
     fontWeight: '700',
-    fontSize: 13,
+    fontSize: 11,
   },
   dockReportPagination: {
     flexDirection: 'row',
@@ -15070,29 +15418,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  fabContainer: {
-    position: 'absolute',
-    bottom: 12,
-    left: '50%',
-    marginLeft: -28, 
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    zIndex: 10,
-  },
-  fabBtn: {
-    backgroundColor: '#003580', 
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 6,
-    shadowColor: '#003580',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-  },
 
   // View Containers
   tabContainer: {
@@ -15116,32 +15441,48 @@ const styles = StyleSheet.create({
   // Tasks sub-filter buttons
   filterTabsRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#ffffff',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
-    justifyContent: 'space-around',
+    gap: 6,
   },
   filterTabButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 18,
+    flex: 1,
+    minHeight: 32,
+    paddingVertical: 5,
+    paddingHorizontal: 4,
+    borderRadius: 8,
     backgroundColor: '#f1f5f9',
-    borderWidth: 0.5,
+    borderWidth: 1,
     borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   filterTabButtonActive: {
     backgroundColor: '#003580',
     borderColor: '#003580',
   },
   filterTabButtonText: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#475569',
-    fontWeight: 'bold',
+    fontWeight: '700',
+    textAlign: 'center',
   },
   filterTabButtonTextActive: {
     color: '#ffffff',
+  },
+  filterTabButtonCount: {
+    fontSize: 9,
+    color: '#64748b',
+    fontWeight: '600',
+    marginTop: 0,
+    textAlign: 'center',
+  },
+  filterTabButtonCountActive: {
+    color: '#dbeafe',
   },
 
   // Reports View Styles — match Sub-Admin layout
@@ -15799,23 +16140,25 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 6,
-    paddingVertical: 5
+    borderRadius: 7,
+    paddingHorizontal: 5,
+    paddingVertical: 3
   },
   doFilterChipActive: { borderColor: '#93c5fd', backgroundColor: '#eff6ff' },
   doFilterChipActiveWarn: { borderColor: '#fca5a5', backgroundColor: '#fef2f2' },
   doFilterChipLabel: {
-    fontSize: 8,
+    fontSize: 7,
     color: '#94a3b8',
     fontWeight: '700',
-    letterSpacing: 0.2
+    letterSpacing: 0.2,
+    lineHeight: 9
   },
   doFilterChipValue: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#0f172a',
     fontWeight: '700',
-    marginTop: 1
+    marginTop: 0,
+    lineHeight: 13
   },
   doSuggestRow: { gap: 6, paddingBottom: 2 },
   doSuggestChip: {
@@ -16044,6 +16387,54 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#003580',
     marginBottom: 10,
+  },
+  moreSectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  moreMasterAddBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#003580',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  moreMasterOpenBtn: {
+    backgroundColor: '#003580',
+    borderColor: '#003580',
+  },
+  moreReportRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    marginBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  moreReportIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  moreReportMeta: {
+    flex: 1,
+    minWidth: 0,
+  },
+  moreReportTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  moreReportSub: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 1,
+    fontWeight: '600',
   },
   syncStatusRow: {
     flexDirection: 'row',
@@ -16368,6 +16759,9 @@ const styles = StyleSheet.create({
   drawerMenuItemActive: {
     backgroundColor: '#eff6ff',
   },
+  drawerMenuItemActiveInward: {
+    backgroundColor: '#f0fdfa',
+  },
   drawerMenuItemActiveOutward: {
     backgroundColor: '#fff7ed',
   },
@@ -16378,6 +16772,10 @@ const styles = StyleSheet.create({
   },
   drawerMenuTextActive: {
     color: '#003580',
+    fontWeight: 'bold',
+  },
+  drawerMenuTextActiveInward: {
+    color: '#0D9488',
     fontWeight: 'bold',
   },
   drawerMenuTextActiveOutward: {

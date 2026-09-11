@@ -236,7 +236,7 @@ export default function TimePickerField({
 
 const styles = StyleSheet.create({
   wrap: {
-    marginBottom: 12,
+    marginBottom: 8,
   },
   label: {
     fontSize: 13,

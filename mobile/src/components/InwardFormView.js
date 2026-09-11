@@ -17,6 +17,7 @@ import * as ImagePicker from 'expo-image-picker';
 import FastTouchable from './FastTouchable';
 import DatePickerField from './DatePickerField';
 import TimePickerField from './TimePickerField';
+import { PhotoCaptureCaption } from './LogDetailPhotoLocation';
 import { ensureCameraPermission } from '../utils/permissions';
 import { compressImageOnly } from '../utils/compressImage';
 import { buildPhotoCaptureMeta, beginPhotoLocationCapture } from '../utils/photoCaptureMeta';
@@ -50,7 +51,14 @@ const MATERIAL_DROPDOWN_OPTIONS = [
   { value: 'chiller', label: 'chiller' },
   { value: '__other__', label: 'Other (custom)' },
 ];
-const COUNTRY_CODES = ['+91', '+971', '+966', '+65', '+61', '+1', '+44'];
+const DEFAULT_COUNTRY_CODE = '+91';
+const COUNTRY_CODES = [DEFAULT_COUNTRY_CODE, '+971', '+966', '+65', '+61', '+1', '+44'];
+
+function resolveCountryCode(code) {
+  const raw = String(code || '').trim();
+  const normalized = raw.startsWith('+') ? raw : raw ? `+${raw}` : DEFAULT_COUNTRY_CODE;
+  return COUNTRY_CODES.includes(normalized) ? normalized : DEFAULT_COUNTRY_CODE;
+}
 
 const PHOTO_FIELDS = [
   { key: 'inward_invoice_photos', label: 'Invoice Photo', required: true, multi: true },
@@ -114,37 +122,11 @@ function photoFieldHasValue(value, multi) {
   return !!value?.uri;
 }
 
-function renderPhotoCaptureBadge(photo, formatClockTime) {
-  const capturedAt = typeof photo === 'object' ? photo?.capturedAt : photo;
-  const hasGps =
-    typeof photo === 'object' &&
-    photo?.latitude != null &&
-    photo?.longitude != null &&
-    Number.isFinite(parseFloat(photo.latitude)) &&
-    Number.isFinite(parseFloat(photo.longitude));
-
-  if (!capturedAt) {
-    return (
-      <View style={styles.photoCaptureTimeBadgeWarn}>
-        <Text style={styles.photoCaptureTimeText}>No timestamp</Text>
-      </View>
-    );
-  }
-  return (
-    <View style={[styles.photoCaptureTimeBadge, !hasGps && styles.photoCaptureTimeBadgeNoGps]}>
-      <Text style={styles.photoCaptureTimeText}>
-        {formatClockTime(capturedAt)}
-        {hasGps ? ' · GPS' : ' · No GPS'}
-      </Text>
-    </View>
-  );
-}
-
 function SectionCard({ icon, title, children }) {
   return (
     <View style={styles.sectionCard}>
       <View style={styles.sectionHeader}>
-        <Ionicons name={icon} size={18} color="#003580" />
+        <Ionicons name={icon} size={16} color="#003580" />
         <Text style={styles.sectionTitle}>{title}</Text>
       </View>
       {children}
@@ -198,7 +180,7 @@ export default function InwardFormView({
   const todayStr = useMemo(() => getLocalTodayStr(), []);
   const [form, setForm] = useState(() => getDefaultInwardForm(todayStr, displayName));
   const [photos, setPhotos] = useState(getEmptyInwardPhotos);
-  const [driverCountryCode, setDriverCountryCode] = useState('+91');
+  const [driverCountryCode, setDriverCountryCode] = useState(DEFAULT_COUNTRY_CODE);
   const [invalidFields, setInvalidFields] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [pickingPhoto, setPickingPhoto] = useState(null);
@@ -206,9 +188,6 @@ export default function InwardFormView({
   const [materialDropdownOpen, setMaterialDropdownOpen] = useState(false);
   const [materialCustomMode, setMaterialCustomMode] = useState(false);
   const [phoneCodeDropdownOpen, setPhoneCodeDropdownOpen] = useState(false);
-  const [currentTime, setCurrentTime] = useState('');
-  const [currentDateStr, setCurrentDateStr] = useState('');
-  const [currentDayStr, setCurrentDayStr] = useState('');
   const [currentStep, setCurrentStep] = useState(1);
   const scrollRef = useRef(null);
   const draftReadyRef = useRef(false);
@@ -269,7 +248,7 @@ export default function InwardFormView({
           if (draft.photos && typeof draft.photos === 'object') {
             setPhotos((prev) => ({ ...prev, ...draft.photos }));
           }
-          if (draft.driverCountryCode) setDriverCountryCode(String(draft.driverCountryCode));
+          setDriverCountryCode(resolveCountryCode(draft.driverCountryCode));
           if (draft.currentStep) {
             setCurrentStep(Math.min(Math.max(Number(draft.currentStep) || 1, 1), INWARD_STEP_COUNT));
           }
@@ -301,25 +280,9 @@ export default function InwardFormView({
   }, [form, photos, driverCountryCode, currentStep, materialCustomMode]);
 
   useEffect(() => {
-    const updateDateTime = () => {
-      const now = new Date();
-      const day = String(now.getDate()).padStart(2, '0');
-      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const month = months[now.getMonth()];
-      const year = now.getFullYear();
-      setCurrentDateStr(`${day} ${month} ${year}`);
-
-      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      setCurrentDayStr(days[now.getDay()]);
-
-      const hoursStr = String(now.getHours()).padStart(2, '0');
-      const minutes = String(now.getMinutes()).padStart(2, '0');
-      setCurrentTime(`${hoursStr}:${minutes}`);
-      applyCurrentEntryDate(now);
-    };
-
-    updateDateTime();
-    const timerInterval = setInterval(updateDateTime, 15000);
+    const updateEntryDate = () => applyCurrentEntryDate(new Date());
+    updateEntryDate();
+    const timerInterval = setInterval(updateEntryDate, 15000);
     return () => clearInterval(timerInterval);
   }, [applyCurrentEntryDate]);
 
@@ -559,7 +522,7 @@ export default function InwardFormView({
     const entryDate = getLocalTodayStr();
     setForm(getDefaultInwardForm(entryDate, displayName));
     setPhotos(getEmptyInwardPhotos());
-    setDriverCountryCode('+91');
+    setDriverCountryCode(DEFAULT_COUNTRY_CODE);
     setInvalidFields({});
     setCurrentStep(1);
     setClientNameFocused(false);
@@ -894,11 +857,11 @@ export default function InwardFormView({
           <View style={styles.photoProgressLeft}>
             <Ionicons
               name={complete ? 'checkmark-circle' : 'images-outline'}
-              size={18}
+              size={14}
               color={complete ? '#16a34a' : '#003580'}
             />
-            <Text style={styles.photoProgressTitle}>
-              {complete ? 'All required photos captured' : 'Required photos'}
+            <Text style={styles.photoProgressTitle} numberOfLines={1}>
+              {complete ? 'All min photos captured' : `Min ${total} photos required`}
             </Text>
           </View>
           <Text style={[styles.photoProgressCount, complete && styles.photoProgressCountDone]}>
@@ -920,7 +883,11 @@ export default function InwardFormView({
       clientNameFocused && filteredClientSuggestions.length > 0 && !exactMatch;
 
     return (
-      <View style={[styles.fieldWrap, styles.autocompleteWrap]}>
+      <View style={[
+        styles.fieldWrap,
+        styles.dropdownField,
+        showSuggestions && styles.dropdownFieldRaised,
+      ]}>
         <FieldLabel label="Client Name" required invalid={invalid} />
         <View style={styles.autocompleteInputWrap}>
           <TextInput
@@ -934,7 +901,11 @@ export default function InwardFormView({
             onChangeText={(v) => updateField('inward_client_name', v)}
             placeholder="Type client name…"
             placeholderTextColor="#94a3b8"
-            onFocus={() => setClientNameFocused(true)}
+            onFocus={() => {
+              setClientNameFocused(true);
+              setMaterialDropdownOpen(false);
+              setPhoneCodeDropdownOpen(false);
+            }}
             onBlur={() => setTimeout(() => setClientNameFocused(false), 180)}
             autoCorrect={false}
             autoCapitalize="words"
@@ -951,26 +922,27 @@ export default function InwardFormView({
               </TouchableOpacity>
             </>
           ) : null}
-        </View>
-        {showSuggestions ? (
-          <View style={styles.suggestDropdown}>
-            {filteredClientSuggestions.map((name) => (
-              <TouchableOpacity
-                key={name}
-                style={styles.suggestItem}
-                onPress={() => {
-                  updateField('inward_client_name', name);
-                  setClientNameFocused(false);
-                }}
-              >
-                <Ionicons name="business-outline" size={16} color="#64748b" />
-                <Text style={styles.suggestItemText} numberOfLines={1}>
-                  {name}
+          {showSuggestions ? (
+            <View style={styles.suggestDropdown}>
+              {filteredClientSuggestions.map((name) => (
+                <TouchableOpacity
+                  key={name}
+                  style={styles.suggestItem}
+                  onPress={() => {
+                    updateField('inward_client_name', name);
+                    setClientNameFocused(false);
+                  }}
+                >
+                  <Ionicons name="business-outline" size={16} color="#64748b" />
+                  <Text style={styles.suggestItemText} numberOfLines={1}>
+                    {name}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
-        ) : clientNameFocused && uniqueClients.length === 0 ? (
+        ) : null}
+        </View>
+        {clientNameFocused && uniqueClients.length === 0 ? (
           <Text style={styles.suggestHint}>No saved clients — type a new client name.</Text>
         ) : null}
       </View>
@@ -984,11 +956,20 @@ export default function InwardFormView({
       : form.inward_material_type || 'Select material type';
 
     return (
-      <View style={[styles.fieldWrap, styles.autocompleteWrap]}>
+      <View style={[
+        styles.fieldWrap,
+        styles.dropdownField,
+        materialDropdownOpen && styles.dropdownFieldRaised,
+      ]}>
         <FieldLabel label="Material Type" required invalid={invalid} />
+        <View style={styles.dropdownAnchor}>
         <TouchableOpacity
           style={[styles.dropdownTrigger, invalid && styles.inputInvalid]}
-          onPress={() => setMaterialDropdownOpen((open) => !open)}
+          onPress={() => {
+            setClientNameFocused(false);
+            setPhoneCodeDropdownOpen(false);
+            setMaterialDropdownOpen((open) => !open);
+          }}
           activeOpacity={0.8}
         >
           <Text
@@ -1040,6 +1021,7 @@ export default function InwardFormView({
             })}
           </View>
         ) : null}
+        </View>
         {materialCustomMode ? (
           <TextInput
             style={[styles.input, styles.materialCustomInput, invalid && styles.inputInvalid]}
@@ -1116,7 +1098,7 @@ export default function InwardFormView({
       >
         <View style={styles.photoCardHeader}>
           <View style={[styles.photoIconBadge, hasPhotos && styles.photoIconBadgeDone]}>
-            <Ionicons name={iconName} size={18} color={hasPhotos ? '#16a34a' : '#003580'} />
+            <Ionicons name={iconName} size={14} color={hasPhotos ? '#16a34a' : '#003580'} />
           </View>
           <View style={styles.photoCardHeaderText}>
             <Text style={styles.photoCardTitle}>
@@ -1150,7 +1132,7 @@ export default function InwardFormView({
             ) : (
               <>
                 <View style={styles.photoCaptureIconWrap}>
-                  <Ionicons name="camera" size={26} color="#003580" />
+                  <Ionicons name="camera" size={20} color="#003580" />
                 </View>
                 <Text style={styles.photoCaptureTitle}>
                   {isMulti ? 'Capture first photo' : 'Tap to capture'}
@@ -1167,17 +1149,19 @@ export default function InwardFormView({
           >
             {list.map((item, idx) => (
               <View key={`${field.key}-${idx}`} style={styles.photoMultiItem}>
-                <Image source={{ uri: item.uri }} style={styles.photoMultiThumb} />
-                {renderPhotoCaptureBadge(item, formatInwardClockTime)}
-                <View style={styles.photoMultiIndex}>
-                  <Text style={styles.photoMultiIndexText}>{idx + 1}</Text>
+                <View style={styles.photoMultiFrame}>
+                  <Image source={{ uri: item.uri }} style={styles.photoMultiThumb} />
+                  <View style={styles.photoMultiIndex}>
+                    <Text style={styles.photoMultiIndexText}>{idx + 1}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.photoMultiRemove}
+                    onPress={() => removePhoto(field.key, true, idx)}
+                  >
+                    <Ionicons name="trash-outline" size={14} color="#fff" />
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity
-                  style={styles.photoMultiRemove}
-                  onPress={() => removePhoto(field.key, true, idx)}
-                >
-                  <Ionicons name="trash-outline" size={14} color="#fff" />
-                </TouchableOpacity>
+                <PhotoCaptureCaption photo={item} formatClockTime={formatInwardClockTime} />
               </View>
             ))}
             <TouchableOpacity
@@ -1196,33 +1180,35 @@ export default function InwardFormView({
             </TouchableOpacity>
           </ScrollView>
         ) : (
-          <View style={styles.photoPreviewWrap}>
-            <Image source={{ uri: list[0].uri }} style={styles.photoPreviewImage} />
-            {renderPhotoCaptureBadge(list[0], formatInwardClockTime)}
-            <View style={styles.photoPreviewOverlay}>
-              <TouchableOpacity
-                style={styles.photoPreviewAction}
-                onPress={() => capturePhoto(field.key, false)}
-                disabled={!!pickingPhoto}
-              >
-                {isLoading ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <>
-                    <Ionicons name="camera-reverse-outline" size={16} color="#fff" />
-                    <Text style={styles.photoPreviewActionText}>Retake</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.photoPreviewAction, styles.photoPreviewActionDanger]}
-                onPress={() => removePhoto(field.key, false, 0)}
-              >
-                <Ionicons name="trash-outline" size={16} color="#fff" />
-                <Text style={styles.photoPreviewActionText}>Remove</Text>
-              </TouchableOpacity>
+          <>
+            <View style={styles.photoPreviewWrap}>
+              <Image source={{ uri: list[0].uri }} style={styles.photoPreviewImage} />
+              <View style={styles.photoPreviewOverlay}>
+                <TouchableOpacity
+                  style={styles.photoPreviewAction}
+                  onPress={() => capturePhoto(field.key, false)}
+                  disabled={!!pickingPhoto}
+                >
+                  {isLoading ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="camera-reverse-outline" size={16} color="#fff" />
+                      <Text style={styles.photoPreviewActionText}>Retake</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.photoPreviewAction, styles.photoPreviewActionDanger]}
+                  onPress={() => removePhoto(field.key, false, 0)}
+                >
+                  <Ionicons name="trash-outline" size={16} color="#fff" />
+                  <Text style={styles.photoPreviewActionText}>Remove</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
+            <PhotoCaptureCaption photo={list[0]} formatClockTime={formatInwardClockTime} />
+          </>
         )}
       </View>
     );
@@ -1239,24 +1225,77 @@ export default function InwardFormView({
   const renderDriverPhoneField = () => (
     <>
       <FieldLabel label="Driver Phone" required invalid={!!invalidFields.inward_driver_no} />
-      <View style={[styles.fieldWrap, styles.phoneFieldWrap]}>
+      <View style={[
+        styles.fieldWrap,
+        styles.phoneFieldWrap,
+        phoneCodeDropdownOpen && styles.dropdownFieldRaised,
+      ]}>
         <View style={styles.phoneInputRow}>
+          <View style={styles.dropdownAnchor}>
           <TouchableOpacity
             style={[
               styles.countryCodeBox,
               phoneCodeDropdownOpen && styles.countryCodeBoxOpen,
               invalidFields.inward_driver_no && styles.inputInvalid,
             ]}
-            onPress={() => setPhoneCodeDropdownOpen((open) => !open)}
+            onPress={() => {
+              setMaterialDropdownOpen(false);
+              setPhoneCodeDropdownOpen((open) => !open);
+            }}
             activeOpacity={0.8}
           >
-            <Text style={styles.countryCodeText}>{driverCountryCode}</Text>
+            <Text style={styles.countryCodeText} numberOfLines={1}>
+              {resolveCountryCode(driverCountryCode)}
+            </Text>
             <Ionicons
               name={phoneCodeDropdownOpen ? 'chevron-up' : 'chevron-down'}
               size={16}
               color="#64748b"
             />
           </TouchableOpacity>
+          {phoneCodeDropdownOpen ? (
+            <Modal
+              visible
+              transparent
+              animationType="fade"
+              statusBarTranslucent
+              onRequestClose={() => setPhoneCodeDropdownOpen(false)}
+            >
+              <View style={styles.phoneCodeModalOverlay}>
+                <TouchableOpacity
+                  style={StyleSheet.absoluteFill}
+                  activeOpacity={1}
+                  onPress={() => setPhoneCodeDropdownOpen(false)}
+                />
+                <View style={styles.phoneCodeModalCard}>
+                  <Text style={styles.phoneCodeModalTitle}>Country code</Text>
+                  {COUNTRY_CODES.map((code) => {
+                    const active = driverCountryCode === code;
+                    return (
+                      <TouchableOpacity
+                        key={code}
+                        style={[styles.suggestItem, active && styles.dropdownItemActive]}
+                        onPress={() => {
+                          setDriverCountryCode(code);
+                          setForm((prev) => ({
+                            ...prev,
+                            inward_driver_no: sanitizePhoneDigits(prev.inward_driver_no, code),
+                          }));
+                          setPhoneCodeDropdownOpen(false);
+                        }}
+                      >
+                        <Text style={[styles.suggestItemText, active && styles.dropdownItemTextActive]}>
+                          {code}
+                        </Text>
+                        {active ? <Ionicons name="checkmark" size={16} color="#003580" /> : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            </Modal>
+          ) : null}
+          </View>
           <TextInput
             style={[
               styles.input,
@@ -1271,32 +1310,6 @@ export default function InwardFormView({
             onFocus={() => setPhoneCodeDropdownOpen(false)}
           />
         </View>
-        {phoneCodeDropdownOpen ? (
-          <View style={styles.phoneCodeDropdown}>
-            {COUNTRY_CODES.map((code) => {
-              const active = driverCountryCode === code;
-              return (
-                <TouchableOpacity
-                  key={code}
-                  style={[styles.suggestItem, active && styles.dropdownItemActive]}
-                  onPress={() => {
-                    setDriverCountryCode(code);
-                    setForm((prev) => ({
-                      ...prev,
-                      inward_driver_no: sanitizePhoneDigits(prev.inward_driver_no, code),
-                    }));
-                    setPhoneCodeDropdownOpen(false);
-                  }}
-                >
-                  <Text style={[styles.suggestItemText, active && styles.dropdownItemTextActive]}>
-                    {code}
-                  </Text>
-                  {active ? <Ionicons name="checkmark" size={16} color="#003580" /> : null}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        ) : null}
       </View>
     </>
   );
@@ -1304,11 +1317,11 @@ export default function InwardFormView({
   const renderStepIndicator = () => (
     <View style={styles.stepWizardCard}>
       <View style={styles.stepWizardHeader}>
-        <Text style={styles.stepWizardLabel}>
-          Step {currentStep} of {INWARD_STEP_COUNT}
-        </Text>
         <Text style={styles.stepWizardTitle} numberOfLines={1}>
           {activeStepMeta.title}
+        </Text>
+        <Text style={styles.stepWizardLabel}>
+          {currentStep}/{INWARD_STEP_COUNT}
         </Text>
       </View>
       <ScrollView
@@ -1398,7 +1411,6 @@ export default function InwardFormView({
       case 3:
         return (
           <SectionCard icon="thermometer-outline" title="3. Pre-Unload Check">
-            {renderPhotoProgress()}
             <View style={styles.row2}>
               <View style={styles.row2Item}>
                 {renderInput('inward_vehicle_temp', 'Vehicle Temp (°C)', {
@@ -1544,35 +1556,18 @@ export default function InwardFormView({
 
   return (
     <View style={styles.container}>
+      <View style={styles.formHead}>
+        {renderStepIndicator()}
+        {renderPhotoProgress()}
+      </View>
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        removeClippedSubviews={false}
       >
-        <View style={styles.welcomeCard}>
-          <View style={styles.welcomeInfo}>
-            <Text style={styles.welcomeText}>Welcome, {displayName || 'Operator'}</Text>
-            <Text style={styles.roleText}>Inward Temp Monitor</Text>
-            <View style={styles.warehouseRow}>
-              <Ionicons name="business-outline" size={16} color="#93c5fd" />
-              <Text style={styles.warehouseText}>
-                Warehouse: {user?.warehouse_name || 'Generic'}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.dateContainer}>
-            <Text style={styles.dateText}>{currentDateStr || todayStr}</Text>
-            <View style={styles.dateSub}>
-              <Ionicons name="calendar-outline" size={12} color="#64748b" style={{ marginRight: 4 }} />
-              <Text style={styles.dayText}>{currentDayStr || '—'}</Text>
-            </View>
-            <Text style={styles.timeText}>{currentTime || '—'}</Text>
-          </View>
-        </View>
-
-        {renderStepIndicator()}
         {renderStepContent()}
 
         <View style={styles.bottomSpacer} />
@@ -1580,7 +1575,7 @@ export default function InwardFormView({
 
       <View style={styles.footer}>
         <TouchableOpacity style={styles.resetBtn} onPress={resetForm} disabled={submitting}>
-          <Ionicons name="refresh-outline" size={18} color="#475569" />
+          <Ionicons name="refresh-outline" size={14} color="#475569" />
           <Text style={styles.resetBtnText}>Reset</Text>
         </TouchableOpacity>
         {currentStep > 1 ? (
@@ -1589,7 +1584,7 @@ export default function InwardFormView({
             onPress={handlePreviousStep}
             disabled={submitting}
           >
-            <Ionicons name="chevron-back" size={18} color="#003580" />
+            <Ionicons name="chevron-back" size={14} color="#003580" />
             <Text style={styles.navBtnText}>Previous</Text>
           </TouchableOpacity>
         ) : null}
@@ -1600,7 +1595,7 @@ export default function InwardFormView({
             disabled={submitting}
           >
             <Text style={styles.nextBtnText}>Next</Text>
-            <Ionicons name="chevron-forward" size={18} color="#fff" />
+            <Ionicons name="chevron-forward" size={14} color="#fff" />
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
@@ -1613,7 +1608,7 @@ export default function InwardFormView({
               <ActivityIndicator color="#fff" size="small" />
             ) : (
               <>
-                <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                <Ionicons name="checkmark-circle" size={14} color="#fff" />
                 <Text style={styles.submitBtnText}>Submit Inward</Text>
               </>
             )}
@@ -1645,43 +1640,54 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: 16,
-    paddingBottom: 24,
+    padding: 12,
+    paddingBottom: 20,
+  },
+  formHead: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 8,
+    backgroundColor: '#f8fafc',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
   },
   stepWizardCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    padding: 12,
-    marginBottom: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 8,
   },
   stepWizardHeader: {
-    marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+    gap: 8,
   },
   stepWizardLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#64748b',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
   },
   stepWizardTitle: {
-    fontSize: 16,
+    flex: 1,
+    fontSize: 13,
     fontWeight: '800',
     color: '#0f172a',
-    marginTop: 2,
   },
   stepTabsRow: {
     flexDirection: 'row',
-    gap: 8,
-    paddingVertical: 2,
+    gap: 6,
+    paddingVertical: 0,
   },
   stepTab: {
-    minWidth: 62,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderRadius: 10,
+    minWidth: 52,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#e2e8f0',
     backgroundColor: '#f8fafc',
@@ -1703,21 +1709,21 @@ const styles = StyleSheet.create({
     position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 2,
+    marginBottom: 0,
   },
   stepTabDoneMark: {
     position: 'absolute',
-    top: -4,
-    right: -10,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    top: -3,
+    right: -8,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
     backgroundColor: '#16a34a',
     alignItems: 'center',
     justifyContent: 'center',
   },
   stepTabNum: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
     color: '#64748b',
   },
@@ -1733,108 +1739,50 @@ const styles = StyleSheet.create({
   stepTabTextActive: {
     color: '#003580',
   },
-  welcomeCard: {
-    backgroundColor: '#0a1128',
-    borderRadius: 12,
-    padding: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-  },
-  welcomeInfo: {
-    flex: 1,
-    marginRight: 6,
-  },
-  welcomeText: {
-    fontSize: 14.5,
-    fontWeight: 'bold',
-    color: '#ffffff',
-    letterSpacing: 0.2,
-  },
-  roleText: {
-    fontSize: 11,
-    color: '#94a3b8',
-    marginTop: 1,
-    fontWeight: '500',
-  },
-  warehouseRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  warehouseText: {
-    fontSize: 10.5,
-    color: '#93c5fd',
-    fontWeight: 'bold',
-    marginLeft: 5,
-  },
-  dateContainer: {
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    alignItems: 'center',
-    width: 105,
-    minHeight: 65,
-    justifyContent: 'center',
-  },
-  dateText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#0f172a',
-  },
-  dateSub: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 2,
-  },
-  dayText: {
-    fontSize: 8.5,
-    color: '#64748b',
-    fontWeight: '500',
-  },
-  timeText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#003580',
-  },
   sectionCard: {
     backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: '#e2e8f0',
+    overflow: 'visible',
+    zIndex: 1,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
-    paddingBottom: 8,
+    gap: 6,
+    marginBottom: 8,
+    paddingBottom: 6,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
   },
   sectionTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: '#003580',
   },
   fieldWrap: {
-    marginBottom: 12,
+    marginBottom: 8,
+    zIndex: 1,
+  },
+  dropdownField: {
+    zIndex: 2,
+    overflow: 'visible',
+  },
+  dropdownFieldRaised: {
+    zIndex: 60,
+    elevation: 16,
   },
   autocompleteWrap: {
-    zIndex: 20,
+    overflow: 'visible',
   },
   autocompleteInputWrap: {
     position: 'relative',
     justifyContent: 'center',
+    zIndex: 2,
+    overflow: 'visible',
   },
   autocompleteInput: {
     paddingRight: 12,
@@ -1851,31 +1799,42 @@ const styles = StyleSheet.create({
     right: 10,
     padding: 2,
   },
+  dropdownAnchor: {
+    position: 'relative',
+    zIndex: 4,
+    overflow: 'visible',
+  },
   suggestDropdown: {
-    marginTop: 6,
-    backgroundColor: '#fff',
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: 4,
+    zIndex: 80,
+    elevation: 20,
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: '#cbd5e1',
     borderRadius: 10,
     overflow: 'hidden',
-    elevation: 4,
+    maxHeight: 220,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
   },
   suggestItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
   },
   suggestItemText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     color: '#0f172a',
     fontWeight: '500',
   },
@@ -1886,13 +1845,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 11,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 7,
   },
   dropdownTriggerText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     color: '#0f172a',
     fontWeight: '500',
     marginRight: 8,
@@ -1918,10 +1877,10 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   fieldLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#475569',
-    marginBottom: 6,
+    marginBottom: 4,
   },
   fieldLabelInvalid: {
     color: '#dc2626',
@@ -1944,14 +1903,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
-    fontSize: 14,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 6,
+    fontSize: 13,
     color: '#0f172a',
   },
   inputMultiline: {
-    minHeight: 72,
+    minHeight: 56,
     textAlignVertical: 'top',
   },
   inputInvalid: {
@@ -1985,9 +1944,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
     backgroundColor: '#f1f5f9',
     borderWidth: 1,
     borderColor: '#e2e8f0',
@@ -2006,52 +1965,74 @@ const styles = StyleSheet.create({
     color: '#003580',
   },
   phoneFieldWrap: {
-    marginBottom: 12,
-    zIndex: 15,
+    marginBottom: 8,
+    zIndex: 2,
+    overflow: 'visible',
   },
   phoneInputRow: {
     flexDirection: 'row',
     alignItems: 'stretch',
     gap: 8,
+    overflow: 'visible',
+    zIndex: 2,
   },
   countryCodeBox: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    minWidth: 88,
-    paddingHorizontal: 10,
+    gap: 2,
+    width: 86,
+    flexShrink: 0,
+    paddingHorizontal: 8,
     backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 11,
+    borderRadius: 8,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 7,
   },
   countryCodeBoxOpen: {
     borderColor: '#93c5fd',
     backgroundColor: '#eff6ff',
   },
   countryCodeText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: '#0f172a',
+    flexShrink: 0,
   },
   phoneNumberInput: {
     flex: 1,
     marginBottom: 0,
   },
-  phoneCodeDropdown: {
-    marginTop: 6,
+  phoneCodeModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  phoneCodeModalCard: {
+    width: '100%',
+    maxWidth: 280,
     backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 10,
+    borderRadius: 14,
+    paddingVertical: 6,
     overflow: 'hidden',
-    elevation: 4,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  phoneCodeModalTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 6,
   },
   row2: {
     flexDirection: 'row',
@@ -2062,9 +2043,10 @@ const styles = StyleSheet.create({
   },
   photoProgressCard: {
     backgroundColor: '#eff6ff',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 14,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 0,
     borderWidth: 1,
     borderColor: '#bfdbfe',
   },
@@ -2072,21 +2054,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   photoProgressLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     flex: 1,
   },
   photoProgressTitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
     color: '#0f172a',
   },
   photoProgressCount: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
     color: '#003580',
   },
@@ -2094,8 +2076,8 @@ const styles = StyleSheet.create({
     color: '#16a34a',
   },
   photoProgressTrack: {
-    height: 6,
-    borderRadius: 3,
+    height: 4,
+    borderRadius: 2,
     backgroundColor: '#dbeafe',
     overflow: 'hidden',
   },
@@ -2109,11 +2091,11 @@ const styles = StyleSheet.create({
   },
   photoCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    padding: 12,
-    marginBottom: 12,
+    padding: 8,
+    marginBottom: 8,
   },
   photoCardInvalid: {
     borderColor: '#fca5a5',
@@ -2125,13 +2107,13 @@ const styles = StyleSheet.create({
   photoCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
-    gap: 10,
+    marginBottom: 6,
+    gap: 8,
   },
   photoIconBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 8,
     backgroundColor: '#eff6ff',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2143,14 +2125,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   photoCardTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: '#0f172a',
   },
   photoCardSub: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#64748b',
-    marginTop: 2,
+    marginTop: 1,
   },
   photoStatusBadge: {
     flexDirection: 'row',
@@ -2170,10 +2152,10 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: '#93c5fd',
     borderStyle: 'dashed',
-    borderRadius: 10,
+    borderRadius: 8,
     backgroundColor: '#f8fafc',
-    paddingVertical: 20,
-    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2182,16 +2164,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#fef2f2',
   },
   photoCaptureIconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#dbeafe',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   photoCaptureTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: '#003580',
   },
@@ -2202,7 +2184,7 @@ const styles = StyleSheet.create({
   },
   photoPreviewWrap: {
     width: '100%',
-    height: 168,
+    height: 120,
     borderRadius: 10,
     overflow: 'hidden',
     backgroundColor: '#f1f5f9',
@@ -2252,8 +2234,12 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   photoMultiItem: {
-    width: 96,
-    height: 96,
+    width: 148,
+    overflow: 'visible',
+  },
+  photoMultiFrame: {
+    width: 80,
+    height: 80,
     borderRadius: 10,
     overflow: 'hidden',
     position: 'relative',
@@ -2319,8 +2305,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   photoMultiAdd: {
-    width: 96,
-    height: 96,
+    width: 80,
+    height: 80,
     borderRadius: 10,
     borderWidth: 1.5,
     borderColor: '#93c5fd',
@@ -2344,9 +2330,9 @@ const styles = StyleSheet.create({
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 8,
     paddingBottom: Platform.OS === 'ios' ? 88 : 76,
     backgroundColor: '#fff',
     borderTopWidth: 1,
@@ -2355,58 +2341,68 @@ const styles = StyleSheet.create({
   navBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 10,
+    justifyContent: 'center',
+    gap: 3,
+    minHeight: 34,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
     backgroundColor: '#eff6ff',
     borderWidth: 1,
     borderColor: '#bfdbfe',
   },
   navBtnText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
     color: '#003580',
   },
   nextBtn: {
     flex: 1,
+    minHeight: 34,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 14,
-    borderRadius: 10,
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
     backgroundColor: '#003580',
   },
   nextBtnWide: {
     flex: 1,
   },
   nextBtnText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '700',
     color: '#fff',
   },
   resetBtn: {
+    flexGrow: 0,
+    flexShrink: 0,
+    minHeight: 34,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 10,
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
     backgroundColor: '#f1f5f9',
   },
   resetBtnText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: '#475569',
   },
   submitBtn: {
     flex: 1,
+    minHeight: 34,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 14,
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
     borderRadius: 10,
     backgroundColor: '#0d7a4f',
     borderWidth: 1,
@@ -2416,7 +2412,7 @@ const styles = StyleSheet.create({
     opacity: 0.65,
   },
   submitBtnText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '700',
     color: '#fff',
   },

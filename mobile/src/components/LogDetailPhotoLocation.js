@@ -55,6 +55,28 @@ export function GpsDetailRow({ label, lat, lng, accuracy, displayText }) {
   );
 }
 
+export function PhotoCaptureCaption({ photo, formatClockTime }) {
+  if (!photo || typeof photo !== 'object') return null;
+  const time =
+    photo.capturedAtStr ||
+    (photo.capturedAt ? (formatClockTime ? formatClockTime(photo.capturedAt) : String(photo.capturedAt)) : '');
+  const gps = formatPhotoGps(photo.latitude, photo.longitude, photo.accuracy);
+  return (
+    <View style={styles.formCaption}>
+      <Text style={styles.formCaptionLine}>Time: {time || 'not recorded'}</Text>
+      <TouchableOpacity
+        onPress={() => openLocationInMaps(photo.latitude, photo.longitude)}
+        disabled={!gps}
+        activeOpacity={gps ? 0.75 : 1}
+      >
+        <Text style={[styles.formCaptionLine, gps ? styles.linkActive : styles.metaMuted]}>
+          Location: {gps || 'not recorded'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export function PhotoCaptureMetaSection({ metadata }) {
   const lines = formatPhotoCaptureMetadataLines(metadata);
   if (!lines.length) return null;
@@ -71,7 +93,7 @@ export function PhotoCaptureMetaSection({ metadata }) {
 }
 
 /** Full-screen image viewer — tap photo in details to open. */
-export function ImagePreviewModal({ visible, uri, label, onClose, locationText, lat, lng }) {
+export function ImagePreviewModal({ visible, uri, label, onClose, locationText, lat, lng, timeText }) {
   if (!uri) return null;
   const hasGps =
     lat != null &&
@@ -111,16 +133,26 @@ export function ImagePreviewModal({ visible, uri, label, onClose, locationText, 
             resizeMode="contain"
           />
         </TouchableOpacity>
-        {locationText ? (
-          <TouchableOpacity
-            style={previewStyles.locationBar}
-            onPress={() => openLocationInMaps(lat, lng)}
-            disabled={!hasGps}
-            activeOpacity={hasGps ? 0.75 : 1}
-          >
-            <Ionicons name="location-outline" size={14} color="#fff" />
-            <Text style={previewStyles.locationText}>Location: {locationText}</Text>
-          </TouchableOpacity>
+        {timeText || locationText ? (
+          <View style={previewStyles.metaBar}>
+            {timeText ? (
+              <View style={previewStyles.metaRow}>
+                <Ionicons name="time-outline" size={14} color="#fff" />
+                <Text style={previewStyles.locationText}>Time: {timeText}</Text>
+              </View>
+            ) : null}
+            {locationText ? (
+              <TouchableOpacity
+                style={previewStyles.metaRow}
+                onPress={() => openLocationInMaps(lat, lng)}
+                disabled={!hasGps}
+                activeOpacity={hasGps ? 0.75 : 1}
+              >
+                <Ionicons name="location-outline" size={14} color="#fff" />
+                <Text style={previewStyles.locationText}>Location: {locationText}</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         ) : null}
         <Text style={previewStyles.hint}>Tap anywhere to close</Text>
       </SafeAreaView>
@@ -146,6 +178,7 @@ export function PhotoGridWithLocation({ photoItems, folderHint, photoMeta, resol
                 uri,
                 label,
                 locationText: loc?.locationText || '',
+                timeText: loc?.timeText || '',
                 lat: loc?.lat,
                 lng: loc?.lng
               })
@@ -158,6 +191,7 @@ export function PhotoGridWithLocation({ photoItems, folderHint, photoMeta, resol
         uri={preview?.uri}
         label={preview?.label}
         locationText={preview?.locationText}
+        timeText={preview?.timeText}
         lat={preview?.lat}
         lng={preview?.lng}
         onClose={() => setPreview(null)}
@@ -190,6 +224,7 @@ function PhotoGridCell({ photo, folderHint, photoMeta, resolveUri, onOpenPreview
           uri &&
           onOpenPreview(uri, photo.label, {
             locationText: gps || '',
+            timeText: time || '',
             lat: metaEntry?.latitude,
             lng: metaEntry?.longitude
           })
@@ -281,6 +316,18 @@ const previewStyles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     backgroundColor: 'rgba(15,23,42,0.85)',
+  },
+  metaBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(15,23,42,0.85)',
+    gap: 6,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   locationText: {
     color: '#fff',
@@ -390,5 +437,14 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontWeight: '600',
     marginTop: 4,
+  },
+  formCaption: {
+    marginTop: 6,
+    gap: 2,
+  },
+  formCaptionLine: {
+    fontSize: 11,
+    color: '#334155',
+    fontWeight: '700',
   },
 });

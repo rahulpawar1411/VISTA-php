@@ -179,13 +179,13 @@ export default function DatePickerField({
 
 const styles = StyleSheet.create({
   wrap: {
-    marginBottom: 12,
+    marginBottom: 8,
   },
   label: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#475569',
-    marginBottom: 6,
+    marginBottom: 4,
   },
   labelInvalid: {
     color: '#dc2626',
@@ -200,9 +200,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 11,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 7,
   },
   triggerInvalid: {
     borderColor: '#fca5a5',
@@ -210,7 +210,7 @@ const styles = StyleSheet.create({
   },
   triggerText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     color: '#0f172a',
     fontWeight: '500',
   },

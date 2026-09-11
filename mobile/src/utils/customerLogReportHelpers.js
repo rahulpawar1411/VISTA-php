@@ -116,7 +116,10 @@ export function parsePhotoCaptureMetadata(raw) {
   if (!raw) return null;
   if (typeof raw === 'object') return raw;
   try {
-    const parsed = JSON.parse(String(raw));
+    let parsed = JSON.parse(String(raw));
+    if (typeof parsed === 'string') {
+      parsed = JSON.parse(parsed);
+    }
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
     return null;
