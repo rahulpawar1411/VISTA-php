@@ -1257,9 +1257,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     (async () => {
       try {
         if (cancelled) return;
+        const activeAssignments = (assignments || []).filter(
+          (item) => item.status !== 'inactive'
+        );
+        const totalClients = activeAssignments.length;
+        const { pendingMorning } = getActiveTasksDetails();
         await refreshTaskReminders({
           morningCompleted: isMorningCompleted,
-          eveningCompleted: isEveningCompleted
+          eveningCompleted: isEveningCompleted,
+          morningClientCount: totalClients,
+          eveningClientCount: totalClients,
+          morningPendingCount: pendingMorning.length
         });
       } catch (err) {
         console.warn('Failed to refresh task reminders:', err);
@@ -1269,7 +1277,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     return () => {
       cancelled = true;
     };
-  }, [isMorningCompleted, isEveningCompleted, isLoadingData]);
+  }, [
+    isMorningCompleted,
+    isEveningCompleted,
+    isLoadingData,
+    assignments,
+    completedLogs,
+    chambersList
+  ]);
 
   // Expo push token refresh on open / foreground (permission Approved/Denied when app closed)
   useEffect(() => {
@@ -1284,14 +1299,46 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     };
   }, [apiUrl, token]);
 
-  // Tap remote permission-decision push → open notifications
+  // Tap notification → open Tasks (shift reminder) or permission decisions
   useEffect(() => {
-    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response?.notification?.request?.content?.data || {};
+    const openFromNotificationData = async (data = {}) => {
       if (data.type === 'permission_decision') {
         setShowNotificationsModal(true);
+        return;
       }
+      const shiftRaw = String(data.shift || '').trim();
+      const isTaskReminder =
+        data.type === 'task_reminder' ||
+        /^Morning$/i.test(shiftRaw) ||
+        /^Evening$/i.test(shiftRaw);
+      if (!isTaskReminder) return;
+
+      const shift = /^Evening$/i.test(shiftRaw) ? 'Evening' : 'Morning';
+      try {
+        await handleSelectShift(shift);
+      } catch (_) {
+        setActiveShift(shift);
+      }
+      try {
+        await handleNavTabChangeRef.current?.('Tasks', 'daily');
+      } catch (_) {
+        setCurrentNavTab('Tasks');
+      }
+    };
+
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response?.notification?.request?.content?.data || {};
+      openFromNotificationData(data);
     });
+
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (!response) return;
+        const data = response?.notification?.request?.content?.data || {};
+        openFromNotificationData(data);
+      })
+      .catch(() => {});
+
     return () => {
       try {
         sub.remove();
@@ -11502,6 +11549,41 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     });
   }, [loadInwardReports]);
 
+  const inwardDatePreset = useMemo(() => {
+    const today = getLocalDateStr();
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 6);
+    const sevenFrom = getLocalDateStr(start);
+    const sevenTo = getLocalDateStr(end);
+    const from = inwardReportDateFrom || '';
+    const to = inwardReportDateTo || '';
+    if (from === today && to === today) return 'today';
+    if (from === sevenFrom && to === sevenTo) return '7days';
+    return null;
+  }, [inwardReportDateFrom, inwardReportDateTo]);
+
+  const applyInwardDatePreset = useCallback(
+    (preset) => {
+      if (preset === 'today') {
+        const t = getLocalDateStr();
+        setInwardReportDateFrom(t);
+        setInwardReportDateTo(t);
+        loadInwardReports({ page: 1, fromDate: t, toDate: t });
+        return;
+      }
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - 6);
+      const from = getLocalDateStr(start);
+      const to = getLocalDateStr(end);
+      setInwardReportDateFrom(from);
+      setInwardReportDateTo(to);
+      loadInwardReports({ page: 1, fromDate: from, toDate: to });
+    },
+    [loadInwardReports]
+  );
+
   const toggleInwardMissingPodFilter = useCallback(() => {
     const next = !inwardReportMissingPod;
     setInwardReportMissingPod(next);
@@ -11918,30 +12000,46 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         <View style={styles.dockReportFilterActions}>
           <TouchableOpacity
             style={[
-              styles.dockReportFilterBtnPrimary,
-              inwardReportMissingPod && { backgroundColor: '#b91c1c' },
-              { flexDirection: 'row', alignItems: 'center' },
+              styles.dockLogQuickBtn,
+              inwardDatePreset === 'today' && styles.dockLogQuickBtnActive,
             ]}
-            onPress={toggleInwardMissingPodFilter}
+            onPress={() => applyInwardDatePreset('today')}
+            activeOpacity={0.85}
           >
-            <Ionicons
-              name="image-outline"
-              size={12}
-              color="#fff"
-              style={{ marginRight: 4 }}
-            />
-            <Text style={styles.dockReportFilterBtnPrimaryText} numberOfLines={1}>
-              {inwardReportMissingPod ? 'Show All Inwards' : 'POD Img Missing'}
+            <Text
+              style={[
+                styles.dockLogQuickBtnText,
+                inwardDatePreset === 'today' && styles.dockLogQuickBtnTextActive,
+              ]}
+            >
+              Today
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.dockReportFilterBtnOutline}
-            onPress={applyInwardReportFilters}
+            style={[
+              styles.dockLogQuickBtn,
+              inwardDatePreset === '7days' && styles.dockLogQuickBtnActive,
+            ]}
+            onPress={() => applyInwardDatePreset('7days')}
+            activeOpacity={0.85}
           >
-            <Text style={styles.dockReportFilterBtnOutlineText}>Apply</Text>
+            <Text
+              style={[
+                styles.dockLogQuickBtnText,
+                inwardDatePreset === '7days' && styles.dockLogQuickBtnTextActive,
+              ]}
+            >
+              7 days
+            </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.dockReportFilterBtnOutline} onPress={clearInwardReportFilters}>
-            <Text style={styles.dockReportFilterBtnOutlineText}>Clear</Text>
+          <TouchableOpacity
+            style={[styles.dockLogQuickBtn, styles.dockLogQuickBtnClear]}
+            onPress={clearInwardReportFilters}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.dockLogQuickBtnText, styles.dockLogQuickBtnClearText]}>
+              Clear
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -12025,74 +12123,49 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           }
           {...FLATLIST_PERF_PROPS}
           renderItem={({ item }) => {
-            const shortQty = parseInt(item.inward_short_received_boxes_qty, 10) || 0;
-            const excessQty = parseInt(item.inward_excess_received_boxes_qty, 10) || 0;
             const received = item.inward_received_boxes_qty ?? item.inward_received_qty;
+            const rightValue =
+              item.inward_material_temp != null
+                ? `${item.inward_material_temp}°C`
+                : item.inward_vehicle_temp != null
+                  ? `${item.inward_vehicle_temp}°C`
+                  : received != null
+                    ? String(received)
+                    : '—';
+            const vehicleOrDock = item.inward_vehicle_no
+              ? `Vehicle ${item.inward_vehicle_no}`
+              : item.inward_dock_no
+                ? `Dock ${item.inward_dock_no}`
+                : '—';
             const podVal = String(item.inward_pod_photo || '').trim();
             const podMissing = !podVal || podVal === 'null' || podVal === 'undefined';
             return (
               <TouchableOpacity
-                style={styles.inwardReportCard}
-                activeOpacity={0.88}
+                style={styles.dockLogCard}
+                activeOpacity={0.85}
                 onPress={() => setSelectedInwardReport(item)}
               >
-                <View style={styles.inwardReportCardTop}>
-                  <View style={{ flex: 1, paddingRight: 8 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <Text style={styles.inwardReportRef} numberOfLines={1}>
-                        {item.reference_no || `INW-${item.inward_id}`}
-                        <Text style={styles.inwardReportDateInline}>
-                          {'  '}
-                          {item.inward_entry_date || ''}
-                        </Text>
-                      </Text>
-                      {podMissing ? (
-                        <View style={styles.inwardPodMissingBadge}>
-                          <Text style={styles.inwardPodMissingBadgeText}>POD Missing</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.inwardReportClient} numberOfLines={1}>
-                      {item.inward_client_name || '—'}
-                      {item.inward_vehicle_no ? ` · ${item.inward_vehicle_no}` : ''}
-                      {item.inward_dock_no ? ` · Dock ${item.inward_dock_no}` : ''}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={styles.dockLogTitleRow}>
+                    <Text style={styles.dockLogTypeTag}>Inward</Text>
+                    <Text style={styles.dockLogClient} numberOfLines={1}>
+                      {item.inward_client_name || 'Client'}
                     </Text>
+                    {podMissing ? (
+                      <View style={styles.inwardPodMissingBadge}>
+                        <Text style={styles.inwardPodMissingBadgeText}>POD</Text>
+                      </View>
+                    ) : null}
                   </View>
-                  <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+                  <Text style={styles.dockLogMeta} numberOfLines={2}>
+                    {vehicleOrDock}
+                    {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
+                    {' · '}
+                    {String(item.inward_entry_date || '').slice(0, 10) || '—'}
+                    {item.inward_material_type ? ` · ${item.inward_material_type}` : ''}
+                  </Text>
                 </View>
-
-                <View style={styles.inwardReportStatsRow}>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>Veh °C</Text>
-                    <Text style={styles.inwardReportStatValue}>
-                      {item.inward_vehicle_temp ?? '—'}
-                    </Text>
-                  </View>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>Mat °C</Text>
-                    <Text style={styles.inwardReportStatValue}>
-                      {item.inward_material_temp ?? '—'}
-                    </Text>
-                  </View>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>Received</Text>
-                    <Text style={styles.inwardReportStatValue}>{received ?? '—'}</Text>
-                  </View>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>
-                      {shortQty > 0 ? 'Short' : excessQty > 0 ? 'Excess' : 'Var'}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.inwardReportStatValue,
-                        shortQty > 0 && { color: '#dc2626' },
-                        excessQty > 0 && { color: '#16a34a' },
-                      ]}
-                    >
-                      {shortQty > 0 ? shortQty : excessQty > 0 ? excessQty : 0}
-                    </Text>
-                  </View>
-                </View>
+                <Text style={styles.dockLogTemp}>{rightValue}</Text>
               </TouchableOpacity>
             );
           }}
@@ -12220,6 +12293,41 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       missingPod: false,
     });
   }, [loadOutwardReports]);
+
+  const outwardDatePreset = useMemo(() => {
+    const today = getLocalDateStr();
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 6);
+    const sevenFrom = getLocalDateStr(start);
+    const sevenTo = getLocalDateStr(end);
+    const from = outwardReportDateFrom || '';
+    const to = outwardReportDateTo || '';
+    if (from === today && to === today) return 'today';
+    if (from === sevenFrom && to === sevenTo) return '7days';
+    return null;
+  }, [outwardReportDateFrom, outwardReportDateTo]);
+
+  const applyOutwardDatePreset = useCallback(
+    (preset) => {
+      if (preset === 'today') {
+        const t = getLocalDateStr();
+        setOutwardReportDateFrom(t);
+        setOutwardReportDateTo(t);
+        loadOutwardReports({ page: 1, fromDate: t, toDate: t });
+        return;
+      }
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - 6);
+      const from = getLocalDateStr(start);
+      const to = getLocalDateStr(end);
+      setOutwardReportDateFrom(from);
+      setOutwardReportDateTo(to);
+      loadOutwardReports({ page: 1, fromDate: from, toDate: to });
+    },
+    [loadOutwardReports]
+  );
 
   const toggleOutwardMissingPodFilter = useCallback(() => {
     const next = !outwardReportMissingPod;
@@ -12637,30 +12745,46 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         <View style={styles.dockReportFilterActions}>
           <TouchableOpacity
             style={[
-              styles.dockReportFilterBtnPrimary,
-              outwardReportMissingPod && { backgroundColor: '#b91c1c' },
-              { flexDirection: 'row', alignItems: 'center' },
+              styles.dockLogQuickBtn,
+              outwardDatePreset === 'today' && styles.dockLogQuickBtnActive,
             ]}
-            onPress={toggleOutwardMissingPodFilter}
+            onPress={() => applyOutwardDatePreset('today')}
+            activeOpacity={0.85}
           >
-            <Ionicons
-              name="image-outline"
-              size={12}
-              color="#fff"
-              style={{ marginRight: 4 }}
-            />
-            <Text style={styles.dockReportFilterBtnPrimaryText} numberOfLines={1}>
-              {outwardReportMissingPod ? 'Show All Outwards' : 'POD Img Missing'}
+            <Text
+              style={[
+                styles.dockLogQuickBtnText,
+                outwardDatePreset === 'today' && styles.dockLogQuickBtnTextActive,
+              ]}
+            >
+              Today
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.dockReportFilterBtnOutline}
-            onPress={applyOutwardReportFilters}
+            style={[
+              styles.dockLogQuickBtn,
+              outwardDatePreset === '7days' && styles.dockLogQuickBtnActive,
+            ]}
+            onPress={() => applyOutwardDatePreset('7days')}
+            activeOpacity={0.85}
           >
-            <Text style={styles.dockReportFilterBtnOutlineText}>Apply</Text>
+            <Text
+              style={[
+                styles.dockLogQuickBtnText,
+                outwardDatePreset === '7days' && styles.dockLogQuickBtnTextActive,
+              ]}
+            >
+              7 days
+            </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.dockReportFilterBtnOutline} onPress={clearOutwardReportFilters}>
-            <Text style={styles.dockReportFilterBtnOutlineText}>Clear</Text>
+          <TouchableOpacity
+            style={[styles.dockLogQuickBtn, styles.dockLogQuickBtnClear]}
+            onPress={clearOutwardReportFilters}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.dockLogQuickBtnText, styles.dockLogQuickBtnClearText]}>
+              Clear
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -12744,73 +12868,50 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           }
           {...FLATLIST_PERF_PROPS}
           renderItem={({ item }) => {
-            const shortQty = parseInt(item.outward_short_received_boxes_qty, 10) || 0;
-            const excessQty = parseInt(item.outward_excess_received_boxes_qty, 10) || 0;
             const loaded = item.outward_received_boxes_qty ?? item.outward_received_qty;
             const preVehicleTemp = item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp;
+            const rightValue =
+              item.outward_material_temp != null
+                ? `${item.outward_material_temp}°C`
+                : preVehicleTemp != null
+                  ? `${preVehicleTemp}°C`
+                  : loaded != null
+                    ? String(loaded)
+                    : '—';
+            const vehicleOrDock = item.outward_vehicle_no
+              ? `Vehicle ${item.outward_vehicle_no}`
+              : item.outward_dock_no
+                ? `Dock ${item.outward_dock_no}`
+                : '—';
             const podVal = String(item.outward_pod_photo || '').trim();
             const podMissing = !podVal || podVal === 'null' || podVal === 'undefined';
             return (
               <TouchableOpacity
-                style={styles.inwardReportCard}
-                activeOpacity={0.88}
+                style={styles.dockLogCard}
+                activeOpacity={0.85}
                 onPress={() => setSelectedOutwardReport(item)}
               >
-                <View style={styles.inwardReportCardTop}>
-                  <View style={{ flex: 1, paddingRight: 8 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <Text style={styles.inwardReportRef} numberOfLines={1}>
-                        {item.reference_no || `OUT-${item.outward_id}`}
-                        <Text style={styles.inwardReportDateInline}>
-                          {'  '}
-                          {item.outward_entry_date || ''}
-                        </Text>
-                      </Text>
-                      {podMissing ? (
-                        <View style={styles.inwardPodMissingBadge}>
-                          <Text style={styles.inwardPodMissingBadgeText}>POD Missing</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.inwardReportClient} numberOfLines={1}>
-                      {item.outward_client_name || '—'}
-                      {item.outward_vehicle_no ? ` · ${item.outward_vehicle_no}` : ''}
-                      {item.outward_dock_no ? ` · Dock ${item.outward_dock_no}` : ''}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={styles.dockLogTitleRow}>
+                    <Text style={[styles.dockLogTypeTag, styles.dockLogTypeTagOut]}>Outward</Text>
+                    <Text style={styles.dockLogClient} numberOfLines={1}>
+                      {item.outward_client_name || 'Client'}
                     </Text>
+                    {podMissing ? (
+                      <View style={styles.inwardPodMissingBadge}>
+                        <Text style={styles.inwardPodMissingBadgeText}>POD</Text>
+                      </View>
+                    ) : null}
                   </View>
-                  <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+                  <Text style={styles.dockLogMeta} numberOfLines={2}>
+                    {vehicleOrDock}
+                    {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
+                    {' · '}
+                    {String(item.outward_entry_date || '').slice(0, 10) || '—'}
+                    {item.outward_material_type ? ` · ${item.outward_material_type}` : ''}
+                  </Text>
                 </View>
-
-                <View style={styles.inwardReportStatsRow}>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>Pre °C</Text>
-                    <Text style={styles.inwardReportStatValue}>{preVehicleTemp ?? '—'}</Text>
-                  </View>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>Mat °C</Text>
-                    <Text style={styles.inwardReportStatValue}>
-                      {item.outward_material_temp ?? '—'}
-                    </Text>
-                  </View>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>Loaded</Text>
-                    <Text style={styles.inwardReportStatValue}>{loaded ?? '—'}</Text>
-                  </View>
-                  <View style={styles.inwardReportStat}>
-                    <Text style={styles.inwardReportStatLabel}>
-                      {shortQty > 0 ? 'Short' : excessQty > 0 ? 'Excess' : 'Var'}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.inwardReportStatValue,
-                        shortQty > 0 && { color: '#dc2626' },
-                        excessQty > 0 && { color: '#16a34a' },
-                      ]}
-                    >
-                      {shortQty > 0 ? shortQty : excessQty > 0 ? excessQty : 0}
-                    </Text>
-                  </View>
-                </View>
+                <Text style={styles.dockLogTemp}>{rightValue}</Text>
               </TouchableOpacity>
             );
           }}
@@ -13360,7 +13461,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
   // Main UI Shell
   if (isLoadingData) {
-    return <SplashScreen />;
+    return <SplashScreen playIntro={false} />;
   }
 
   return (
@@ -15211,6 +15312,83 @@ const styles = StyleSheet.create({
     color: '#003580',
     fontWeight: '700',
     fontSize: 11,
+  },
+  dockLogQuickBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 5,
+    borderRadius: 7,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  dockLogQuickBtnActive: {
+    backgroundColor: '#003580',
+    borderColor: '#003580',
+  },
+  dockLogQuickBtnText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  dockLogQuickBtnTextActive: {
+    color: '#fff',
+  },
+  dockLogQuickBtnClear: {
+    backgroundColor: '#fff',
+    borderColor: '#cbd5e1',
+  },
+  dockLogQuickBtnClearText: {
+    color: '#475569',
+  },
+  dockLogCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+    marginBottom: 5,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    gap: 8,
+  },
+  dockLogTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 1,
+  },
+  dockLogTypeTag: {
+    fontSize: 8,
+    fontWeight: '800',
+    color: '#0284c7',
+    backgroundColor: '#e0f2fe',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  dockLogTypeTagOut: {
+    color: '#b45309',
+    backgroundColor: '#ffedd5',
+  },
+  dockLogClient: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0f172a',
+    flex: 1,
+  },
+  dockLogMeta: {
+    fontSize: 10,
+    color: '#64748b',
+    marginTop: 1,
+  },
+  dockLogTemp: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#003580',
   },
   dockReportPagination: {
     flexDirection: 'row',

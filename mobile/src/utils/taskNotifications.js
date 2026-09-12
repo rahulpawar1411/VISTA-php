@@ -2,6 +2,7 @@
  * Morning / Evening local reminders.
  * - If Morning tasks already completed today → do NOT notify morning (schedule tomorrow only)
  * - If Evening tasks already completed today → do NOT notify evening (schedule tomorrow only)
+ * Bodies include total client temperature-task counts; evening also flags morning still due.
  */
 import * as Notifications from 'expo-notifications';
 import { ensureNotificationPermission } from './permissions';
@@ -30,6 +31,33 @@ function tomorrowAt(hour, minute) {
   return when;
 }
 
+function clientsLabel(count) {
+  const n = Math.max(0, Number(count) || 0);
+  return `${n} client${n === 1 ? '' : 's'}`;
+}
+
+function buildMorningBody(clientCount) {
+  const n = Math.max(0, Number(clientCount) || 0);
+  if (n <= 0) {
+    return 'Your morning temperature tasks are ready. Tap to complete your tasks.';
+  }
+  return `Please complete morning temperature checks for ${clientsLabel(n)}. Tap to complete your tasks.`;
+}
+
+function buildEveningBody(eveningClientCount, morningPendingCount) {
+  const eveningN = Math.max(0, Number(eveningClientCount) || 0);
+  const morningDue = Math.max(0, Number(morningPendingCount) || 0);
+  let body =
+    eveningN > 0
+      ? `Please complete evening temperature checks for ${clientsLabel(eveningN)}.`
+      : 'Your evening temperature tasks are ready.';
+  if (morningDue > 0) {
+    body += ` Morning tasks are still pending for ${clientsLabel(morningDue)}.`;
+  }
+  body += ' Tap to complete your tasks.';
+  return body;
+}
+
 async function scheduleAt(identifier, content, when) {
   await Notifications.scheduleNotificationAsync({
     identifier,
@@ -46,9 +74,21 @@ async function scheduleAt(identifier, content, when) {
 }
 
 /**
- * @param {{ morningCompleted: boolean, eveningCompleted: boolean }} opts
+ * @param {{
+ *   morningCompleted?: boolean,
+ *   eveningCompleted?: boolean,
+ *   morningClientCount?: number,
+ *   eveningClientCount?: number,
+ *   morningPendingCount?: number
+ * }} opts
  */
-export async function refreshTaskReminders({ morningCompleted = false, eveningCompleted = false } = {}) {
+export async function refreshTaskReminders({
+  morningCompleted = false,
+  eveningCompleted = false,
+  morningClientCount = 0,
+  eveningClientCount = 0,
+  morningPendingCount = 0
+} = {}) {
   const granted = await ensureNotificationPermission();
   if (!granted) return;
 
@@ -61,36 +101,52 @@ export async function refreshTaskReminders({ morningCompleted = false, eveningCo
   try {
     // Morning 10:00 — skip today if morning already done
     const morningDate = morningCompleted ? tomorrowAt(10, 0) : nextOccurrence(10, 0);
+    // If scheduling for tomorrow (already done today), use full client total again
+    const morningBodyCount = morningClientCount;
     await scheduleAt(
       MORNING_NOTIF_ID,
       {
-        title: 'Morning Tasks Ready',
-        body: "Today's Morning Task is active. Open the app to complete assignments.",
-        data: { shift: 'Morning' }
+        title: 'Morning tasks reminder',
+        body: buildMorningBody(morningBodyCount),
+        data: {
+          shift: 'Morning',
+          type: 'task_reminder',
+          clientCount: morningBodyCount
+        }
       },
       morningDate
     );
     console.log(
       morningCompleted
         ? `🔔 Morning notify skipped today (completed) → next at ${morningDate.toISOString()}`
-        : `🔔 Morning notify scheduled at ${morningDate.toISOString()}`
+        : `🔔 Morning notify scheduled at ${morningDate.toISOString()} (${morningBodyCount} clients)`
     );
 
     // Evening 16:00 — skip today if evening already done
     const eveningDate = eveningCompleted ? tomorrowAt(16, 0) : nextOccurrence(16, 0);
+    // Morning-due note only when evening fires today and morning still pending
+    const includeMorningDue =
+      !eveningCompleted && eveningDate.toDateString() === new Date().toDateString()
+        ? morningPendingCount
+        : 0;
     await scheduleAt(
       EVENING_NOTIF_ID,
       {
-        title: 'Evening Tasks Ready',
-        body: "Today's Evening Task is active. Open the app to complete assignments.",
-        data: { shift: 'Evening' }
+        title: 'Evening tasks reminder',
+        body: buildEveningBody(eveningClientCount, includeMorningDue),
+        data: {
+          shift: 'Evening',
+          type: 'task_reminder',
+          clientCount: eveningClientCount,
+          morningPendingCount: includeMorningDue
+        }
       },
       eveningDate
     );
     console.log(
       eveningCompleted
         ? `🔔 Evening notify skipped today (completed) → next at ${eveningDate.toISOString()}`
-        : `🔔 Evening notify scheduled at ${eveningDate.toISOString()}`
+        : `🔔 Evening notify scheduled at ${eveningDate.toISOString()} (${eveningClientCount} clients, morning due ${includeMorningDue})`
     );
   } catch (err) {
     console.warn('refreshTaskReminders failed:', err?.message || err);

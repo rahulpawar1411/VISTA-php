@@ -289,8 +289,28 @@ function SmallLogImage({ rawPath, apiUrl, folderHint, latitude, longitude, accur
  * Mobile Sub-Admin — overview, permission approve/deny, catalog Master,
  * and per-DO chamber/client assignments (not mixed with catalog CRUD).
  */
+const SUBADMIN_BOTTOM_TAB_COUNT = 5;
+const SUBADMIN_BOTTOM_TABS = [
+  { id: 'Dashboard', label: 'Dashboard', icon: 'home', iconOutline: 'home-outline' },
+  { id: 'Logs', label: 'Logs', icon: 'list', iconOutline: 'list-outline' },
+  { id: 'Reports', label: 'Reports', icon: 'stats-chart', iconOutline: 'stats-chart-outline' },
+  { id: 'Admin', label: 'Admin', icon: 'construct', iconOutline: 'construct-outline' },
+  { id: 'More', label: 'More', icon: 'person', iconOutline: 'person-outline' }
+];
+
+function getSubAdminBottomTabIndex(tab) {
+  if (tab === 'Dashboard' || tab === 'Home') return 0;
+  if (tab === 'Logs') return 1;
+  if (tab === 'Reports') return 2;
+  if (tab === 'Admin') return 3;
+  return 4;
+}
+
 export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const [activeTab, setActiveTab] = useState('Dashboard');
+  const tabIndicatorX = useRef(new Animated.Value(0)).current;
+  const tabBarWidthRef = useRef(0);
+  const [tabIndicatorWidth, setTabIndicatorWidth] = useState(0);
   const [adminInitialSection, setAdminInitialSection] = useState('permissions');
   const [adminPermFilter, setAdminPermFilter] = useState('pending');
   const [showDrawer, setShowDrawer] = useState(false);
@@ -319,6 +339,30 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       setShowDrawer(false);
     });
   }, [drawerAnim]);
+
+  const slideTabIndicator = useCallback(
+    (index, barWidth, animated) => {
+      if (!barWidth) return;
+      const tabW = barWidth / SUBADMIN_BOTTOM_TAB_COUNT;
+      const lineW = Math.max(28, tabW * 0.5);
+      const x = index * tabW + (tabW - lineW) / 2;
+      if (!animated) {
+        tabIndicatorX.setValue(x);
+        return;
+      }
+      Animated.spring(tabIndicatorX, {
+        toValue: x,
+        useNativeDriver: true,
+        friction: 8,
+        tension: 90
+      }).start();
+    },
+    [tabIndicatorX]
+  );
+
+  useEffect(() => {
+    slideTabIndicator(getSubAdminBottomTabIndex(activeTab), tabBarWidthRef.current, true);
+  }, [activeTab, slideTabIndicator]);
 
   const [stats, setStats] = useState(null);
   const [todayLogs, setTodayLogs] = useState([]);
@@ -356,6 +400,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const [homeRefreshing, setHomeRefreshing] = useState(false);
   const [homeError, setHomeError] = useState('');
   const [homeLastUpdated, setHomeLastUpdated] = useState(null);
+  const homeOverviewRequestIdRef = useRef(0);
 
   const [warehouseFilter, setWarehouseFilter] = useState('All');
   const [chamberFilter, setChamberFilter] = useState('All');
@@ -390,6 +435,8 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState('');
   const [logsRefreshing, setLogsRefreshing] = useState(false);
+  const [logTaskSummary, setLogTaskSummary] = useState(null);
+  const [logTaskSummaryLoading, setLogTaskSummaryLoading] = useState(false);
   const [logPage, setLogPage] = useState(1);
   const [logTotal, setLogTotal] = useState(0);
   const [logHasMore, setLogHasMore] = useState(false);
@@ -556,12 +603,52 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     return days;
   };
 
+  const applyDoTaskOverviewPayload = useCallback((tasksData) => {
+    const warehouses = Array.isArray(tasksData?.warehouses) ? tasksData.warehouses : [];
+    setWarehouseTasks(warehouses);
+    setTaskSummary(tasksData?.summary || null);
+
+    let doList = [];
+    if (Array.isArray(tasksData?.operators) && tasksData.operators.length) {
+      doList = tasksData.operators.map((op) => ({
+        ...op,
+        morning_completed: Number(op.morning_completed) || 0,
+        morning_expected: Number(op.morning_expected) || 0,
+        morning_pending: Number(op.morning_pending) || 0,
+        evening_completed: Number(op.evening_completed) || 0,
+        evening_expected: Number(op.evening_expected) || 0,
+        evening_pending: Number(op.evening_pending) || 0
+      }));
+    } else {
+      warehouses.forEach((w) => {
+        (w.operators || []).forEach((op) => {
+          doList.push({
+            ...op,
+            warehouse_name: w.warehouse_name,
+            completed: w.completed,
+            pending: w.pending,
+            overdue: w.overdue,
+            morning_completed: w.morning_completed,
+            morning_expected: w.morning_expected,
+            morning_pending: w.morning_pending,
+            evening_completed: w.evening_completed,
+            evening_expected: w.evening_expected,
+            evening_pending: w.evening_pending
+          });
+        });
+      });
+    }
+    setHomeOperators(doList);
+  }, []);
+
   const loadHomeOverview = useCallback(async () => {
     if (!apiUrl || !token) return;
+    const requestId = ++homeOverviewRequestIdRef.current;
     setHomeLoading(true);
     setHomeError('');
     try {
       const today = toLocalYmd();
+      const taskQs = new URLSearchParams({ date: today });
       const [statsRes, logsRes, tasksRes, customersRes, filterRes, operatorsRes] = await Promise.all([
         fetch(`${apiUrl}/api/dashboard`, { headers: authHeaders }),
         fetch(
@@ -573,11 +660,15 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           }).toString()}`,
           { headers: authHeaders }
         ),
-        fetch(`${apiUrl}/api/dashboard/do-task-overview`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/dashboard/do-task-overview?${taskQs.toString()}`, {
+          headers: authHeaders
+        }),
         fetch(`${apiUrl}/api/dashboard/customers`, { headers: authHeaders }),
         fetch(`${apiUrl}/api/dashboard/inventory-filter-options`, { headers: authHeaders }),
         fetch(`${apiUrl}/api/dashboard/do-operators`, { headers: authHeaders })
       ]);
+
+      if (requestId !== homeOverviewRequestIdRef.current) return;
 
       const statsData = await statsRes.json().catch(() => ({}));
       if (!statsRes.ok) {
@@ -586,65 +677,63 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       setStats(statsData.stats || statsData || {});
 
       const logsData = await logsRes.json().catch(() => ({}));
-      if (!logsRes.ok) {
-        throw new Error(logsData.message || logsData.error || `Today logs failed (${logsRes.status})`);
+      if (logsRes.ok) {
+        const items = Array.isArray(logsData?.items)
+          ? logsData.items
+          : Array.isArray(logsData)
+            ? logsData
+            : [];
+        const scoped = items.filter((row) => {
+          const d = String(row.formatted_date || row.entry_date || '').slice(0, 10);
+          return d === today;
+        });
+        setTodayLogs(scoped);
+      } else {
+        console.warn('Today logs failed:', logsData.message || logsRes.status);
+        setTodayLogs([]);
       }
-      const items = Array.isArray(logsData?.items)
-        ? logsData.items
-        : Array.isArray(logsData)
-          ? logsData
-          : [];
-      const scoped = items.filter((row) => {
-        const d = String(row.formatted_date || row.entry_date || '').slice(0, 10);
-        return d === today;
-      });
-      setTodayLogs(scoped);
 
       const tasksData = await tasksRes.json().catch(() => ({}));
       const filterData = await filterRes.json().catch(() => ({}));
       const operatorsData = await operatorsRes.json().catch(() => ({}));
 
+      if (requestId !== homeOverviewRequestIdRef.current) return;
+
       if (!tasksRes.ok) {
         console.warn('DO task overview failed:', tasksData.message || tasksRes.status);
         setWarehouseTasks([]);
         setTaskSummary(null);
+        setHomeOperators([]);
       } else {
-        setWarehouseTasks(Array.isArray(tasksData.warehouses) ? tasksData.warehouses : []);
-        setTaskSummary(tasksData.summary || null);
+        applyDoTaskOverviewPayload(tasksData);
       }
 
-      // DOs: task overview first (has done/pending/overdue), then dedicated operators list
-      let doList = [];
-      if (tasksRes.ok && Array.isArray(tasksData.operators) && tasksData.operators.length) {
-        doList = tasksData.operators;
-      } else if (operatorsRes.ok && Array.isArray(operatorsData.operators)) {
-        doList = operatorsData.operators.map((op) => ({
-          id: op.id,
-          name: op.name || op.full_name || (op.email ? String(op.email).split('@')[0] : 'DO'),
-          email: op.email || null,
-          phone_no: op.phone_no || null,
-          warehouse_name: op.warehouse_name || 'Unassigned',
-          chamber_limit: op.chamber_limit,
-          completed: 0,
-          pending: 0,
-          overdue: 0
-        }));
-      } else if (tasksRes.ok && Array.isArray(tasksData.warehouses)) {
-        tasksData.warehouses.forEach((w) => {
-          (w.operators || []).forEach((op) => {
-            doList.push({
-              ...op,
-              warehouse_name: w.warehouse_name,
-              completed: w.completed,
-              pending: w.pending,
-              overdue: w.overdue
-            });
-          });
-        });
+      if (
+        (!tasksRes.ok || !(Array.isArray(tasksData.operators) && tasksData.operators.length)) &&
+        !(Array.isArray(tasksData.warehouses) && tasksData.warehouses.some((w) => (w.operators || []).length)) &&
+        operatorsRes.ok &&
+        Array.isArray(operatorsData.operators) &&
+        operatorsData.operators.length
+      ) {
+        setHomeOperators(
+          operatorsData.operators.map((op) => ({
+            id: op.id,
+            name: op.name || op.full_name || (op.email ? String(op.email).split('@')[0] : 'DO'),
+            email: op.email || null,
+            phone_no: op.phone_no || null,
+            warehouse_name: op.warehouse_name || 'Unassigned',
+            chamber_limit: op.chamber_limit,
+            completed: 0,
+            pending: 0,
+            overdue: 0,
+            morning_completed: 0,
+            morning_expected: 0,
+            evening_completed: 0,
+            evening_expected: 0
+          }))
+        );
       }
-      setHomeOperators(doList);
 
-      // Fallback warehouses if overview empty or failed
       if (
         (!tasksRes.ok || !(Array.isArray(tasksData.warehouses) && tasksData.warehouses.length)) &&
         filterRes.ok
@@ -654,46 +743,26 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           setWarehouseTasks(
             filterWarehouses.map((wh) => {
               const whName = wh.name || wh.warehouse_name || 'Unassigned';
-              const dosHere = doList.filter(
-                (op) =>
-                  String(op.warehouse_name || '').trim().toLowerCase() ===
-                  String(whName).trim().toLowerCase()
-              );
               return {
                 warehouse_name: whName,
-                do_names: dosHere.map((d) => d.name).join(', ') || 'No DO',
-                operators: dosHere,
+                do_names: 'No DO',
+                operators: [],
                 assignment_count:
                   Number(wh.client_count) || (Array.isArray(wh.clients) ? wh.clients.length : 0),
                 completed: 0,
                 pending: 0,
                 overdue: 0,
-                expected_today: 0
+                expected_today: 0,
+                morning_completed: 0,
+                morning_expected: 0,
+                evening_completed: 0,
+                evening_expected: 0
               };
             })
           );
         }
-      } else if (tasksRes.ok && Array.isArray(tasksData.warehouses) && doList.length) {
-        // Attach DO names onto warehouse rows when overview has warehouses
-        setWarehouseTasks(
-          tasksData.warehouses.map((wh) => {
-            if (wh.do_names && wh.do_names !== 'No DO assigned') return wh;
-            const dosHere = doList.filter(
-              (op) =>
-                String(op.warehouse_name || '').trim().toLowerCase() ===
-                String(wh.warehouse_name || '').trim().toLowerCase()
-            );
-            if (!dosHere.length) return wh;
-            return {
-              ...wh,
-              do_names: dosHere.map((d) => d.name).join(', '),
-              operators: Array.isArray(wh.operators) && wh.operators.length ? wh.operators : dosHere
-            };
-          })
-        );
       }
 
-      // Portal customers (customers table) — not chamber clients
       const customersData = await customersRes.json().catch(() => ({}));
       if (!customersRes.ok) {
         console.warn('Customers fetch failed:', customersData.message || customersRes.status);
@@ -717,6 +786,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       }
       setHomeLastUpdated(formatClockTime(new Date()));
     } catch (err) {
+      if (requestId !== homeOverviewRequestIdRef.current) return;
       setHomeError(formatUserError(err, { apiUrl, context: 'Failed to load overview' }));
       setTodayLogs([]);
       setStats(null);
@@ -728,8 +798,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       setHomeLoading(false);
       setHomeRefreshing(false);
     }
-  }, [apiUrl, token, authHeaders, formatClockTime]);
+  }, [apiUrl, token, authHeaders, formatClockTime, applyDoTaskOverviewPayload]);
 
+
+  const loadHomeOverviewRef = useRef(loadHomeOverview);
+  loadHomeOverviewRef.current = loadHomeOverview;
   // Handle Android system back button presses
   useEffect(() => {
     const backAction = () => {
@@ -885,6 +958,77 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   );
 
   const logsWarehouseSelected = warehouseFilter !== 'All';
+
+  const loadLogTaskSummary = useCallback(async () => {
+    if (!apiUrl || !token || logType !== 'chambers') {
+      setLogTaskSummary(null);
+      return;
+    }
+    let from = dateFrom;
+    let to = dateTo;
+    if (from === 'All' || to === 'All') {
+      const t = toLocalYmd();
+      from = from === 'All' ? t : from;
+      to = to === 'All' ? t : to;
+    }
+    setLogTaskSummaryLoading(true);
+    try {
+      const qs = new URLSearchParams({
+        fromDate: String(from).slice(0, 10),
+        toDate: String(to).slice(0, 10)
+      });
+      const res = await fetch(`${apiUrl}/api/dashboard/do-task-overview?${qs.toString()}`, {
+        headers: authHeaders
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.message || data.error || `Task summary failed (${res.status})`);
+      }
+
+      let morningDone = Number(data?.summary?.morning_completed) || 0;
+      let morningExp = Number(data?.summary?.morning_expected) || 0;
+      let eveningDone = Number(data?.summary?.evening_completed) || 0;
+      let eveningExp = Number(data?.summary?.evening_expected) || 0;
+      let completed = Number(data?.summary?.completed) || 0;
+      let expected =
+        Number(data?.summary?.expected_today) || morningExp + eveningExp;
+      let pending = Number(data?.summary?.pending) || 0;
+
+      if (warehouseFilter && warehouseFilter !== 'All' && Array.isArray(data?.warehouses)) {
+        const needle = String(warehouseFilter).trim().toLowerCase();
+        const matched = data.warehouses.filter(
+          (w) => String(w.warehouse_name || '').trim().toLowerCase() === needle
+        );
+        morningDone = matched.reduce((s, w) => s + (Number(w.morning_completed) || 0), 0);
+        morningExp = matched.reduce((s, w) => s + (Number(w.morning_expected) || 0), 0);
+        eveningDone = matched.reduce((s, w) => s + (Number(w.evening_completed) || 0), 0);
+        eveningExp = matched.reduce((s, w) => s + (Number(w.evening_expected) || 0), 0);
+        completed = matched.reduce((s, w) => s + (Number(w.completed) || 0), 0);
+        expected = matched.reduce(
+          (s, w) => s + (Number(w.expected_today) || 0),
+          0
+        );
+        pending = matched.reduce((s, w) => s + (Number(w.pending) || 0), 0);
+      }
+
+      setLogTaskSummary({
+        from,
+        to,
+        morningDone,
+        morningExp,
+        eveningDone,
+        eveningExp,
+        completed,
+        expected: expected || morningExp + eveningExp,
+        pending
+      });
+    } catch (err) {
+      console.warn('Log task summary failed:', err?.message || err);
+      setLogTaskSummary(null);
+    } finally {
+      setLogTaskSummaryLoading(false);
+    }
+  }, [apiUrl, token, authHeaders, logType, dateFrom, dateTo, warehouseFilter]);
 
   const loadLogs = useCallback(async () => {
     if (!apiUrl || !token) return;
@@ -1219,8 +1363,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   }, [reportRows]);
 
   useEffect(() => {
-    if (activeTab === 'Dashboard' || activeTab === 'Home') loadHomeOverview();
-  }, [activeTab, loadHomeOverview]);
+    if (activeTab === 'Dashboard' || activeTab === 'Home') {
+      loadHomeOverviewRef.current();
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     setLogPage(1);
@@ -1230,8 +1376,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     if (activeTab === 'Logs') {
       loadLogFilterScope();
       loadLogs();
+      loadLogTaskSummary();
     }
-  }, [activeTab, loadLogFilterScope, loadLogs]);
+  }, [activeTab, loadLogFilterScope, loadLogs, loadLogTaskSummary]);
 
   useEffect(() => {
     if (activeTab === 'Reports') loadReports();
@@ -1491,12 +1638,12 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
   const homeListSubtitle = useMemo(() => {
     if (homeListFocus === 'warehouses') {
-      return 'Task progress by warehouse · tap a DO for profile';
+      return 'Today Mor / Evn · tap a DO for profile';
     }
     if (homeListFocus === 'customers') {
       return 'Portal login accounts · view access scope';
     }
-    return 'Monitor daily tasks · tap a row for DO profile';
+    return "Today's tasks · Morning & Evening";
   }, [homeListFocus]);
 
   const todayOps = useMemo(() => {
@@ -1504,7 +1651,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     return {
       completed: Number(t.completed) || 0,
       pending: Number(t.pending) || 0,
-      overdue: Number(t.overdue) || 0
+      overdue: Number(t.overdue) || 0,
+      morningDone: Number(t.morning_completed) || 0,
+      morningExpected: Number(t.morning_expected) || 0,
+      eveningDone: Number(t.evening_completed) || 0,
+      eveningExpected: Number(t.evening_expected) || 0
     };
   }, [taskSummary]);
 
@@ -1513,12 +1664,27 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       return new Date().toLocaleDateString('en-IN', {
         weekday: 'long',
         day: 'numeric',
-        month: 'short'
+        month: 'short',
+        year: 'numeric'
       });
     } catch (_) {
       return toLocalYmd();
     }
   }, []);
+
+  const logDatePreset = useMemo(() => {
+    const today = toLocalYmd();
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 6);
+    const sevenFrom = toLocalYmd(start);
+    const sevenTo = toLocalYmd(end);
+    const from = dateFrom === 'All' ? today : dateFrom;
+    const to = dateTo === 'All' ? today : dateTo;
+    if (from === today && to === today) return 'today';
+    if (from === sevenFrom && to === sevenTo) return '7days';
+    return null;
+  }, [dateFrom, dateTo]);
 
   const openAdminSection = useCallback((section, permFilter = 'pending') => {
     setAdminInitialSection(section);
@@ -1583,7 +1749,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           warehouse_name: w.warehouse_name,
           completed: w.completed,
           pending: w.pending,
-          overdue: w.overdue
+          overdue: w.overdue,
+          morning_completed: w.morning_completed,
+          morning_expected: w.morning_expected,
+          morning_pending: w.morning_pending,
+          evening_completed: w.evening_completed,
+          evening_expected: w.evening_expected,
+          evening_pending: w.evening_pending
         });
       });
     });
@@ -1627,7 +1799,14 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         chamber_limit: merged.chamber_limit != null ? Number(merged.chamber_limit) : null,
         completed: Number(merged.completed) || 0,
         pending: Number(merged.pending) || 0,
-        overdue: Number(merged.overdue) || 0
+        overdue: Number(merged.overdue) || 0,
+        morning_completed: Number(merged.morning_completed) || 0,
+        morning_expected: Number(merged.morning_expected) || 0,
+        morning_pending: Number(merged.morning_pending) || 0,
+        evening_completed: Number(merged.evening_completed) || 0,
+        evening_expected: Number(merged.evening_expected) || 0,
+        evening_pending: Number(merged.evening_pending) || 0,
+        task_date: toLocalYmd()
       };
     },
     [homeOperators]
@@ -1677,6 +1856,27 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   useEffect(() => {
     if (selectedDoProfile?.warehouse_name) loadDoProfileAssignments();
   }, [selectedDoProfile?.warehouse_name, loadDoProfileAssignments]);
+
+  useEffect(() => {
+    setSelectedDoProfile((prev) => {
+      if (!prev) return prev;
+      const refreshed = resolveDoProfile(prev, prev.warehouse_name);
+      if (!refreshed) return prev;
+      return {
+        ...prev,
+        completed: refreshed.completed,
+        pending: refreshed.pending,
+        overdue: refreshed.overdue,
+        morning_completed: refreshed.morning_completed,
+        morning_expected: refreshed.morning_expected,
+        morning_pending: refreshed.morning_pending,
+        evening_completed: refreshed.evening_completed,
+        evening_expected: refreshed.evening_expected,
+        evening_pending: refreshed.evening_pending,
+        task_date: refreshed.task_date
+      };
+    });
+  }, [homeOperators, resolveDoProfile]);
 
   const saveDoProfileEdits = useCallback(async () => {
     if (!selectedDoProfile?.id || !apiUrl || !token) {
@@ -2315,44 +2515,106 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               </TouchableOpacity>
             </View>
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.suggestRow}>
+            <View style={styles.logQuickBtnRow}>
               <TouchableOpacity
-                style={styles.suggestChip}
+                style={[
+                  styles.logQuickBtn,
+                  logDatePreset === 'today' && styles.logQuickBtnActive
+                ]}
                 onPress={() => {
                   const t = toLocalYmd();
                   applyDateRange(t, t);
                 }}
+                activeOpacity={0.85}
               >
-                <Text style={styles.suggestText}>Today</Text>
+                <Text
+                  style={[
+                    styles.logQuickBtnText,
+                    logDatePreset === 'today' && styles.logQuickBtnTextActive
+                  ]}
+                >
+                  Today
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.suggestChip}
+                style={[
+                  styles.logQuickBtn,
+                  logDatePreset === '7days' && styles.logQuickBtnActive
+                ]}
                 onPress={() => {
                   const end = new Date();
                   const start = new Date();
                   start.setDate(end.getDate() - 6);
                   applyDateRange(toLocalYmd(start), toLocalYmd(end));
                 }}
+                activeOpacity={0.85}
               >
-                <Text style={styles.suggestText}>7 days</Text>
+                <Text
+                  style={[
+                    styles.logQuickBtnText,
+                    logDatePreset === '7days' && styles.logQuickBtnTextActive
+                  ]}
+                >
+                  7 days
+                </Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.suggestChip} onPress={clearAllFilters}>
-                <Text style={styles.suggestText}>Clear</Text>
+              <TouchableOpacity
+                style={[styles.logQuickBtn, styles.logQuickBtnClear]}
+                onPress={clearAllFilters}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.logQuickBtnText, styles.logQuickBtnClearText]}>Clear</Text>
               </TouchableOpacity>
-            </ScrollView>
+            </View>
           </View>
 
             {logType === 'chambers' ? (
-              <View style={styles.dailyBanner}>
-                <Ionicons name="thermometer-outline" size={14} color="#003580" />
-                <Text style={styles.dailyBannerText}>
-                  Daily chamber data · {logs.length} entr
-                  {logs.length === 1 ? 'y' : 'ies'}
-                  {dateFrom !== 'All' && dateFrom === dateTo
-                    ? ` · ${formatDateLabel(dateFrom)}`
-                    : ''}
-                </Text>
-              </View>
+              <>
+                <View style={[styles.todayOpsCard, styles.logOpsCard]}>
+                  <View style={[styles.todayOpsCell, styles.logOpsCell]}>
+                    <Text style={[styles.todayOpsNum, styles.logOpsNum, { color: '#059669' }]}>
+                      {logTaskSummaryLoading ? '—' : logTaskSummary?.completed ?? 0}
+                      <Text style={[styles.todayOpsDen, styles.logOpsDen]}>
+                        /{logTaskSummaryLoading ? '—' : logTaskSummary?.expected ?? 0}
+                      </Text>
+                    </Text>
+                    <Text style={[styles.todayOpsLbl, styles.logOpsLbl]}>Completed</Text>
+                  </View>
+                  <View style={styles.todayOpsDivider} />
+                  <View style={[styles.todayOpsCell, styles.logOpsCell]}>
+                    <Text style={[styles.todayOpsNum, styles.logOpsNum, { color: '#059669' }]}>
+                      {logTaskSummaryLoading ? '—' : logTaskSummary?.morningDone ?? 0}
+                      <Text style={[styles.todayOpsDen, styles.logOpsDen]}>
+                        /{logTaskSummaryLoading ? '—' : logTaskSummary?.morningExp ?? 0}
+                      </Text>
+                    </Text>
+                    <Text style={[styles.todayOpsLbl, styles.logOpsLbl]}>Morning</Text>
+                  </View>
+                  <View style={styles.todayOpsDivider} />
+                  <View style={[styles.todayOpsCell, styles.logOpsCell]}>
+                    <Text style={[styles.todayOpsNum, styles.logOpsNum, { color: '#003580' }]}>
+                      {logTaskSummaryLoading ? '—' : logTaskSummary?.eveningDone ?? 0}
+                      <Text style={[styles.todayOpsDen, styles.logOpsDen]}>
+                        /{logTaskSummaryLoading ? '—' : logTaskSummary?.eveningExp ?? 0}
+                      </Text>
+                    </Text>
+                    <Text style={[styles.todayOpsLbl, styles.logOpsLbl]}>Evening</Text>
+                  </View>
+                </View>
+                <View style={[styles.dailyBanner, styles.logDailyBanner]}>
+                  <Ionicons name="thermometer-outline" size={11} color="#003580" />
+                  <Text style={[styles.dailyBannerText, styles.logDailyBannerText]}>
+                    Tasks for filter dates
+                    {dateFrom !== 'All' && dateTo !== 'All'
+                      ? dateFrom === dateTo
+                        ? ` · ${formatDateLabel(dateFrom)}`
+                        : ` · ${formatDateLabel(dateFrom)} → ${formatDateLabel(dateTo)}`
+                      : ''}
+                    {warehouseFilter !== 'All' ? ` · ${warehouseFilter}` : ''}
+                    {logTaskSummaryLoading ? ' · …' : ''}
+                  </Text>
+                </View>
+              </>
             ) : null}
 
           {isBlockingListLoad(logsLoading, logsRefreshing, logs.length) ? (
@@ -2380,6 +2642,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   onRefresh={() => {
                     setLogsRefreshing(true);
                     loadLogs();
+                    loadLogTaskSummary();
                   }}
                 />
               }
@@ -2698,16 +2961,16 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 <>
                   <View style={styles.dashHero}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.dashHeroEyebrow}>DO&apos;s daily task overview · weekly</Text>
-                      <Text style={styles.dashHeroTitle}>Today&apos;s status</Text>
+                      <Text style={styles.dashHeroEyebrow}>DO monitor · daily tasks</Text>
+                      <Text style={styles.dashHeroTitle}>Today's status</Text>
                       <Text style={styles.dashHeroDate}>{todayLabel}</Text>
                       <Text style={styles.dashHeroHint}>
-                        Pending = today shifts · Overdue = last 5 days missing logs
+                        Pending = today shifts · Overdue = prior 5 days missing
                       </Text>
                       {homeLastUpdated ? (
                         <Text style={styles.dashUpdatedAt}>Updated · {homeLastUpdated}</Text>
                       ) : null}
-                        </View>
+                    </View>
                     <View style={styles.dashHeroIcon}>
                       <Ionicons name="pulse-outline" size={22} color="#003580" />
                     </View>
@@ -2716,16 +2979,18 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   <View style={styles.todayOpsCard}>
                     <View style={styles.todayOpsCell}>
                       <Text style={[styles.todayOpsNum, { color: '#059669' }]}>
-                        {todayOps.completed}
-                        </Text>
-                      <Text style={styles.todayOpsLbl}>Completed</Text>
-                      </View>
+                        {todayOps.morningDone}
+                        <Text style={styles.todayOpsDen}>/{todayOps.morningExpected}</Text>
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Morning</Text>
+                    </View>
                     <View style={styles.todayOpsDivider} />
                     <View style={styles.todayOpsCell}>
-                      <Text style={[styles.todayOpsNum, { color: '#d97706' }]}>
-                        {todayOps.pending}
+                      <Text style={[styles.todayOpsNum, { color: '#003580' }]}>
+                        {todayOps.eveningDone}
+                        <Text style={styles.todayOpsDen}>/{todayOps.eveningExpected}</Text>
                       </Text>
-                      <Text style={styles.todayOpsLbl}>Pending</Text>
+                      <Text style={styles.todayOpsLbl}>Evening</Text>
                     </View>
                     <View style={styles.todayOpsDivider} />
                     <View style={styles.todayOpsCell}>
@@ -2806,113 +3071,124 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
                   <View style={styles.doSection}>
                     <View style={styles.doOverviewCard}>
-                      <Text style={styles.doOverviewTitle}>{homeListTitle}</Text>
-                      <Text style={styles.doOverviewSub}>{homeListSubtitle}</Text>
+                      <View style={styles.doOverviewHead}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={styles.doOverviewTitle}>{homeListTitle}</Text>
+                          <Text style={styles.doOverviewSub}>{homeListSubtitle}</Text>
+                        </View>
+                      </View>
 
                       {homeListFocus === 'warehouses' ? (
                         warehouseTasks.length === 0 ? (
                           <Text style={styles.cardHintSm}>No warehouses yet.</Text>
-                      ) : (
+                        ) : (
                         warehouseTasks.map((wh, idx) => {
-                          const done = Number(wh.completed) || 0;
-                          const pending = Number(wh.pending) || 0;
+                          const mornDone = Number(wh.morning_completed) || 0;
+                          const mornExp = Number(wh.morning_expected) || 0;
+                          const eveDone = Number(wh.evening_completed) || 0;
+                          const eveExp = Number(wh.evening_expected) || 0;
                           const overdue = Number(wh.overdue) || 0;
-                          const expected = Number(wh.expected_today) || done + pending;
-                          const allDone = pending === 0 && expected > 0;
+                          const pending = Number(wh.pending) || 0;
                           const color =
-                            overdue > 0 ? '#dc2626' : allDone ? '#059669' : '#d97706';
-                            const warehouseDos = dosForWarehouse(wh);
+                            overdue > 0 ? '#dc2626' : pending > 0 ? '#d97706' : '#059669';
+                          const warehouseDos = dosForWarehouse(wh);
                           return (
                             <View
                               key={wh.warehouse_name}
                               style={[styles.doOverviewRow, idx > 0 && styles.doOverviewRowBorder]}
                             >
                               <View style={{ flex: 1, minWidth: 0 }}>
-                                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                  <View
+                                    style={[styles.doOverviewDotSm, { backgroundColor: color }]}
+                                  />
+                                  <View style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>
+                                    <Text style={styles.doOverviewWh} numberOfLines={1}>
+                                      {wh.warehouse_name}
+                                    </Text>
+                                    <Text style={styles.doOverviewMeta} numberOfLines={1}>
+                                      {warehouseDos.length
+                                        ? `${warehouseDos.length} DO${
+                                            warehouseDos.length === 1 ? '' : 's'
+                                          }`
+                                        : 'No DO'}
+                                      {wh.assignment_count
+                                        ? ` · ${wh.assignment_count} client${
+                                            Number(wh.assignment_count) === 1 ? '' : 's'
+                                          }`
+                                        : ''}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.doCountPills}>
+                                    <View style={[styles.doCountPill, styles.doCountPillDone]}>
+                                      <Text style={[styles.doCountPillNum, { color: '#059669' }]}>
+                                        {mornDone}/{mornExp}
+                                      </Text>
+                                      <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>
+                                        Mor
+                                      </Text>
+                                    </View>
                                     <View
-                                      style={[styles.doOverviewDotSm, { backgroundColor: color }]}
-                                    />
-                                    <View style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>
-                                <Text style={styles.doOverviewWh} numberOfLines={1}>
-                                  {wh.warehouse_name}
-                                </Text>
-                                <Text style={styles.doOverviewMeta} numberOfLines={1}>
-                                        {warehouseDos.length
-                                          ? `${warehouseDos.length} DO${
-                                              warehouseDos.length === 1 ? '' : 's'
-                                            }`
-                                          : 'No DO'}
-                                        {wh.assignment_count
-                                          ? ` · ${wh.assignment_count} client${
-                                              Number(wh.assignment_count) === 1 ? '' : 's'
-                                            }`
-                                          : ''}
-                                </Text>
-                              </View>
-                              <View style={styles.doCountPills}>
-                                <View style={[styles.doCountPill, styles.doCountPillDone]}>
-                                  <Text style={[styles.doCountPillNum, { color: '#059669' }]}>
-                                    {done}
-                                  </Text>
-                                  <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>
-                                    Done
-                                  </Text>
+                                      style={[styles.doCountPill, { backgroundColor: '#eff6ff' }]}
+                                    >
+                                      <Text style={[styles.doCountPillNum, { color: '#003580' }]}>
+                                        {eveDone}/{eveExp}
+                                      </Text>
+                                      <Text style={[styles.doCountPillLbl, { color: '#003580' }]}>
+                                        Evn
+                                      </Text>
+                                    </View>
+                                    <View style={[styles.doCountPill, styles.doCountPillOver]}>
+                                      <Text style={[styles.doCountPillNum, { color: '#dc2626' }]}>
+                                        {overdue}
+                                      </Text>
+                                      <Text style={[styles.doCountPillLbl, { color: '#dc2626' }]}>
+                                        Over
+                                      </Text>
+                                    </View>
+                                  </View>
                                 </View>
-                                <View style={[styles.doCountPill, styles.doCountPillPend]}>
-                                  <Text style={[styles.doCountPillNum, { color: '#d97706' }]}>
-                                    {pending}
-                                  </Text>
-                                  <Text style={[styles.doCountPillLbl, { color: '#d97706' }]}>
-                                    Pending
-                                  </Text>
-                                </View>
-                                <View style={[styles.doCountPill, styles.doCountPillOver]}>
-                                  <Text style={[styles.doCountPillNum, { color: '#dc2626' }]}>
-                                    {overdue}
-                                  </Text>
-                                  <Text style={[styles.doCountPillLbl, { color: '#dc2626' }]}>
-                                    Overdue
-                                  </Text>
-                                </View>
+
+                                {warehouseDos.length > 0 ? (
+                                  <View style={styles.warehouseDoList}>
+                                    {warehouseDos.map((op, doIdx) => {
+                                      const profile = resolveDoProfile(op, wh.warehouse_name);
+                                      return (
+                                        <TouchableOpacity
+                                          key={`${op.id || op.email || op.name}-${doIdx}`}
+                                          style={styles.warehouseDoChip}
+                                          activeOpacity={0.85}
+                                          onPress={() => openDoProfile(op, wh.warehouse_name)}
+                                        >
+                                          <View style={styles.warehouseDoAvatar}>
+                                            <Ionicons name="person" size={14} color="#003580" />
+                                          </View>
+                                          <View style={{ flex: 1, minWidth: 0 }}>
+                                            <Text style={styles.warehouseDoName} numberOfLines={1}>
+                                              {profile?.name || op.name || 'DO'}
+                                            </Text>
+                                            <Text style={styles.warehouseDoMeta} numberOfLines={1}>
+                                              Mor {Number(profile?.morning_completed) || 0}/
+                                              {Number(profile?.morning_expected) || 0}
+                                              {' · '}
+                                              Evn {Number(profile?.evening_completed) || 0}/
+                                              {Number(profile?.evening_expected) || 0}
+                                            </Text>
+                                          </View>
+                                          <Ionicons
+                                            name="chevron-forward"
+                                            size={16}
+                                            color="#94a3b8"
+                                          />
+                                        </TouchableOpacity>
+                                      );
+                                    })}
+                                  </View>
+                                ) : null}
                               </View>
                             </View>
-
-                                  {warehouseDos.length > 0 ? (
-                                    <View style={styles.warehouseDoList}>
-                                      {warehouseDos.map((op, doIdx) => {
-                                        const profile = resolveDoProfile(op, wh.warehouse_name);
-                                        return (
-                                          <TouchableOpacity
-                                            key={`${op.id || op.email || op.name}-${doIdx}`}
-                                            style={styles.warehouseDoChip}
-                                            activeOpacity={0.85}
-                                            onPress={() => openDoProfile(op, wh.warehouse_name)}
-                                          >
-                                            <View style={styles.warehouseDoAvatar}>
-                                              <Ionicons name="person" size={14} color="#003580" />
-                    </View>
-                                            <View style={{ flex: 1, minWidth: 0 }}>
-                                              <Text style={styles.warehouseDoName} numberOfLines={1}>
-                                                {profile?.name || op.name || 'DO'}
-                                              </Text>
-                                              <Text style={styles.warehouseDoMeta} numberOfLines={1}>
-                                                {profile?.email || op.email || 'Tap for profile'}
-                                              </Text>
-                  </View>
-                                            <Ionicons
-                                              name="chevron-forward"
-                                              size={16}
-                                              color="#94a3b8"
-                                            />
-                      </TouchableOpacity>
-                                        );
-                                      })}
-                    </View>
-                                  ) : null}
-                                </View>
-                              </View>
-                            );
-                          })
+                          );
+                        })
                         )
                       ) : homeListFocus === 'customers' ? (
                         homeCustomers.length === 0 ? (
@@ -2946,6 +3222,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                         derivedHomeOperators.map((op, idx) => {
                           const overdue = Number(op.overdue) || 0;
                           const pending = Number(op.pending) || 0;
+                          const mornDone = Number(op.morning_completed) || 0;
+                          const mornExp = Number(op.morning_expected) || 0;
+                          const eveDone = Number(op.evening_completed) || 0;
+                          const eveExp = Number(op.evening_expected) || 0;
                           const color =
                             overdue > 0 ? '#dc2626' : pending > 0 ? '#d97706' : '#059669';
                           return (
@@ -2968,18 +3248,18 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                               <View style={styles.doCountPills}>
                                 <View style={[styles.doCountPill, styles.doCountPillDone]}>
                                   <Text style={[styles.doCountPillNum, { color: '#059669' }]}>
-                                    {Number(op.completed) || 0}
+                                    {mornDone}/{mornExp}
                           </Text>
                                   <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>
-                                    Done
+                                    Mor
                                   </Text>
                                 </View>
-                                <View style={[styles.doCountPill, styles.doCountPillPend]}>
-                                  <Text style={[styles.doCountPillNum, { color: '#d97706' }]}>
-                                    {pending}
+                                <View style={[styles.doCountPill, { backgroundColor: '#eff6ff' }]}>
+                                  <Text style={[styles.doCountPillNum, { color: '#003580' }]}>
+                                    {eveDone}/{eveExp}
                                   </Text>
-                                  <Text style={[styles.doCountPillLbl, { color: '#d97706' }]}>
-                                    Pending
+                                  <Text style={[styles.doCountPillLbl, { color: '#003580' }]}>
+                                    Evn
                                   </Text>
                                 </View>
                                 <View style={[styles.doCountPill, styles.doCountPillOver]}>
@@ -2987,7 +3267,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                                     {overdue}
                                   </Text>
                                   <Text style={[styles.doCountPillLbl, { color: '#dc2626' }]}>
-                                    Overdue
+                                    Over
                                   </Text>
                                 </View>
                               </View>
@@ -3911,21 +4191,30 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 </View>
 
                 <View style={styles.doProfileCard}>
-                  <Text style={[styles.doProfileSectionTitle, { marginBottom: 10 }]}>
-                    Today’s task snapshot
+                  <Text style={[styles.doProfileSectionTitle, { marginBottom: 4 }]}>
+                    Today's tasks · Mor / Evn
+                  </Text>
+                  <Text style={[styles.doProfileHeroRole, { marginBottom: 10, textAlign: 'left' }]}>
+                    {toLocalYmd()} · Today
                   </Text>
                   <View style={styles.doProfileStatRow}>
                     <View style={[styles.doProfileStatPill, { backgroundColor: '#ecfdf5' }]}>
                       <Text style={[styles.doProfileStatNum, { color: '#059669' }]}>
-                        {selectedDoProfile.completed}
+                        {Number(selectedDoProfile.morning_completed) || 0}
+                        <Text style={{ fontSize: 12, fontWeight: '700' }}>
+                          /{Number(selectedDoProfile.morning_expected) || 0}
+                        </Text>
                       </Text>
-                      <Text style={[styles.doProfileStatLbl, { color: '#059669' }]}>Done</Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#059669' }]}>Morning</Text>
                     </View>
-                    <View style={[styles.doProfileStatPill, { backgroundColor: '#fffbeb' }]}>
-                      <Text style={[styles.doProfileStatNum, { color: '#d97706' }]}>
-                        {selectedDoProfile.pending}
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#eff6ff' }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#003580' }]}>
+                        {Number(selectedDoProfile.evening_completed) || 0}
+                        <Text style={{ fontSize: 12, fontWeight: '700' }}>
+                          /{Number(selectedDoProfile.evening_expected) || 0}
+                        </Text>
                       </Text>
-                      <Text style={[styles.doProfileStatLbl, { color: '#d97706' }]}>Pending</Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#003580' }]}>Evening</Text>
                     </View>
                     <View style={[styles.doProfileStatPill, { backgroundColor: '#fef2f2' }]}>
                       <Text style={[styles.doProfileStatNum, { color: '#dc2626' }]}>
@@ -4216,14 +4505,30 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         </View>
       </Modal>
 
-      <View style={styles.tabBar}>
-        {[
-          { id: 'Dashboard', label: 'Dashboard', icon: 'home', iconOutline: 'home-outline' },
-          { id: 'Logs', label: 'Logs', icon: 'list', iconOutline: 'list-outline' },
-          { id: 'Reports', label: 'Reports', icon: 'stats-chart', iconOutline: 'stats-chart-outline' },
-          { id: 'Admin', label: 'Admin', icon: 'construct', iconOutline: 'construct-outline' },
-          { id: 'More', label: 'More', icon: 'person', iconOutline: 'person-outline' }
-        ].map((tab) => {
+      <View
+        style={styles.tabBar}
+        onLayout={(e) => {
+          const w = e.nativeEvent.layout.width;
+          if (!w || Math.abs(w - tabBarWidthRef.current) < 1) return;
+          tabBarWidthRef.current = w;
+          const tabW = w / SUBADMIN_BOTTOM_TAB_COUNT;
+          setTabIndicatorWidth(Math.max(28, tabW * 0.5));
+          slideTabIndicator(getSubAdminBottomTabIndex(activeTab), w, false);
+        }}
+      >
+        {tabIndicatorWidth > 0 ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.tabBarActiveLine,
+              {
+                width: tabIndicatorWidth,
+                transform: [{ translateX: tabIndicatorX }]
+              }
+            ]}
+          />
+        ) : null}
+        {SUBADMIN_BOTTOM_TABS.map((tab) => {
           const active = activeTab === tab.id;
           return (
             <TouchableOpacity
@@ -4235,7 +4540,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               }}
               activeOpacity={0.85}
             >
-              <Ionicons name={active ? tab.icon : tab.iconOutline} size={22} color={active ? '#003580' : '#94a3b8'} />
+              <Ionicons
+                name={active ? tab.icon : tab.iconOutline}
+                size={22}
+                color={active ? '#003580' : '#64748b'}
+              />
               <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{tab.label}</Text>
             </TouchableOpacity>
           );
@@ -4591,6 +4900,41 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 15
   },
+  dashHeroDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    flexWrap: 'wrap'
+  },
+  dashDateChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7
+  },
+  dashDateChipText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#003580',
+    maxWidth: 140
+  },
+  dashTodayBtn: {
+    backgroundColor: '#003580',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7
+  },
+  dashTodayBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#fff'
+  },
   dashUpdatedAt: {
     fontSize: 10,
     color: '#64748b',
@@ -4617,7 +4961,8 @@ const styles = StyleSheet.create({
   },
   todayOpsCell: { flex: 1, alignItems: 'center', paddingVertical: 12 },
   todayOpsDivider: { width: 1, backgroundColor: '#e2e8f0' },
-  todayOpsNum: { fontSize: 20, fontWeight: '800' },
+  todayOpsNum: { fontSize: 18, fontWeight: '800' },
+  todayOpsDen: { fontSize: 12, fontWeight: '700', color: '#94a3b8' },
   todayOpsLbl: {
     fontSize: 10,
     fontWeight: '700',
@@ -4792,6 +5137,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0'
   },
+  doOverviewHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 2
+  },
   doOverviewTitle: {
     fontSize: 14,
     fontWeight: '800',
@@ -4802,8 +5152,24 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#64748b',
     fontWeight: '600',
-    marginBottom: 10,
+    marginBottom: 8,
     lineHeight: 15
+  },
+  doMonitorFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginBottom: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9'
+  },
+  doMonitorFilterHint: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+    marginLeft: 'auto'
   },
   doOverviewStats: {
     flexDirection: 'row',
@@ -4913,6 +5279,57 @@ const styles = StyleSheet.create({
   filterChipActive: { borderColor: '#93c5fd', backgroundColor: '#eff6ff' },
   filterChipLabel: { fontSize: 8, color: '#94a3b8', fontWeight: '700', letterSpacing: 0.2 },
   filterChipValue: { fontSize: 11, color: '#0f172a', fontWeight: '700', marginTop: 1 },
+  logQuickBtnRow: {
+    flexDirection: 'row',
+    gap: 5,
+    marginBottom: 2
+  },
+  logQuickBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 5,
+    borderRadius: 7,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  logQuickBtnActive: {
+    backgroundColor: '#003580',
+    borderColor: '#003580'
+  },
+  logQuickBtnText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#475569'
+  },
+  logQuickBtnTextActive: {
+    color: '#fff'
+  },
+  logQuickBtnClear: {
+    backgroundColor: '#fff',
+    borderColor: '#cbd5e1'
+  },
+  logQuickBtnClearText: {
+    color: '#475569'
+  },
+  logOpsCard: {
+    marginHorizontal: 10,
+    marginTop: 4,
+    marginBottom: 2,
+    borderRadius: 8
+  },
+  logOpsCell: { paddingVertical: 4 },
+  logOpsNum: { fontSize: 12 },
+  logOpsDen: { fontSize: 9 },
+  logOpsLbl: { fontSize: 7, marginTop: 0 },
+  logDailyBanner: {
+    marginHorizontal: 10,
+    marginBottom: 2,
+    paddingVertical: 3,
+    paddingHorizontal: 7
+  },
+  logDailyBannerText: { fontSize: 8 },
   suggestRow: { gap: 6, paddingBottom: 2 },
   suggestChip: {
     backgroundColor: '#f1f5f9',
@@ -5149,15 +5566,37 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+    height: 64,
     flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#fff',
     borderTopWidth: 1,
     borderTopColor: '#e2e8f0',
-    paddingTop: 8,
-    paddingBottom: 10
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5
   },
-  tabItem: { flex: 1, alignItems: 'center', gap: 2 },
-  tabLabel: { fontSize: 10, color: '#94a3b8', fontWeight: '600' },
+  tabBarActiveLine: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    height: 3,
+    backgroundColor: '#003580',
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+    zIndex: 2
+  },
+  tabItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    minWidth: 0,
+    gap: 2
+  },
+  tabLabel: { fontSize: 10, color: '#64748b', fontWeight: '600' },
   tabLabelActive: { color: '#003580', fontWeight: '800' },
   sheetOverlay: {
     flex: 1,
@@ -5188,6 +5627,13 @@ const styles = StyleSheet.create({
     marginBottom: 12
   },
   calendarTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
+  calendarSubTitle: {
+    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 8
+  },
   calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   calCell: {
     width: `${100 / 7}%`,
@@ -5196,8 +5642,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   calCellActive: { backgroundColor: '#003580', borderRadius: 999 },
+  calCellDisabled: { opacity: 0.35 },
   calCellText: { fontSize: 13, color: '#334155', fontWeight: '600' },
   calCellTextActive: { color: '#fff' },
+  calCellTextDisabled: { color: '#94a3b8' },
   detailOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.45)',

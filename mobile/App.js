@@ -12,7 +12,7 @@
 //   - FALLBACK_LOCAL_IP: update if Wi‑Fi IPv4 changes (ipconfig)
 // ====================================================================
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { StyleSheet, View, NativeModules, Platform, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
@@ -22,9 +22,6 @@ import CustomerScreen from './src/screens/CustomerScreen';
 import SubAdminScreen from './src/screens/SubAdminScreen';
 import SplashScreen from './src/screens/SplashScreen';
 import { clearSyncedInspectionsLocally, initDatabase } from './src/database/db';
-
-/** Minimum splash time so the landing screen doesn’t flash away. */
-const SPLASH_MIN_MS = 4000;
 
 /** Production backend base URL (no trailing slash, no /api path). */
 export const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
@@ -104,11 +101,15 @@ export default function App() {
   const [apiUrl, setApiUrl] = useState(PRODUCTION_API_URL);
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [splashDone, setSplashDone] = useState(false);
+
+  const handleSplashComplete = useCallback(() => {
+    setSplashDone(true);
+  }, []);
 
   useEffect(() => {
     const restoreSession = async () => {
-      const startedAt = Date.now();
       let resolvedApiUrl = PRODUCTION_API_URL;
       try {
         const storedToken = await AsyncStorage.getItem('user_token');
@@ -176,12 +177,8 @@ export default function App() {
       } catch (err) {
         console.warn('Failed to restore session:', err);
       } finally {
-        const elapsed = Date.now() - startedAt;
-        const waitMore = Math.max(0, SPLASH_MIN_MS - elapsed);
-        if (waitMore > 0) {
-          await new Promise((resolve) => setTimeout(resolve, waitMore));
-        }
-        setLoading(false);
+        // Session ready — app still waits until splash animation finishes
+        setSessionReady(true);
       }
     };
     restoreSession();
@@ -248,8 +245,13 @@ export default function App() {
     }
   };
 
-  if (loading) {
-    return <SplashScreen />;
+  if (!sessionReady || !splashDone) {
+    return (
+      <SplashScreen
+        onAnimationComplete={handleSplashComplete}
+        waitingForSession={!sessionReady}
+      />
+    );
   }
 
   const role = user?.role;
