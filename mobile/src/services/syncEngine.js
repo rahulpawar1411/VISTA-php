@@ -23,6 +23,7 @@ import {
   buildOutwardFormData,
   describeInwardQueueItem,
   describeOutwardQueueItem,
+  assertQueuePhotosExist,
 } from '../utils/offlineLogFormData';
 import {
   appendLocalFile,
@@ -298,6 +299,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
     const pendingInwards = getPendingInwardLogs(operatorEmail);
     for (const record of pendingInwards) {
       try {
+        await assertQueuePhotosExist(record);
         const formData = buildInwardFormData(record);
         const response = await multipartRequest(`${apiBaseUrl}/api/inward-logs`, {
           method: 'POST',
@@ -326,6 +328,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
     const pendingOutwards = getPendingOutwardLogs(operatorEmail);
     for (const record of pendingOutwards) {
       try {
+        await assertQueuePhotosExist(record);
         const formData = buildOutwardFormData(record);
         const response = await multipartRequest(`${apiBaseUrl}/api/outward-logs`, {
           method: 'POST',

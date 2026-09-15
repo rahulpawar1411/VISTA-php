@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { normalizeLocalFileUri } from './formDataAppendFile';
 
 const DRAFT_PHOTO_DIR = `${FileSystem.documentDirectory}form_draft_photos/`;
 
@@ -13,7 +14,8 @@ async function ensureDraftPhotoDir() {
 async function uriExists(uri) {
   if (!uri || typeof uri !== 'string') return false;
   try {
-    const info = await FileSystem.getInfoAsync(uri);
+    const path = normalizeLocalFileUri(uri);
+    const info = await FileSystem.getInfoAsync(path);
     return Boolean(info.exists);
   } catch (_) {
     return false;
@@ -21,20 +23,33 @@ async function uriExists(uri) {
 }
 
 /**
- * Copy camera/cache URI into app document storage so drafts survive app restart.
+ * Copy camera/cache URI into app document storage so drafts + sync survive restart.
+ * Accepts file:// and bare absolute paths. content:// copied when FS allows.
  */
 export async function stabilizePhotoForDraft(photo, fieldKey, index = 0) {
   if (!photo?.uri) return photo;
-  const uri = String(photo.uri);
-  if (!uri.startsWith('file')) return photo;
+  const uri = normalizeLocalFileUri(photo.uri);
+  if (!uri) return photo;
   if (uri.startsWith(DRAFT_PHOTO_DIR)) return photo;
+
+  const canCopy =
+    uri.startsWith('file://') ||
+    uri.startsWith('/') ||
+    uri.startsWith('content://');
+  if (!canCopy) return photo;
 
   try {
     await ensureDraftPhotoDir();
     const dest = `${DRAFT_PHOTO_DIR}${fieldKey}-${index}-${Date.now()}.jpg`;
     await FileSystem.copyAsync({ from: uri, to: dest });
+    const ok = await uriExists(dest);
+    if (!ok) {
+      console.warn('stabilizePhotoForDraft: dest missing after copy', dest);
+      return photo;
+    }
     return { ...photo, uri: dest };
-  } catch (_) {
+  } catch (err) {
+    console.warn('stabilizePhotoForDraft failed:', err?.message || err);
     return photo;
   }
 }

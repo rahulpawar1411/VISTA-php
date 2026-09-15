@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import FastTouchable from './FastTouchable';
 import {
+  formatPhotoGps,
   formatPhotoCaptureMetadataLines,
   formatPhotoMetaCaption,
   formatChamberPhotoGps,
@@ -57,10 +58,27 @@ export function GpsDetailRow({ label, lat, lng, accuracy, displayText }) {
 
 export function PhotoCaptureCaption({ photo, formatClockTime }) {
   if (!photo || typeof photo !== 'object') return null;
-  const time =
-    photo.capturedAtStr ||
-    (photo.capturedAt ? (formatClockTime ? formatClockTime(photo.capturedAt) : String(photo.capturedAt)) : '');
-  const gps = formatPhotoGps(photo.latitude, photo.longitude, photo.accuracy);
+
+  let time = '';
+  try {
+    time =
+      photo.capturedAtStr ||
+      (photo.capturedAt
+        ? formatClockTime
+          ? formatClockTime(photo.capturedAt)
+          : String(photo.capturedAt)
+        : '');
+  } catch (_) {
+    time = photo.capturedAtStr || '';
+  }
+
+  let gps = '';
+  try {
+    gps = formatPhotoGps(photo.latitude, photo.longitude, photo.accuracy) || '';
+  } catch (_) {
+    gps = '';
+  }
+
   return (
     <View style={styles.formCaption}>
       <Text style={styles.formCaptionLine}>Time: {time || 'not recorded'}</Text>

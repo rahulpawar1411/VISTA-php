@@ -1,6 +1,6 @@
 import { convertYYYYMMDDToDDMMYYYY } from './inwardValidation';
 import { buildPhotoMetadataPayload } from './photoCaptureMeta';
-import { appendLocalFile } from './formDataAppendFile';
+import { appendLocalFile, localFileExists } from './formDataAppendFile';
 
 export const INWARD_PHOTO_FIELDS = [
   { key: 'inward_invoice_photos', multi: true },
@@ -45,6 +45,47 @@ function appendPhotoToFormData(formData, fieldKey, photoValue, multi) {
   }
 }
 
+function extractClockTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw.includes(' ') ? raw.split(' ').pop() : raw;
+}
+
+/** Collect photo URIs that are missing from device storage. */
+export async function collectMissingPhotoUris(photos = {}) {
+  const missing = [];
+  if (!photos || typeof photos !== 'object') return missing;
+
+  for (const value of Object.values(photos)) {
+    const items = Array.isArray(value) ? value : value?.uri ? [value] : [];
+    for (const item of items) {
+      if (!item?.uri) continue;
+      const ok = await localFileExists(item.uri);
+      if (!ok) missing.push(String(item.uri));
+    }
+  }
+  return missing;
+}
+
+/**
+ * Preflight for sync queue — throw if any photo file is gone.
+ * Mirrors inspection sensor-photo existence check.
+ */
+export async function assertQueuePhotosExist(record) {
+  let photos = {};
+  try {
+    photos = JSON.parse(record?.photos_json || '{}');
+  } catch (_) {
+    photos = {};
+  }
+  const missing = await collectMissingPhotoUris(photos);
+  if (missing.length) {
+    throw new Error(
+      'Photo file(s) missing on device. Open the form, capture photos again, then sync.'
+    );
+  }
+}
+
 export function buildInwardFormData(record) {
   const form = JSON.parse(record.form_json || '{}');
   const photos = JSON.parse(record.photos_json || '{}');
@@ -61,17 +102,16 @@ export function buildInwardFormData(record) {
         : '';
       formData.append('inward_driver_no', fullPhone);
     } else if (key === 'inward_unloading_start_time') {
+      const startTime = extractClockTime(form.inward_unloading_start_time);
       formData.append(
         'inward_unloading_start_time',
-        `${convertYYYYMMDDToDDMMYYYY(startDate)} ${form.inward_unloading_start_time}`
+        startTime ? `${convertYYYYMMDDToDDMMYYYY(startDate)} ${startTime}` : ''
       );
     } else if (key === 'inward_unloading_end_time') {
-      const rawTime = form.inward_unloading_end_time.includes(' ')
-        ? form.inward_unloading_end_time.split(' ')[1]
-        : form.inward_unloading_end_time;
+      const rawTime = extractClockTime(form.inward_unloading_end_time);
       formData.append(
         'inward_unloading_end_time',
-        `${convertYYYYMMDDToDDMMYYYY(endDate)} ${rawTime}`
+        rawTime ? `${convertYYYYMMDDToDDMMYYYY(endDate)} ${rawTime}` : ''
       );
     } else if (key === 'inward_unloading_start_date' || key === 'inward_unloading_end_date') {
       // merged into start/end time
@@ -118,17 +158,16 @@ export function buildOutwardFormData(record) {
         : '';
       formData.append('outward_driver_no', fullPhone);
     } else if (key === 'outward_loading_start_time') {
+      const startTime = extractClockTime(form.outward_loading_start_time);
       formData.append(
         'outward_loading_start_time',
-        `${convertYYYYMMDDToDDMMYYYY(startDate)} ${form.outward_loading_start_time}`
+        startTime ? `${convertYYYYMMDDToDDMMYYYY(startDate)} ${startTime}` : ''
       );
     } else if (key === 'outward_loading_end_time') {
-      const rawTime = form.outward_loading_end_time.includes(' ')
-        ? form.outward_loading_end_time.split(' ')[1]
-        : form.outward_loading_end_time;
+      const rawTime = extractClockTime(form.outward_loading_end_time);
       formData.append(
         'outward_loading_end_time',
-        `${convertYYYYMMDDToDDMMYYYY(endDate)} ${rawTime}`
+        rawTime ? `${convertYYYYMMDDToDDMMYYYY(endDate)} ${rawTime}` : ''
       );
     } else if (key === 'outward_loading_start_date' || key === 'outward_loading_end_date') {
       // merged into start/end time

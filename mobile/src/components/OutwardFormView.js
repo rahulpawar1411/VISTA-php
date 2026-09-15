@@ -13,14 +13,13 @@ import {
   Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
 import FastTouchable from './FastTouchable';
 import DatePickerField from './DatePickerField';
 import TimePickerField from './TimePickerField';
-import { PhotoCaptureCaption } from './LogDetailPhotoLocation';
-import { ensureCameraPermission } from '../utils/permissions';
-import { compressImageOnly } from '../utils/compressImage';
-import { buildPhotoCaptureMeta, beginPhotoLocationCapture } from '../utils/photoCaptureMeta';
+import {
+  captureVerificationPhoto,
+  recoverPendingVerificationPhoto,
+} from '../utils/captureVerificationPhoto';
 import {
   validateOutwardForm,
   validateOutwardStep,
@@ -37,10 +36,10 @@ import {
   formatOutwardClockTime,
   OUTWARD_PHOTO_VARIANCE_LIMIT_MINS,
 } from '../utils/outwardValidation';
-import { saveOutwardLocally, markOutwardAsSynced } from '../database/db';
-import { buildOutwardFormData } from '../utils/offlineLogFormData';
+import { saveOutwardLocally, markOutwardAsSynced, markOutwardSyncError } from '../database/db';
+import { buildOutwardFormData, collectMissingPhotoUris } from '../utils/offlineLogFormData';
 import { appendLocalFile, multipartRequest } from '../utils/formDataAppendFile';
-import { saveFormDraft, loadFormDraft, clearFormDraft, stabilizePhotoForDraft } from '../utils/formDraftStorage';
+import { saveFormDraft, loadFormDraft, clearFormDraft, stabilizePhotosForDraft } from '../utils/formDraftStorage';
 
 const TouchableOpacity = FastTouchable;
 const OUTWARD_DRAFT_KEY = 'outward_form_draft_v1';
@@ -192,6 +191,7 @@ export default function OutwardFormView({
   const scrollRef = useRef(null);
   const draftReadyRef = useRef(false);
   const draftTimerRef = useRef(null);
+  const captureInFlightRef = useRef(false);
   const draftStateRef = useRef({
     form,
     photos,
@@ -427,85 +427,84 @@ export default function OutwardFormView({
     }
   }, [form.outward_damage_received_boxes_qty]);
 
-  const capturePhoto = async (fieldKey, multi) => {
-    try {
-      setPickingPhoto(fieldKey);
-      const allowed = await ensureCameraPermission();
-      if (!allowed) return;
+  const applyCapturedPhoto = useCallback((fieldKey, multi, asset) => {
+    if (!asset?.uri || !fieldKey) return;
 
-      const locationPromise = beginPhotoLocationCapture();
-
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions?.Images
-          ? ImagePicker.MediaTypeOptions.Images
-          : ImagePicker.MediaType?.Images || 'images',
-        allowsEditing: false,
-        quality: 1,
-        exif: true,
-      });
-
-      if (result.canceled || !result.assets?.length) return;
-
-      const compressedUri = await compressImageOnly(result.assets[0].uri, 0.5);
-      const meta = await buildPhotoCaptureMeta(locationPromise);
-
-      let latitude = meta.latitude;
-      let longitude = meta.longitude;
-      let accuracy = meta.accuracy;
-      if (latitude == null || longitude == null) {
-        const exif = result.assets[0].exif || {};
-        const lat = parseFloat(exif.GPSLatitude ?? exif.gpsLatitude);
-        const lng = parseFloat(exif.GPSLongitude ?? exif.gpsLongitude);
-        if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
-          latitude = lat;
-          longitude = lng;
-          accuracy = null;
-        }
+    setPhotos((prev) => {
+      if (multi) {
+        return { ...prev, [fieldKey]: [...(prev[fieldKey] || []), asset] };
       }
+      return { ...prev, [fieldKey]: asset };
+    });
 
-      const stableUri =
-        (
-          await stabilizePhotoForDraft(
-            { uri: compressedUri },
-            fieldKey,
-            multi ? (photos[fieldKey] || []).length : 0
-          )
-        )?.uri || compressedUri;
-      const asset = {
-        uri: stableUri,
-        capturedAt: meta.capturedAt,
-        capturedAtStr: meta.capturedAtStr,
-        latitude,
-        longitude,
-        accuracy,
-      };
+    setInvalidFields((prev) => {
+      if (!prev[fieldKey]) return prev;
+      const next = { ...prev };
+      delete next[fieldKey];
+      return next;
+    });
 
-      setPhotos((prev) => {
-        if (multi) {
-          return { ...prev, [fieldKey]: [...(prev[fieldKey] || []), asset] };
-        }
-        return { ...prev, [fieldKey]: asset };
-      });
-
-      setInvalidFields((prev) => {
-        if (!prev[fieldKey]) return prev;
-        const next = { ...prev };
-        delete next[fieldKey];
-        return next;
-      });
-
-      if (latitude == null || longitude == null) {
+    // Defer alert so photo UI paints first (avoids crash-feeling freeze)
+    if (asset.latitude == null || asset.longitude == null) {
+      setTimeout(() => {
         Alert.alert(
           'Location not saved',
           'Photo saved, but GPS was unavailable. Turn on Location/GPS and capture again if coordinates are required.'
         );
-      }
+      }, 300);
+    }
+  }, []);
+
+  const capturePhoto = async (fieldKey, multi) => {
+    try {
+      captureInFlightRef.current = true;
+      setPickingPhoto(fieldKey);
+      const existingCount = multi ? (photos[fieldKey] || []).length : 0;
+      const captured = await captureVerificationPhoto({
+        formType: 'outward',
+        fieldKey,
+        multi,
+        existingCount,
+      });
+      if (!captured?.asset) return;
+      applyCapturedPhoto(captured.fieldKey, captured.multi, captured.asset);
     } catch (_) {
       Alert.alert('Camera Error', 'Could not capture photo.');
     } finally {
+      captureInFlightRef.current = false;
       setPickingPhoto(null);
     }
   };
+
+  // Android may kill the app while the system camera is open — recover the photo on return
+  useEffect(() => {
+    let cancelled = false;
+
+    const tryRecover = async () => {
+      if (captureInFlightRef.current) return;
+      try {
+        const recovered = await recoverPendingVerificationPhoto(
+          'outward',
+          draftStateRef.current?.photos || {}
+        );
+        if (cancelled || !recovered?.asset) return;
+        applyCapturedPhoto(recovered.fieldKey, recovered.multi, recovered.asset);
+      } catch (_) {
+        /* ignore */
+      }
+    };
+
+    tryRecover();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') tryRecover();
+    });
+
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [applyCapturedPhoto]);
 
   const removePhoto = (fieldKey, multi, index) => {
     setPhotos((prev) => {
@@ -611,9 +610,17 @@ export default function OutwardFormView({
     const operatorEmail = String(user?.email || '').trim();
 
     try {
+      const stablePhotos = await stabilizePhotosForDraft(photos);
+      const missing = await collectMissingPhotoUris(stablePhotos);
+      if (missing.length) {
+        throw new Error(
+          'One or more photos are missing on this device. Please recapture them and submit again.'
+        );
+      }
+
       const localId = saveOutwardLocally({
         form: submitForm,
-        photos,
+        photos: stablePhotos,
         driverCountryCode,
         warehouse_name: warehouseName || null,
         warehouse_code: warehouseCode || null,
@@ -630,7 +637,7 @@ export default function OutwardFormView({
         try {
           const formData = buildOutwardFormData({
             form_json: JSON.stringify(submitForm),
-            photos_json: JSON.stringify(photos),
+            photos_json: JSON.stringify(stablePhotos),
             driver_country_code: driverCountryCode,
             warehouse_name: warehouseName,
             warehouse_code: warehouseCode,
@@ -651,8 +658,13 @@ export default function OutwardFormView({
             referenceNo = data.reference_no || null;
             markOutwardAsSynced(localId, referenceNo, data.id);
             syncedNow = true;
+          } else {
+            const msg = data.message || data.error || `Upload failed (${res.status})`;
+            markOutwardSyncError(localId, msg);
+            console.warn('Outward immediate upload deferred to sync queue:', msg);
           }
         } catch (uploadErr) {
+          markOutwardSyncError(localId, uploadErr.message || String(uploadErr));
           console.warn('Outward immediate upload deferred to sync queue:', uploadErr.message || uploadErr);
         }
       }
@@ -1174,7 +1186,6 @@ export default function OutwardFormView({
                     <Ionicons name="trash-outline" size={14} color="#fff" />
                   </TouchableOpacity>
                 </View>
-                <PhotoCaptureCaption photo={item} formatClockTime={formatOutwardClockTime} />
               </View>
             ))}
             <TouchableOpacity
@@ -1220,7 +1231,6 @@ export default function OutwardFormView({
                 </TouchableOpacity>
               </View>
             </View>
-            <PhotoCaptureCaption photo={list[0]} formatClockTime={formatOutwardClockTime} />
           </>
         )}
       </View>
@@ -1629,17 +1639,6 @@ export default function OutwardFormView({
           </TouchableOpacity>
         )}
       </View>
-      {submitting && showSubmitConfirm ? (
-        <View style={styles.submitBlockingOverlay} pointerEvents="auto">
-          <View style={styles.submitBlockingCard}>
-            <ActivityIndicator size="large" color="#003580" />
-            <Text style={styles.submitModalLoadingTitle}>Submitting Outward record</Text>
-            <Text style={styles.submitModalLoadingText}>
-              Uploading photos and saving data. Please wait…
-            </Text>
-          </View>
-        </View>
-      ) : null}
       {renderSubmitConfirmModal()}
     </View>
   );
@@ -2455,25 +2454,6 @@ const styles = StyleSheet.create({
   submitModalCardBusy: {
     minHeight: 180,
     justifyContent: 'center',
-  },
-  submitBlockingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 2000,
-    elevation: 20,
-    backgroundColor: 'rgba(15, 23, 42, 0.78)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  submitBlockingCard: {
-    width: '100%',
-    maxWidth: 320,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    paddingVertical: 28,
-    paddingHorizontal: 20,
-    alignItems: 'center',
-    elevation: 10,
   },
   submitModalIconWrap: {
     alignItems: 'center',

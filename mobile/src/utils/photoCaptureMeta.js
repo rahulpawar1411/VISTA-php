@@ -152,24 +152,35 @@ export async function readCaptureLocation() {
 }
 
 /**
- * Call AFTER location permission/services are confirmed, BEFORE opening camera,
- * so GPS can resolve while the user takes the photo.
+ * Lightweight GPS while the system camera is open.
+ * Avoid full getCurrentPosition / watch here — concurrent GPS + full-res camera
+ * often kills the Android process (app appears to "close").
+ * Full accuracy fixup still runs in buildPhotoCaptureMeta after return.
  */
 export function beginPhotoLocationCapture() {
   return (async () => {
-    const allowed = await ensureLocationPermission({ required: false });
-    if (!allowed) {
-      console.warn('beginPhotoLocationCapture: permission not granted');
+    try {
+      const allowed = await ensureLocationPermission({ required: false });
+      if (!allowed) {
+        console.warn('beginPhotoLocationCapture: permission not granted');
+        return null;
+      }
+
+      const servicesOk = await ensureLocationServicesEnabled({ required: false });
+      if (!servicesOk) {
+        console.warn('beginPhotoLocationCapture: location services off');
+        return null;
+      }
+
+      const lastKnown = await Location.getLastKnownPositionAsync({
+        maxAge: 15 * 60 * 1000,
+        requiredAccuracy: 2000,
+      });
+      return coordsFromPosition(lastKnown);
+    } catch (err) {
+      console.warn('beginPhotoLocationCapture skipped:', err?.message || err);
       return null;
     }
-
-    const servicesOk = await ensureLocationServicesEnabled({ required: false });
-    if (!servicesOk) {
-      console.warn('beginPhotoLocationCapture: location services off');
-      return null;
-    }
-
-    return readCaptureLocation();
   })();
 }
 
