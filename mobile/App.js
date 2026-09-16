@@ -280,6 +280,14 @@ export default function App() {
           token={token}
           apiUrl={apiUrl}
           onLogout={handleLogout}
+          onUserUpdate={async (nextUser) => {
+            setUser(nextUser);
+            try {
+              await AsyncStorage.setItem('user_profile', JSON.stringify(nextUser));
+            } catch (err) {
+              console.warn('Failed to cache updated profile:', err);
+            }
+          }}
         />
       ) : role === 'sub_admin' ? (
         <SubAdminScreen

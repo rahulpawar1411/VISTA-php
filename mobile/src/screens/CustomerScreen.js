@@ -204,7 +204,7 @@ function SensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_ima
  * Customer portal — scoped read-only logs/inventory (allowed WH + clients only).
  * Does not edit masters or DO assignments.
  */
-export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
+export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUpdate }) {
   const [activeTab, setActiveTab] = useState('Dashboard'); // Dashboard | Logs | Reports | More
   const [busy, setBusy] = useState(false);
 
@@ -290,6 +290,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
   const [querySuccess, setQuerySuccess] = useState('');
 
   const displayName = user?.full_name || user?.email?.split('@')[0] || 'Customer';
+  const userRef = useRef(user);
+  userRef.current = user;
 
   const authHeaders = useMemo(
     () => ({
@@ -680,6 +682,31 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
     setHomeLoading(true);
     setHomeError('');
     try {
+      try {
+        const meRes = await fetch(`${apiUrl}/api/auth/me`, {
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${token}`
+          }
+        });
+        const meData = await meRes.json().catch(() => ({}));
+        if (meRes.ok && meData?.user) {
+          const prev = userRef.current || {};
+          const sameClients =
+            String(prev.allowed_clients || '') === String(meData.user.allowed_clients || '');
+          const sameWh =
+            String(prev.allowed_warehouses || '') === String(meData.user.allowed_warehouses || '');
+          if (!sameClients || !sameWh) {
+            onUserUpdate?.({
+              ...prev,
+              ...meData.user,
+              role: meData.user.role || prev.role
+            });
+          }
+        }
+      } catch (_) {
+        /* keep cached profile */
+      }
       const today = toLocalYmd();
       const fromUpdates = (() => {
         const d = new Date();
@@ -773,7 +800,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout }) {
       setHomeLoading(false);
       setHomeRefreshing(false);
     }
-  }, [apiUrl, token, applyScope]);
+  }, [apiUrl, token, applyScope, onUserUpdate]);
 
   const formatUpdatePreview = (row) => {
     const raw = String(row?.update_details || '').trim();

@@ -30,7 +30,8 @@ import {
   BackHandler,
   Animated,
   TextInput,
-  KeyboardAvoidingView
+  KeyboardAvoidingView,
+  Pressable
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -73,6 +74,30 @@ import {
 import SubAdminAdminPanel from '../components/SubAdminAdminPanel';
 import SubAdminDoMasterSetup from '../components/SubAdminDoMasterSetup';
 import SavedChangesPopup from '../components/SavedChangesPopup';
+import { generateClientCode } from '../utils/generateClientCode';
+
+function suggestWarehouseCode(name) {
+  const slug = String(name || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-')
+    .slice(0, 12);
+  return slug ? `WH-${slug}` : '';
+}
+
+function parseMasterList(payload) {
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function isCatalogActive(row) {
+  const v = row?.is_active;
+  if (v === false || v === 0 || v === '0') return false;
+  return Number(v) !== 0;
+}
 
 const TouchableOpacity = FastTouchable;
 
@@ -369,6 +394,42 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const [warehouseTasks, setWarehouseTasks] = useState([]);
   const [homeOperators, setHomeOperators] = useState([]);
   const [homeCustomers, setHomeCustomers] = useState([]);
+  const [homeCatalogWarehouses, setHomeCatalogWarehouses] = useState([]);
+  const [homeCatalogClients, setHomeCatalogClients] = useState([]);
+  const [customerModal, setCustomerModal] = useState({
+    visible: false,
+    mode: 'create',
+    busy: false,
+    id: null
+  });
+  const [customerForm, setCustomerForm] = useState({
+    full_name: '',
+    email: '',
+    phone_no: '',
+    password: '',
+    allowed_warehouses: '',
+    allowed_clients: ''
+  });
+  const [catalogModal, setCatalogModal] = useState({
+    visible: false,
+    kind: 'warehouse',
+    mode: 'create',
+    busy: false,
+    id: null
+  });
+  const [warehouseForm, setWarehouseForm] = useState({
+    warehouse_code: '',
+    warehouse_name: '',
+    city: ''
+  });
+  const [clientForm, setClientForm] = useState({
+    client_code: '',
+    client_name: '',
+    warehouse_name: '',
+    warehouse_code: ''
+  });
+  const warehouseCodeManualRef = useRef(false);
+  const clientCodeManualRef = useRef(false);
   const [taskSummary, setTaskSummary] = useState(null);
   const [homeListFocus, setHomeListFocus] = useState('ops'); // warehouses | customers | ops
   const [selectedDoProfile, setSelectedDoProfile] = useState(null);
@@ -649,7 +710,8 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     try {
       const today = toLocalYmd();
       const taskQs = new URLSearchParams({ date: today });
-      const [statsRes, logsRes, tasksRes, customersRes, filterRes, operatorsRes] = await Promise.all([
+      const [statsRes, logsRes, tasksRes, customersRes, filterRes, operatorsRes, whMasterRes, clMasterRes] =
+        await Promise.all([
         fetch(`${apiUrl}/api/dashboard`, { headers: authHeaders }),
         fetch(
           `${apiUrl}/api/chamber-temp?${new URLSearchParams({
@@ -665,7 +727,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         }),
         fetch(`${apiUrl}/api/dashboard/customers`, { headers: authHeaders }),
         fetch(`${apiUrl}/api/dashboard/inventory-filter-options`, { headers: authHeaders }),
-        fetch(`${apiUrl}/api/dashboard/do-operators`, { headers: authHeaders })
+        fetch(`${apiUrl}/api/dashboard/do-operators`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/masters/warehouses?active_only=0`, { headers: authHeaders }),
+        fetch(`${apiUrl}/api/masters/clients?active_only=0`, { headers: authHeaders })
       ]);
 
       if (requestId !== homeOverviewRequestIdRef.current) return;
@@ -763,6 +827,8 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         }
       }
 
+      if (requestId !== homeOverviewRequestIdRef.current) return;
+
       const customersData = await customersRes.json().catch(() => ({}));
       if (!customersRes.ok) {
         console.warn('Customers fetch failed:', customersData.message || customersRes.status);
@@ -784,6 +850,22 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           }))
         );
       }
+
+      const whMasterData = await whMasterRes.json().catch(() => ({}));
+      if (!whMasterRes.ok) {
+        console.warn('Warehouse catalog failed:', whMasterData.message || whMasterRes.status);
+        setHomeCatalogWarehouses([]);
+      } else {
+        setHomeCatalogWarehouses(parseMasterList(whMasterData));
+      }
+
+      const clMasterData = await clMasterRes.json().catch(() => ({}));
+      if (!clMasterRes.ok) {
+        console.warn('Client catalog failed:', clMasterData.message || clMasterRes.status);
+        setHomeCatalogClients([]);
+      } else {
+        setHomeCatalogClients(parseMasterList(clMasterData));
+      }
       setHomeLastUpdated(formatClockTime(new Date()));
     } catch (err) {
       if (requestId !== homeOverviewRequestIdRef.current) return;
@@ -793,6 +875,8 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       setWarehouseTasks([]);
       setHomeOperators([]);
       setHomeCustomers([]);
+      setHomeCatalogWarehouses([]);
+      setHomeCatalogClients([]);
       setTaskSummary(null);
     } finally {
       setHomeLoading(false);
@@ -830,6 +914,16 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         setSelectedReport(null);
         return true;
       }
+      if (customerModal.visible) {
+        if (customerModal.busy) return true;
+        setCustomerModal({ visible: false, mode: 'create', busy: false, id: null });
+        return true;
+      }
+      if (catalogModal.visible) {
+        if (catalogModal.busy) return true;
+        setCatalogModal({ visible: false, kind: 'warehouse', mode: 'create', busy: false, id: null });
+        return true;
+      }
       if (showCalendarModal) {
         setShowCalendarModal(false);
         return true;
@@ -843,7 +937,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [showDrawer, closeDrawer, showNotifications, selectedDoProfile, selectedLog, selectedReport, showCalendarModal, activeTab, denyModal.visible]);
+  }, [showDrawer, closeDrawer, showNotifications, selectedDoProfile, selectedLog, selectedReport, showCalendarModal, activeTab, denyModal.visible, customerModal.visible, customerModal.busy, catalogModal.visible, catalogModal.busy]);
 
   const loadLogFilterScope = useCallback(async () => {
     if (!apiUrl || !token) return;
@@ -1605,11 +1699,16 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   const overviewCards = useMemo(() => {
     const t = taskSummary || {};
     const customerTotal = homeCustomers.length || Number(t.customers) || 0;
+    const warehouseTotal =
+      homeCatalogWarehouses.filter(isCatalogActive).length ||
+      Number(t.warehouses) ||
+      warehouseTasks.length ||
+      0;
     return [
       {
         key: 'warehouses',
         label: 'Warehouses',
-        value: Number(t.warehouses) || warehouseTasks.length || 0,
+        value: warehouseTotal,
         icon: 'business-outline',
         color: '#0284c7'
       },
@@ -1628,7 +1727,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         color: '#003580'
       }
     ];
-  }, [taskSummary, warehouseTasks, homeCustomers, homeOperators]);
+  }, [taskSummary, warehouseTasks, homeCustomers, homeOperators, homeCatalogWarehouses]);
 
   const homeListTitle = useMemo(() => {
     if (homeListFocus === 'warehouses') return 'Warehouses';
@@ -1638,13 +1737,60 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
   const homeListSubtitle = useMemo(() => {
     if (homeListFocus === 'warehouses') {
-      return 'Today Mor / Evn · tap a DO for profile';
+      return 'Tap a row to edit · add / delete';
     }
     if (homeListFocus === 'customers') {
-      return 'Portal login accounts · view access scope';
+      return 'Portal logins · tap to edit · add / delete';
     }
     return "Today's tasks · Morning & Evening";
   }, [homeListFocus]);
+
+  const activeCatalogWarehouses = useMemo(
+    () => (homeCatalogWarehouses || []).filter(isCatalogActive),
+    [homeCatalogWarehouses]
+  );
+
+  const dashboardWarehouseRows = useMemo(() => {
+    const keyOf = (n) => String(n || '').trim().toLowerCase();
+    const taskMap = new Map();
+    (warehouseTasks || []).forEach((wh) => {
+      const k = keyOf(wh.warehouse_name);
+      if (k) taskMap.set(k, wh);
+    });
+    const seen = new Set();
+    const rows = [];
+    (homeCatalogWarehouses || []).forEach((cat) => {
+      if (!isCatalogActive(cat)) return;
+      const k = keyOf(cat.warehouse_name);
+      if (k) seen.add(k);
+      const task = (k && taskMap.get(k)) || {};
+      rows.push({
+        warehouse_name: cat.warehouse_name,
+        catalog_id: cat.id,
+        warehouse_code: cat.warehouse_code || null,
+        city: cat.city || null,
+        operators: task.operators || [],
+        assignment_count: task.assignment_count || 0,
+        morning_completed: Number(task.morning_completed) || 0,
+        morning_expected: Number(task.morning_expected) || 0,
+        evening_completed: Number(task.evening_completed) || 0,
+        evening_expected: Number(task.evening_expected) || 0,
+        overdue: Number(task.overdue) || 0,
+        pending: Number(task.pending) || 0
+      });
+    });
+    (warehouseTasks || []).forEach((wh) => {
+      const k = keyOf(wh.warehouse_name);
+      if (!k || seen.has(k)) return;
+      rows.push({
+        ...wh,
+        catalog_id: null,
+        warehouse_code: wh.warehouse_code || null,
+        city: null
+      });
+    });
+    return rows;
+  }, [homeCatalogWarehouses, warehouseTasks]);
 
   const todayOps = useMemo(() => {
     const t = taskSummary || {};
@@ -1773,6 +1919,603 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     return `${parts.slice(0, 2).join(', ')} +${parts.length - 2}`;
   };
 
+  const splitCsv = (value) =>
+    String(value || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  const csvHas = (csv, name) => {
+    const n = String(name || '').trim().toLowerCase();
+    if (!n) return false;
+    return splitCsv(csv).some((s) => s.toLowerCase() === n);
+  };
+
+  const toggleCsvValue = (current, name) => {
+    const label = String(name || '').trim();
+    if (!label) return String(current || '');
+    const parts = splitCsv(current);
+    const key = label.toLowerCase();
+    const exists = parts.some((s) => s.toLowerCase() === key);
+    if (exists) return parts.filter((s) => s.toLowerCase() !== key).join(',');
+    return [...parts, label].join(',');
+  };
+
+  const customerScopeWarehouses = useMemo(() => {
+    const names = new Set();
+    (homeCatalogWarehouses || []).forEach((w) => {
+      if (!isCatalogActive(w)) return;
+      const name = String(w.warehouse_name || '').trim();
+      if (name) names.add(name);
+    });
+    (logFilterScope.warehouses || []).forEach((name) => {
+      const trimmed = String(name || '').trim();
+      if (trimmed && trimmed !== 'All') names.add(trimmed);
+    });
+    (warehouses || []).forEach((name) => {
+      const trimmed = String(name || '').trim();
+      if (trimmed && trimmed !== 'All') names.add(trimmed);
+    });
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [homeCatalogWarehouses, logFilterScope.warehouses, warehouses]);
+
+  const customerClientsByWarehouse = useMemo(() => {
+    const map = {};
+    const unscoped = new Set();
+    const add = (whRaw, clientRaw) => {
+      const cl = String(clientRaw || '').trim();
+      if (!cl) return;
+      const wh = String(whRaw || '').trim();
+      if (!wh) {
+        unscoped.add(cl);
+        return;
+      }
+      const key = wh.toLowerCase();
+      if (!map[key]) map[key] = { name: wh, clients: new Set() };
+      map[key].clients.add(cl);
+    };
+    (homeCatalogClients || []).forEach((c) => {
+      if (!isCatalogActive(c)) return;
+      add(c.warehouse_name, c.client_name);
+    });
+    Object.entries(logFilterScope.warehouseClients || {}).forEach(([wh, list]) => {
+      (list || []).forEach((cl) => add(wh, cl));
+    });
+    return { map, unscoped };
+  }, [homeCatalogClients, logFilterScope.warehouseClients]);
+
+  const clientsForWarehouseName = useCallback(
+    (whName) => {
+      const key = String(whName || '').trim().toLowerCase();
+      const found = new Set(customerClientsByWarehouse.unscoped || []);
+      if (!key) return found;
+      Object.entries(customerClientsByWarehouse.map || {}).forEach(([k, bucket]) => {
+        if (k === key || k.includes(key) || key.includes(k)) {
+          (bucket?.clients || []).forEach((cl) => found.add(cl));
+        }
+      });
+      return found;
+    },
+    [customerClientsByWarehouse]
+  );
+
+  const customerScopeClientGroups = useMemo(() => {
+    const selected = splitCsv(customerForm.allowed_warehouses);
+    const warehouseNames = selected.length ? selected : customerScopeWarehouses;
+    return warehouseNames.map((wh) => ({
+      warehouse: wh,
+      clients: Array.from(clientsForWarehouseName(wh)).sort((a, b) => a.localeCompare(b))
+    }));
+  }, [customerForm.allowed_warehouses, customerScopeWarehouses, clientsForWarehouseName]);
+
+  const pruneClientsForWarehouses = useCallback(
+    (warehouseCsv, clientCsv) => {
+      const selectedClients = splitCsv(clientCsv);
+      if (!selectedClients.length) return '';
+      const selectedWh = splitCsv(warehouseCsv);
+      if (!selectedWh.length) return selectedClients.join(',');
+      const allowed = new Set();
+      selectedWh.forEach((wh) => {
+        clientsForWarehouseName(wh).forEach((cl) => allowed.add(String(cl).toLowerCase()));
+      });
+      const kept = selectedClients.filter((cl) => allowed.has(cl.toLowerCase()));
+      if (!kept.length) return selectedClients.join(',');
+      return kept.join(',');
+    },
+    [clientsForWarehouseName]
+  );
+
+  const closeCustomerModal = useCallback(() => {
+    setCustomerModal({ visible: false, mode: 'create', busy: false, id: null });
+  }, []);
+
+  const openCreateCustomer = useCallback(() => {
+    setCustomerForm({
+      full_name: '',
+      email: '',
+      phone_no: '',
+      password: '',
+      allowed_warehouses: '',
+      allowed_clients: ''
+    });
+    setCustomerModal({ visible: true, mode: 'create', busy: false, id: null });
+  }, []);
+
+  const openEditCustomer = useCallback((row) => {
+    if (!row?.id) return;
+    setCustomerForm({
+      full_name: row.full_name || '',
+      email: row.email || '',
+      phone_no: row.phone_no || '',
+      password: '',
+      allowed_warehouses: row.allowed_warehouses || '',
+      allowed_clients: row.allowed_clients || ''
+    });
+    setCustomerModal({ visible: true, mode: 'edit', busy: false, id: row.id });
+  }, []);
+
+  const saveCustomer = useCallback(async () => {
+    const full_name = String(customerForm.full_name || '').trim();
+    const email = String(customerForm.email || '').trim().toLowerCase();
+    const phone_no = String(customerForm.phone_no || '').trim();
+    const password = String(customerForm.password || '').trim();
+    const allowed_warehouses = String(customerForm.allowed_warehouses || '').trim() || null;
+    const prunedClients = pruneClientsForWarehouses(
+      customerForm.allowed_warehouses,
+      customerForm.allowed_clients
+    );
+    const allowed_clients = String(prunedClients || customerForm.allowed_clients || '').trim() || null;
+
+    if (!full_name || !email || !phone_no) {
+      Alert.alert('Missing fields', 'Name, email and phone are required.');
+      return;
+    }
+    if (customerModal.mode === 'create' && !password) {
+      Alert.alert('Password required', 'Set a login password for this customer.');
+      return;
+    }
+    if (!apiUrl || !token) return;
+
+    setCustomerModal((prev) => ({ ...prev, busy: true }));
+    try {
+      const body = {
+        full_name,
+        email,
+        phone_no,
+        allowed_warehouses,
+        allowed_clients
+      };
+      if (password) body.password = password;
+
+      const url =
+        customerModal.mode === 'edit' && customerModal.id
+          ? `${apiUrl}/api/customers/${customerModal.id}`
+          : `${apiUrl}/api/customers`;
+      const method = customerModal.mode === 'edit' ? 'PUT' : 'POST';
+      const res = await fetch(url, {
+        method,
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || data.message || `Save failed (${res.status})`);
+      }
+      closeCustomerModal();
+      showSavedChanges(
+        customerModal.mode === 'edit' ? 'Customer updated' : 'Customer created',
+        data.message || 'Customer account saved.'
+      );
+      loadHomeOverview();
+    } catch (err) {
+      Alert.alert('Could not save', formatUserError(err, { apiUrl, context: 'Customer save failed' }));
+      setCustomerModal((prev) => ({ ...prev, busy: false }));
+    }
+  }, [
+    apiUrl,
+    token,
+    authHeaders,
+    customerForm,
+    customerModal.mode,
+    customerModal.id,
+    closeCustomerModal,
+    showSavedChanges,
+    loadHomeOverview,
+    pruneClientsForWarehouses
+  ]);
+
+  const deleteCustomer = useCallback(
+    (row) => {
+      if (!row?.id) return;
+      Alert.alert(
+        'Delete customer',
+        `Remove portal login for ${row.full_name || row.email || 'this customer'}? This cannot be undone.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const res = await fetch(`${apiUrl}/api/customers/${row.id}`, {
+                  method: 'DELETE',
+                  headers: authHeaders
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  throw new Error(data.error || data.message || `Delete failed (${res.status})`);
+                }
+                if (customerModal.id === row.id) closeCustomerModal();
+                showSavedChanges('Customer deleted', data.message || 'Portal account removed.');
+                loadHomeOverview();
+              } catch (err) {
+                Alert.alert(
+                  'Could not delete',
+                  formatUserError(err, { apiUrl, context: 'Customer delete failed' })
+                );
+              }
+            }
+          }
+        ]
+      );
+    },
+    [apiUrl, authHeaders, customerModal.id, closeCustomerModal, showSavedChanges, loadHomeOverview]
+  );
+
+  const closeCatalogModal = useCallback(() => {
+    setCatalogModal({ visible: false, kind: 'warehouse', mode: 'create', busy: false, id: null });
+  }, []);
+
+  const openCreateWarehouse = useCallback(() => {
+    setSelectedDoProfile(null);
+    warehouseCodeManualRef.current = false;
+    setWarehouseForm({ warehouse_code: '', warehouse_name: '', city: '' });
+    setCatalogModal({ visible: true, kind: 'warehouse', mode: 'create', busy: false, id: null });
+  }, []);
+
+  const openEditWarehouse = useCallback((row) => {
+    setSelectedDoProfile(null);
+    warehouseCodeManualRef.current = true;
+    setWarehouseForm({
+      warehouse_code: row?.warehouse_code || suggestWarehouseCode(row?.warehouse_name),
+      warehouse_name: row?.warehouse_name || '',
+      city: row?.city || ''
+    });
+    setCatalogModal({
+      visible: true,
+      kind: 'warehouse',
+      mode: row?.catalog_id ? 'edit' : 'create',
+      busy: false,
+      id: row?.catalog_id || null
+    });
+  }, []);
+
+  const openCreateClient = useCallback(() => {
+    setSelectedDoProfile(null);
+    clientCodeManualRef.current = false;
+    setClientForm({
+      client_code: '',
+      client_name: '',
+      warehouse_name: '',
+      warehouse_code: ''
+    });
+    setCatalogModal({ visible: true, kind: 'client', mode: 'create', busy: false, id: null });
+  }, []);
+
+  const openEditClient = useCallback((row) => {
+    if (!row?.id) return;
+    setSelectedDoProfile(null);
+    clientCodeManualRef.current = true;
+    setClientForm({
+      client_code: row.client_code || '',
+      client_name: row.client_name || '',
+      warehouse_name: row.warehouse_name || '',
+      warehouse_code: row.warehouse_code || ''
+    });
+    setCatalogModal({ visible: true, kind: 'client', mode: 'edit', busy: false, id: row.id });
+  }, []);
+
+  const saveWarehouseCatalog = useCallback(async () => {
+    const warehouse_name = String(warehouseForm.warehouse_name || '').trim();
+    const city = String(warehouseForm.city || '').trim();
+    let warehouse_code = String(warehouseForm.warehouse_code || '').trim().toUpperCase();
+    if (warehouse_code && !warehouse_code.startsWith('WH-')) {
+      warehouse_code = `WH-${warehouse_code}`;
+    }
+    if (!warehouse_code) warehouse_code = suggestWarehouseCode(warehouse_name);
+    if (!warehouse_name) {
+      Alert.alert('Missing fields', 'Warehouse name is required.');
+      return;
+    }
+    if (catalogModal.mode === 'create' && !warehouse_code) {
+      Alert.alert('Missing fields', 'Warehouse code is required (WH-…).');
+      return;
+    }
+    if (!apiUrl || !token) return;
+
+    setCatalogModal((prev) => ({ ...prev, busy: true }));
+    try {
+      const isEdit = catalogModal.mode === 'edit' && catalogModal.id;
+      const url = isEdit
+        ? `${apiUrl}/api/masters/warehouses/${catalogModal.id}`
+        : `${apiUrl}/api/masters/warehouses`;
+      const body = isEdit
+        ? { warehouse_name, city: city || null }
+        : { warehouse_code, warehouse_name, city: city || null };
+      const res = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || data.message || `Save failed (${res.status})`);
+      }
+      const saved = data.data || {};
+      const nextId = saved.id || catalogModal.id;
+      setHomeCatalogWarehouses((prev) => {
+        if (isEdit && catalogModal.id) {
+          return prev.map((row) =>
+            Number(row.id) === Number(catalogModal.id)
+              ? { ...row, warehouse_name, city: city || null, is_active: 1 }
+              : row
+          );
+        }
+        const row = {
+          id: nextId || Date.now(),
+          warehouse_code: saved.warehouse_code || warehouse_code,
+          warehouse_name,
+          city: city || null,
+          is_active: 1
+        };
+        const exists = prev.some((r) => Number(r.id) === Number(row.id));
+        return exists ? prev.map((r) => (Number(r.id) === Number(row.id) ? { ...r, ...row } : r)) : [row, ...prev];
+      });
+      closeCatalogModal();
+      showSavedChanges(
+        isEdit ? 'Warehouse updated' : 'Warehouse created',
+        data.message || 'Warehouse saved.'
+      );
+      loadHomeOverview();
+      loadLogFilterScope();
+    } catch (err) {
+      Alert.alert('Could not save', formatUserError(err, { apiUrl, context: 'Warehouse save failed' }));
+      setCatalogModal((prev) => ({ ...prev, busy: false }));
+    }
+  }, [
+    apiUrl,
+    token,
+    authHeaders,
+    warehouseForm,
+    catalogModal.mode,
+    catalogModal.id,
+    closeCatalogModal,
+    showSavedChanges,
+    loadHomeOverview,
+    loadLogFilterScope
+  ]);
+
+  const saveClientCatalog = useCallback(async () => {
+    const client_name = String(clientForm.client_name || '').trim();
+    const warehouse_name = String(clientForm.warehouse_name || '').trim();
+    const warehouse_code = String(clientForm.warehouse_code || '').trim();
+    let client_code = String(clientForm.client_code || '').trim().toUpperCase();
+    if (!client_code && client_name) {
+      client_code = generateClientCode(client_name, warehouse_name, warehouse_code);
+    }
+    if (!client_name) {
+      Alert.alert('Missing fields', 'Client name is required.');
+      return;
+    }
+    if (!apiUrl || !token) return;
+
+    setCatalogModal((prev) => ({ ...prev, busy: true }));
+    try {
+      const isEdit = catalogModal.mode === 'edit' && catalogModal.id;
+      const url = isEdit
+        ? `${apiUrl}/api/masters/clients/${catalogModal.id}`
+        : `${apiUrl}/api/masters/clients`;
+      const body = isEdit
+        ? { client_name, warehouse_name: warehouse_name || null }
+        : {
+            client_code: client_code || undefined,
+            client_name,
+            warehouse_name: warehouse_name || null,
+            warehouse_code: warehouse_code || undefined
+          };
+      const res = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || data.message || `Save failed (${res.status})`);
+      }
+      const saved = data.data || {};
+      const nextId = saved.id || catalogModal.id;
+      setHomeCatalogClients((prev) => {
+        if (isEdit && catalogModal.id) {
+          return prev.map((row) =>
+            Number(row.id) === Number(catalogModal.id)
+              ? {
+                  ...row,
+                  client_name,
+                  warehouse_name: warehouse_name || null,
+                  warehouse_code: warehouse_code || row.warehouse_code || null,
+                  is_active: 1
+                }
+              : row
+          );
+        }
+        const row = {
+          id: nextId || Date.now(),
+          client_code: saved.client_code || data.client_code || client_code,
+          client_name,
+          warehouse_name: warehouse_name || null,
+          warehouse_code: warehouse_code || null,
+          is_active: 1
+        };
+        const exists = prev.some((r) => Number(r.id) === Number(row.id));
+        return exists ? prev.map((r) => (Number(r.id) === Number(row.id) ? { ...r, ...row } : r)) : [row, ...prev];
+      });
+      closeCatalogModal();
+      showSavedChanges(isEdit ? 'Client updated' : 'Client created', data.message || 'Client saved.');
+      loadHomeOverview();
+      loadLogFilterScope();
+    } catch (err) {
+      Alert.alert('Could not save', formatUserError(err, { apiUrl, context: 'Client save failed' }));
+      setCatalogModal((prev) => ({ ...prev, busy: false }));
+    }
+  }, [
+    apiUrl,
+    token,
+    authHeaders,
+    clientForm,
+    catalogModal.mode,
+    catalogModal.id,
+    closeCatalogModal,
+    showSavedChanges,
+    loadHomeOverview,
+    loadLogFilterScope
+  ]);
+
+  const saveCatalogRecord = useCallback(() => {
+    if (catalogModal.kind === 'client') return saveClientCatalog();
+    return saveWarehouseCatalog();
+  }, [catalogModal.kind, saveClientCatalog, saveWarehouseCatalog]);
+
+  const deleteWarehouseCatalog = useCallback(
+    (row) => {
+      if (!row?.catalog_id) {
+        Alert.alert('Not in catalog', 'Add this warehouse to the catalog before deleting it.');
+        return;
+      }
+      Alert.alert(
+        'Delete warehouse',
+        `Deactivate ${row.warehouse_name || 'this warehouse'}? Existing logs stay; it is hidden from new work.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const res = await fetch(`${apiUrl}/api/masters/warehouses/${row.catalog_id}`, {
+                  method: 'DELETE',
+                  headers: authHeaders
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  throw new Error(data.error || data.message || `Delete failed (${res.status})`);
+                }
+                if (catalogModal.id === row.catalog_id) closeCatalogModal();
+                setHomeCatalogWarehouses((prev) =>
+                  prev.map((item) =>
+                    Number(item.id) === Number(row.catalog_id) ? { ...item, is_active: 0 } : item
+                  )
+                );
+                showSavedChanges('Warehouse deleted', data.message || 'Warehouse deactivated.');
+                loadHomeOverview();
+                loadLogFilterScope();
+              } catch (err) {
+                Alert.alert(
+                  'Could not delete',
+                  formatUserError(err, { apiUrl, context: 'Warehouse delete failed' })
+                );
+              }
+            }
+          }
+        ]
+      );
+    },
+    [apiUrl, authHeaders, catalogModal.id, closeCatalogModal, showSavedChanges, loadHomeOverview, loadLogFilterScope]
+  );
+
+  const deleteClientCatalog = useCallback(
+    (row) => {
+      if (!row?.id) return;
+      Alert.alert(
+        'Delete client',
+        `Deactivate ${row.client_name || 'this client'}? Existing logs stay; it is hidden from new work.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const res = await fetch(`${apiUrl}/api/masters/clients/${row.id}`, {
+                  method: 'DELETE',
+                  headers: authHeaders
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  throw new Error(data.error || data.message || `Delete failed (${res.status})`);
+                }
+                if (catalogModal.id === row.id) closeCatalogModal();
+                setHomeCatalogClients((prev) =>
+                  prev.map((item) =>
+                    Number(item.id) === Number(row.id) ? { ...item, is_active: 0 } : item
+                  )
+                );
+                showSavedChanges('Client deleted', data.message || 'Client deactivated.');
+                loadHomeOverview();
+                loadLogFilterScope();
+              } catch (err) {
+                Alert.alert(
+                  'Could not delete',
+                  formatUserError(err, { apiUrl, context: 'Client delete failed' })
+                );
+              }
+            }
+          }
+        ]
+      );
+    },
+    [apiUrl, authHeaders, catalogModal.id, closeCatalogModal, showSavedChanges, loadHomeOverview, loadLogFilterScope]
+  );
+
+  useEffect(() => {
+    if (!catalogModal.visible || catalogModal.kind !== 'warehouse' || catalogModal.mode !== 'create') {
+      return;
+    }
+    if (warehouseCodeManualRef.current) return;
+    const next = suggestWarehouseCode(warehouseForm.warehouse_name);
+    if (next !== warehouseForm.warehouse_code) {
+      setWarehouseForm((p) => ({ ...p, warehouse_code: next }));
+    }
+  }, [
+    catalogModal.visible,
+    catalogModal.kind,
+    catalogModal.mode,
+    warehouseForm.warehouse_name,
+    warehouseForm.warehouse_code
+  ]);
+
+  useEffect(() => {
+    if (!catalogModal.visible || catalogModal.kind !== 'client' || catalogModal.mode !== 'create') {
+      return;
+    }
+    if (clientCodeManualRef.current) return;
+    const next = generateClientCode(
+      clientForm.client_name,
+      clientForm.warehouse_name,
+      clientForm.warehouse_code
+    );
+    if (next !== clientForm.client_code) {
+      setClientForm((p) => ({ ...p, client_code: next }));
+    }
+  }, [
+    catalogModal.visible,
+    catalogModal.kind,
+    catalogModal.mode,
+    clientForm.client_name,
+    clientForm.warehouse_name,
+    clientForm.warehouse_code,
+    clientForm.client_code
+  ]);
+
   const resolveDoProfile = useCallback(
     (op, warehouseHint) => {
       if (!op) return null;
@@ -1814,6 +2557,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
   const openDoProfile = useCallback(
     (op, warehouseHint) => {
+      if (homeListFocus === 'warehouses' || homeListFocus === 'customers') {
+        return;
+      }
       const profile = resolveDoProfile(op, warehouseHint);
       if (!profile) return;
       setSelectedDoProfile(profile);
@@ -1826,7 +2572,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       });
       setDoProfileAssignments([]);
     },
-    [resolveDoProfile]
+    [resolveDoProfile, homeListFocus]
   );
 
   const loadDoProfileAssignments = useCallback(async () => {
@@ -3051,11 +3797,14 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                     {overviewCards.map((card) => {
                       const active = homeListFocus === card.key;
                       return (
-                        <TouchableOpacity
+                        <Pressable
                           key={card.key}
                           style={[styles.statCard, active && styles.statCardActive]}
-                          onPress={() => setHomeListFocus(card.key)}
-                          activeOpacity={0.85}
+                          onPress={() => {
+                            setSelectedDoProfile(null);
+                            setHomeListFocus(card.key);
+                          }}
+                          hitSlop={0}
                         >
                         <View style={[styles.statIcon, { backgroundColor: `${card.color}18` }]}>
                           <Ionicons name={card.icon} size={12} color={card.color} />
@@ -3064,7 +3813,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                         <Text style={styles.statLabel} numberOfLines={1}>
                           {card.label}
                         </Text>
-                    </TouchableOpacity>
+                    </Pressable>
                       );
                     })}
                   </View>
@@ -3076,13 +3825,27 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           <Text style={styles.doOverviewTitle}>{homeListTitle}</Text>
                           <Text style={styles.doOverviewSub}>{homeListSubtitle}</Text>
                         </View>
+                        {homeListFocus === 'customers' || homeListFocus === 'warehouses' ? (
+                          <TouchableOpacity
+                            style={styles.customerAddBtn}
+                            onPress={
+                              homeListFocus === 'warehouses'
+                                ? openCreateWarehouse
+                                : openCreateCustomer
+                            }
+                            activeOpacity={0.85}
+                          >
+                            <Ionicons name="add" size={16} color="#fff" />
+                            <Text style={styles.customerAddBtnText}>Add</Text>
+                          </TouchableOpacity>
+                        ) : null}
                       </View>
 
                       {homeListFocus === 'warehouses' ? (
-                        warehouseTasks.length === 0 ? (
+                        dashboardWarehouseRows.length === 0 ? (
                           <Text style={styles.cardHintSm}>No warehouses yet.</Text>
                         ) : (
-                        warehouseTasks.map((wh, idx) => {
+                        dashboardWarehouseRows.map((wh, idx) => {
                           const mornDone = Number(wh.morning_completed) || 0;
                           const mornExp = Number(wh.morning_expected) || 0;
                           const eveDone = Number(wh.evening_completed) || 0;
@@ -3091,101 +3854,46 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           const pending = Number(wh.pending) || 0;
                           const color =
                             overdue > 0 ? '#dc2626' : pending > 0 ? '#d97706' : '#059669';
-                          const warehouseDos = dosForWarehouse(wh);
                           return (
                             <View
-                              key={wh.warehouse_name}
+                              key={`${wh.catalog_id || 'task'}-${wh.warehouse_name}-${idx}`}
                               style={[styles.doOverviewRow, idx > 0 && styles.doOverviewRowBorder]}
                             >
-                              <View style={{ flex: 1, minWidth: 0 }}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                  <View
-                                    style={[styles.doOverviewDotSm, { backgroundColor: color }]}
-                                  />
-                                  <View style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>
-                                    <Text style={styles.doOverviewWh} numberOfLines={1}>
-                                      {wh.warehouse_name}
-                                    </Text>
-                                    <Text style={styles.doOverviewMeta} numberOfLines={1}>
-                                      {warehouseDos.length
-                                        ? `${warehouseDos.length} DO${
-                                            warehouseDos.length === 1 ? '' : 's'
-                                          }`
-                                        : 'No DO'}
-                                      {wh.assignment_count
-                                        ? ` · ${wh.assignment_count} client${
-                                            Number(wh.assignment_count) === 1 ? '' : 's'
-                                          }`
-                                        : ''}
-                                    </Text>
-                                  </View>
-                                  <View style={styles.doCountPills}>
-                                    <View style={[styles.doCountPill, styles.doCountPillDone]}>
-                                      <Text style={[styles.doCountPillNum, { color: '#059669' }]}>
-                                        {mornDone}/{mornExp}
-                                      </Text>
-                                      <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>
-                                        Mor
-                                      </Text>
-                                    </View>
-                                    <View
-                                      style={[styles.doCountPill, { backgroundColor: '#eff6ff' }]}
-                                    >
-                                      <Text style={[styles.doCountPillNum, { color: '#003580' }]}>
-                                        {eveDone}/{eveExp}
-                                      </Text>
-                                      <Text style={[styles.doCountPillLbl, { color: '#003580' }]}>
-                                        Evn
-                                      </Text>
-                                    </View>
-                                    <View style={[styles.doCountPill, styles.doCountPillOver]}>
-                                      <Text style={[styles.doCountPillNum, { color: '#dc2626' }]}>
-                                        {overdue}
-                                      </Text>
-                                      <Text style={[styles.doCountPillLbl, { color: '#dc2626' }]}>
-                                        Over
-                                      </Text>
-                                    </View>
-                                  </View>
-                                </View>
-
-                                {warehouseDos.length > 0 ? (
-                                  <View style={styles.warehouseDoList}>
-                                    {warehouseDos.map((op, doIdx) => {
-                                      const profile = resolveDoProfile(op, wh.warehouse_name);
-                                      return (
-                                        <TouchableOpacity
-                                          key={`${op.id || op.email || op.name}-${doIdx}`}
-                                          style={styles.warehouseDoChip}
-                                          activeOpacity={0.85}
-                                          onPress={() => openDoProfile(op, wh.warehouse_name)}
-                                        >
-                                          <View style={styles.warehouseDoAvatar}>
-                                            <Ionicons name="person" size={14} color="#003580" />
-                                          </View>
-                                          <View style={{ flex: 1, minWidth: 0 }}>
-                                            <Text style={styles.warehouseDoName} numberOfLines={1}>
-                                              {profile?.name || op.name || 'DO'}
-                                            </Text>
-                                            <Text style={styles.warehouseDoMeta} numberOfLines={1}>
-                                              Mor {Number(profile?.morning_completed) || 0}/
-                                              {Number(profile?.morning_expected) || 0}
-                                              {' · '}
-                                              Evn {Number(profile?.evening_completed) || 0}/
-                                              {Number(profile?.evening_expected) || 0}
-                                            </Text>
-                                          </View>
-                                          <Ionicons
-                                            name="chevron-forward"
-                                            size={16}
-                                            color="#94a3b8"
-                                          />
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                ) : null}
-                              </View>
+                              <View
+                                style={[styles.doOverviewDotSm, { backgroundColor: color }]}
+                              />
+                              <Pressable
+                                style={{ flex: 1, minWidth: 0 }}
+                                onPress={() => openEditWarehouse(wh)}
+                                hitSlop={0}
+                              >
+                                <Text style={styles.doOverviewWh} numberOfLines={1}>
+                                  {wh.warehouse_name}
+                                </Text>
+                                <Text style={styles.doOverviewMeta} numberOfLines={2}>
+                                  {wh.warehouse_code || 'No code'}
+                                  {wh.city ? ` · ${wh.city}` : ''}
+                                  {` · Mor ${mornDone}/${mornExp}`}
+                                  {` · Evn ${eveDone}/${eveExp}`}
+                                  {overdue ? ` · Over ${overdue}` : ''}
+                                </Text>
+                              </Pressable>
+                              <Pressable
+                                style={styles.customerIconBtn}
+                                onPress={() => openEditWarehouse(wh)}
+                                hitSlop={0}
+                              >
+                                <Ionicons name="create-outline" size={16} color="#003580" />
+                              </Pressable>
+                              {wh.catalog_id ? (
+                                <Pressable
+                                  style={styles.customerIconBtnDanger}
+                                  onPress={() => deleteWarehouseCatalog(wh)}
+                                  hitSlop={0}
+                                >
+                                  <Ionicons name="trash-outline" size={16} color="#dc2626" />
+                                </Pressable>
+                              ) : null}
                             </View>
                           );
                         })
@@ -3202,7 +3910,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                               <View
                                 style={[styles.doOverviewDotSm, { backgroundColor: '#059669' }]}
                               />
-                              <View style={{ flex: 1, minWidth: 0 }}>
+                              <TouchableOpacity
+                                style={{ flex: 1, minWidth: 0 }}
+                                activeOpacity={0.85}
+                                onPress={() => openEditCustomer(c)}
+                              >
                                 <Text style={styles.doOverviewWh} numberOfLines={1}>
                                   {c.full_name || c.email || 'Customer'}
                                 </Text>
@@ -3212,7 +3924,23 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                                   {` · WH: ${formatScopeList(c.allowed_warehouses)}`}
                                   {` · Clients: ${formatScopeList(c.allowed_clients)}`}
                                 </Text>
-                              </View>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.customerIconBtn}
+                                onPress={() => openEditCustomer(c)}
+                                activeOpacity={0.85}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <Ionicons name="create-outline" size={16} color="#003580" />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.customerIconBtnDanger}
+                                onPress={() => deleteCustomer(c)}
+                                activeOpacity={0.85}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <Ionicons name="trash-outline" size={16} color="#dc2626" />
+                              </TouchableOpacity>
                             </View>
                           ))
                         )
@@ -4052,7 +4780,346 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       </Modal>
 
       <Modal
-        visible={!!selectedDoProfile}
+        visible={customerModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!customerModal.busy) closeCustomerModal();
+        }}
+      >
+        <KeyboardAvoidingView
+          style={styles.denyOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.customerModalCard}>
+            <Text style={styles.denyTitle}>
+              {customerModal.mode === 'edit' ? 'Edit customer' : 'Add customer'}
+            </Text>
+            <Text style={styles.denySub}>
+              Portal login. Empty warehouse/client buttons mean All access.
+            </Text>
+            <ScrollView
+              style={styles.customerModalScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <TextInput
+                style={styles.customerInput}
+                value={customerForm.full_name}
+                onChangeText={(txt) => setCustomerForm((p) => ({ ...p, full_name: txt }))}
+                placeholder="Full name"
+                placeholderTextColor="#94a3b8"
+              />
+              <TextInput
+                style={styles.customerInput}
+                value={customerForm.email}
+                onChangeText={(txt) => setCustomerForm((p) => ({ ...p, email: txt }))}
+                placeholder="Email"
+                placeholderTextColor="#94a3b8"
+                autoCapitalize="none"
+                keyboardType="email-address"
+              />
+              <TextInput
+                style={styles.customerInput}
+                value={customerForm.phone_no}
+                onChangeText={(txt) => setCustomerForm((p) => ({ ...p, phone_no: txt }))}
+                placeholder="Phone"
+                placeholderTextColor="#94a3b8"
+                keyboardType="phone-pad"
+              />
+              <TextInput
+                style={styles.customerInput}
+                value={customerForm.password}
+                onChangeText={(txt) => setCustomerForm((p) => ({ ...p, password: txt }))}
+                placeholder={
+                  customerModal.mode === 'edit' ? 'New password (optional)' : 'Password'
+                }
+                placeholderTextColor="#94a3b8"
+                secureTextEntry
+              />
+              <Text style={styles.customerChipLabel}>Warehouses</Text>
+              <Text style={styles.cardHintSm}>
+                {splitCsv(customerForm.allowed_warehouses).length
+                  ? 'Clients below are only for the selected warehouse(s).'
+                  : 'No warehouse selected = all sites. Clients are grouped by warehouse.'}
+              </Text>
+              <View style={styles.customerChipWrap}>
+                {customerScopeWarehouses.length === 0 ? (
+                  <Text style={styles.cardHintSm}>No warehouses in scope yet.</Text>
+                ) : (
+                  customerScopeWarehouses.map((name) => {
+                    const on = csvHas(customerForm.allowed_warehouses, name);
+                    return (
+                      <TouchableOpacity
+                        key={name}
+                        style={[styles.customerChip, on && styles.customerChipOn]}
+                        onPress={() =>
+                          setCustomerForm((p) => {
+                            const allowed_warehouses = toggleCsvValue(
+                              p.allowed_warehouses,
+                              name
+                            );
+                            return {
+                              ...p,
+                              allowed_warehouses,
+                              allowed_clients: pruneClientsForWarehouses(
+                                allowed_warehouses,
+                                p.allowed_clients
+                              )
+                            };
+                          })
+                        }
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[styles.customerChipText, on && styles.customerChipTextOn]}>
+                          {name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </View>
+              <Text style={styles.customerChipLabel}>Clients</Text>
+              {customerScopeClientGroups.length === 0 ? (
+                <Text style={styles.cardHintSm}>No warehouses to load clients from.</Text>
+              ) : (
+                customerScopeClientGroups.map((group) => (
+                  <View key={group.warehouse} style={{ marginBottom: 8 }}>
+                    <Text style={styles.customerChipGroupLbl}>{group.warehouse}</Text>
+                    <View style={styles.customerChipWrap}>
+                      {group.clients.length === 0 ? (
+                        <Text style={styles.cardHintSm}>No clients in this warehouse.</Text>
+                      ) : (
+                        group.clients.map((name) => {
+                          const on = csvHas(customerForm.allowed_clients, name);
+                          return (
+                            <TouchableOpacity
+                              key={`${group.warehouse}-${name}`}
+                              style={[styles.customerChip, on && styles.customerChipOn]}
+                              onPress={() =>
+                                setCustomerForm((p) => ({
+                                  ...p,
+                                  allowed_clients: toggleCsvValue(p.allowed_clients, name)
+                                }))
+                              }
+                              activeOpacity={0.85}
+                            >
+                              <Text
+                                style={[styles.customerChipText, on && styles.customerChipTextOn]}
+                              >
+                                {name}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })
+                      )}
+                    </View>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <View style={styles.denyActions}>
+              <TouchableOpacity
+                style={styles.denyCancelBtn}
+                disabled={customerModal.busy}
+                onPress={closeCustomerModal}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.denyCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.customerSaveBtn}
+                disabled={customerModal.busy}
+                onPress={saveCustomer}
+                activeOpacity={0.85}
+              >
+                {customerModal.busy ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.customerSaveText}>
+                    {customerModal.mode === 'edit' ? 'Update' : 'Create'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={catalogModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!catalogModal.busy) closeCatalogModal();
+        }}
+      >
+        <KeyboardAvoidingView
+          style={styles.denyOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.customerModalCard}>
+            <Text style={styles.denyTitle}>
+              {catalogModal.kind === 'client'
+                ? catalogModal.mode === 'edit'
+                  ? 'Edit client'
+                  : 'Add client'
+                : catalogModal.mode === 'edit'
+                  ? 'Edit warehouse'
+                  : 'Add warehouse'}
+            </Text>
+            <Text style={styles.denySub}>
+              {catalogModal.kind === 'client'
+                ? 'Company in the catalog. Optional warehouse ties it to a site.'
+                : 'Catalog site. Code is WH-… and stays unique.'}
+            </Text>
+            <ScrollView
+              style={styles.customerModalScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {catalogModal.kind === 'client' ? (
+                <>
+                  <TextInput
+                    style={styles.customerInput}
+                    value={clientForm.client_name}
+                    onChangeText={(txt) => {
+                      clientCodeManualRef.current = false;
+                      setClientForm((p) => ({ ...p, client_name: txt }));
+                    }}
+                    placeholder="Client name"
+                    placeholderTextColor="#94a3b8"
+                  />
+                  <TextInput
+                    style={[
+                      styles.customerInput,
+                      catalogModal.mode === 'edit' && styles.customerInputLocked
+                    ]}
+                    value={clientForm.client_code}
+                    onChangeText={(txt) => {
+                      clientCodeManualRef.current = true;
+                      setClientForm((p) => ({ ...p, client_code: txt.toUpperCase() }));
+                    }}
+                    placeholder="Code (CL-… auto)"
+                    placeholderTextColor="#94a3b8"
+                    autoCapitalize="characters"
+                    editable={catalogModal.mode !== 'edit'}
+                  />
+                  <Text style={styles.customerChipLabel}>Warehouse</Text>
+                  <View style={styles.customerChipWrap}>
+                    <TouchableOpacity
+                      style={[
+                        styles.customerChip,
+                        !clientForm.warehouse_name && styles.customerChipOn
+                      ]}
+                      onPress={() =>
+                        setClientForm((p) => ({
+                          ...p,
+                          warehouse_name: '',
+                          warehouse_code: ''
+                        }))
+                      }
+                      activeOpacity={0.85}
+                    >
+                      <Text
+                        style={[
+                          styles.customerChipText,
+                          !clientForm.warehouse_name && styles.customerChipTextOn
+                        ]}
+                      >
+                        All
+                      </Text>
+                    </TouchableOpacity>
+                    {activeCatalogWarehouses.map((w) => {
+                      const on = clientForm.warehouse_name === w.warehouse_name;
+                      return (
+                        <TouchableOpacity
+                          key={String(w.id)}
+                          style={[styles.customerChip, on && styles.customerChipOn]}
+                          onPress={() =>
+                            setClientForm((p) => ({
+                              ...p,
+                              warehouse_name: w.warehouse_name,
+                              warehouse_code: w.warehouse_code || ''
+                            }))
+                          }
+                          activeOpacity={0.85}
+                        >
+                          <Text style={[styles.customerChipText, on && styles.customerChipTextOn]}>
+                            {w.warehouse_name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              ) : (
+                <>
+                  <TextInput
+                    style={styles.customerInput}
+                    value={warehouseForm.warehouse_name}
+                    onChangeText={(txt) => {
+                      warehouseCodeManualRef.current = false;
+                      setWarehouseForm((p) => ({ ...p, warehouse_name: txt }));
+                    }}
+                    placeholder="Warehouse name"
+                    placeholderTextColor="#94a3b8"
+                  />
+                  <TextInput
+                    style={[
+                      styles.customerInput,
+                      catalogModal.mode === 'edit' && styles.customerInputLocked
+                    ]}
+                    value={warehouseForm.warehouse_code}
+                    onChangeText={(txt) => {
+                      warehouseCodeManualRef.current = true;
+                      setWarehouseForm((p) => ({ ...p, warehouse_code: txt.toUpperCase() }));
+                    }}
+                    placeholder="Code (WH-… auto)"
+                    placeholderTextColor="#94a3b8"
+                    autoCapitalize="characters"
+                    editable={catalogModal.mode !== 'edit'}
+                  />
+                  <TextInput
+                    style={styles.customerInput}
+                    value={warehouseForm.city}
+                    onChangeText={(txt) => setWarehouseForm((p) => ({ ...p, city: txt }))}
+                    placeholder="City (optional)"
+                    placeholderTextColor="#94a3b8"
+                  />
+                </>
+              )}
+            </ScrollView>
+            <View style={styles.denyActions}>
+              <TouchableOpacity
+                style={styles.denyCancelBtn}
+                disabled={catalogModal.busy}
+                onPress={closeCatalogModal}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.denyCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.customerSaveBtn}
+                disabled={catalogModal.busy}
+                onPress={saveCatalogRecord}
+                activeOpacity={0.85}
+              >
+                {catalogModal.busy ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.customerSaveText}>
+                    {catalogModal.mode === 'edit' ? 'Update' : 'Create'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={!!selectedDoProfile && !catalogModal.visible}
         animationType="slide"
         onRequestClose={() => {
           setDoProfileEditing(false);
@@ -5091,7 +6158,7 @@ const styles = StyleSheet.create({
     marginBottom: 4
   },
   statValue: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
-  statLabel: { fontSize: 9, color: '#64748b', marginTop: 1, fontWeight: '700', textAlign: 'center' },
+  statLabel: { fontSize: 10, color: '#64748b', marginTop: 1, fontWeight: '700', textAlign: 'center' },
   quickRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   quickBtn: {
     flex: 1,
@@ -5196,6 +6263,95 @@ const styles = StyleSheet.create({
   doOverviewDotSm: { width: 7, height: 7, borderRadius: 4 },
   doOverviewWh: { fontSize: 13, fontWeight: '700', color: '#0f172a' },
   doOverviewMeta: { fontSize: 11, color: '#64748b', fontWeight: '600', marginTop: 1 },
+  customerAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#059669',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8
+  },
+  customerAddBtnText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  customerIconBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eff6ff'
+  },
+  customerIconBtnDanger: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fef2f2'
+  },
+  customerModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '88%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16
+  },
+  customerModalScroll: { maxHeight: 420, marginTop: 8 },
+  customerInput: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#0f172a',
+    marginBottom: 8,
+    backgroundColor: '#f8fafc'
+  },
+  customerChipLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#334155',
+    marginTop: 6,
+    marginBottom: 6
+  },
+  customerChipGroupLbl: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#64748b',
+    marginBottom: 6
+  },
+  customerChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
+  customerChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  customerChipOn: { backgroundColor: '#059669', borderColor: '#059669' },
+  customerChipText: { fontSize: 11, fontWeight: '800', color: '#475569' },
+  customerChipTextOn: { color: '#fff' },
+  customerSaveBtn: {
+    flex: 1,
+    backgroundColor: '#003580',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  customerSaveText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  customerInputLocked: { backgroundColor: '#e2e8f0', color: '#64748b' },
+  catalogRowActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 8
+  },
   doCountPills: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   doCountPill: {
     minWidth: 44,

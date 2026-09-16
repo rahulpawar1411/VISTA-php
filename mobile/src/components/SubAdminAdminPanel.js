@@ -97,6 +97,7 @@ export default function SubAdminAdminPanel({
     warehouse_name: '',
     warehouse_code: ''
   });
+  const [editingMasterId, setEditingMasterId] = useState(null);
   const clientCodeManualRef = useRef(false);
   const [savedPopup, setSavedPopup] = useState({
     visible: false,
@@ -444,32 +445,54 @@ export default function SubAdminAdminPanel({
     ]);
   };
 
+  const catalogIdOf = (row) => {
+    const id = Number(row?.id);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    if (String(row?.id).startsWith('asg-')) return null;
+    return id;
+  };
+
   const saveWarehouse = async () => {
     const warehouse_code = whForm.warehouse_code.trim().toUpperCase();
     const warehouse_name = whForm.warehouse_name.trim();
-    if (!warehouse_code || !warehouse_name) {
+    if (!warehouse_name) {
+      Alert.alert('Missing fields', 'Warehouse name is required.');
+      return;
+    }
+    if (!editingMasterId && !warehouse_code) {
       Alert.alert('Missing fields', 'Warehouse code and name are required.');
       return;
     }
     setMasterBusy(true);
     try {
-      const res = await fetch(`${apiUrl}/api/masters/warehouses`, {
-        method: 'POST',
+      const isEdit = !!editingMasterId;
+      const url = isEdit
+        ? `${apiUrl}/api/masters/warehouses/${editingMasterId}`
+        : `${apiUrl}/api/masters/warehouses`;
+      const body = isEdit
+        ? { warehouse_name, city: whForm.city.trim() || null }
+        : {
+            warehouse_code,
+            warehouse_name,
+            city: whForm.city.trim() || null
+          };
+      const res = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
         headers,
-        body: JSON.stringify({
-          warehouse_code,
-          warehouse_name,
-          city: whForm.city.trim() || null
-        })
+        body: JSON.stringify(body)
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || data.error || 'Create failed');
+      if (!res.ok) throw new Error(data.message || data.error || 'Save failed');
       setMasterFormOpen(false);
+      setEditingMasterId(null);
       setWhForm({ warehouse_code: '', warehouse_name: '', city: '' });
       await loadMasters();
-      showSaved('Warehouse saved', data.message || 'Warehouse was added successfully.');
+      showSaved(
+        isEdit ? 'Warehouse updated' : 'Warehouse saved',
+        data.message || 'Warehouse was saved successfully.'
+      );
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not create warehouse.');
+      Alert.alert('Error', err.message || 'Could not save warehouse.');
     } finally {
       setMasterBusy(false);
     }
@@ -488,25 +511,36 @@ export default function SubAdminAdminPanel({
     }
     setMasterBusy(true);
     try {
-      const res = await fetch(`${apiUrl}/api/masters/clients`, {
-        method: 'POST',
+      const isEdit = !!editingMasterId;
+      const url = isEdit
+        ? `${apiUrl}/api/masters/clients/${editingMasterId}`
+        : `${apiUrl}/api/masters/clients`;
+      const body = isEdit
+        ? { client_name, warehouse_name: warehouse_name || null }
+        : {
+            client_code: client_code || undefined,
+            client_name,
+            warehouse_name: warehouse_name || null,
+            warehouse_code: clForm.warehouse_code || undefined
+          };
+      const res = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
         headers,
-        body: JSON.stringify({
-          client_code: client_code || undefined,
-          client_name,
-          warehouse_name: warehouse_name || null,
-          warehouse_code: clForm.warehouse_code || undefined
-        })
+        body: JSON.stringify(body)
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || data.error || 'Create failed');
+      if (!res.ok) throw new Error(data.message || data.error || 'Save failed');
       setMasterFormOpen(false);
+      setEditingMasterId(null);
       clientCodeManualRef.current = false;
       setClForm({ client_code: '', client_name: '', warehouse_name: '', warehouse_code: '' });
       await loadMasters();
-      showSaved('Client saved', data.message || 'Client was added successfully.');
+      showSaved(
+        isEdit ? 'Client updated' : 'Client saved',
+        data.message || 'Client was saved successfully.'
+      );
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not create client.');
+      Alert.alert('Error', err.message || 'Could not save client.');
     } finally {
       setMasterBusy(false);
     }
@@ -515,7 +549,7 @@ export default function SubAdminAdminPanel({
   const activeWarehouses = warehouses.filter((w) => Number(w.is_active) !== 0);
 
   useEffect(() => {
-    if (masterTab !== 'clients' || clientCodeManualRef.current) return;
+    if (masterTab !== 'clients' || clientCodeManualRef.current || editingMasterId) return;
     const code = generateClientCode(
       clForm.client_name,
       clForm.warehouse_name,
@@ -524,14 +558,117 @@ export default function SubAdminAdminPanel({
     if (code !== clForm.client_code) {
       setClForm((p) => ({ ...p, client_code: code }));
     }
-  }, [clForm.client_name, clForm.warehouse_name, clForm.warehouse_code, masterTab]);
+  }, [clForm.client_name, clForm.warehouse_name, clForm.warehouse_code, masterTab, editingMasterId]);
 
   const openMasterAddForm = () => {
     clientCodeManualRef.current = false;
+    setEditingMasterId(null);
     if (masterTab === 'clients') {
       setClForm({ client_code: '', client_name: '', warehouse_name: '', warehouse_code: '' });
+    } else {
+      setWhForm({ warehouse_code: '', warehouse_name: '', city: '' });
     }
     setMasterFormOpen(true);
+  };
+
+  const openMasterEdit = (row) => {
+    const id = catalogIdOf(row);
+    if (!id) {
+      Alert.alert('Not in catalog', 'This row is assignment-only. Add it to the catalog first.');
+      return;
+    }
+    setEditingMasterId(id);
+    if (masterTab === 'warehouses') {
+      setWhForm({
+        warehouse_code: row.warehouse_code || '',
+        warehouse_name: row.warehouse_name || '',
+        city: row.city || ''
+      });
+    } else {
+      clientCodeManualRef.current = true;
+      setClForm({
+        client_code: row.client_code || '',
+        client_name: row.client_name || '',
+        warehouse_name: row.warehouse_name || '',
+        warehouse_code: row.warehouse_code || ''
+      });
+    }
+    setMasterFormOpen(true);
+  };
+
+  const setMasterActive = (row, nextActive) => {
+    const id = catalogIdOf(row);
+    if (!id) {
+      Alert.alert('Not in catalog', 'This row cannot be updated from Master.');
+      return;
+    }
+    const isWh = masterTab === 'warehouses';
+    const label = isWh ? row.warehouse_name : row.client_name;
+    Alert.alert(
+      nextActive ? 'Activate' : 'Delete',
+      nextActive
+        ? `Activate ${label || 'this record'}?`
+        : `Deactivate ${label || 'this record'}? Existing logs stay.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: nextActive ? 'Activate' : 'Delete',
+          style: nextActive ? 'default' : 'destructive',
+          onPress: async () => {
+            try {
+              const path = isWh ? 'warehouses' : 'clients';
+              const res = await fetch(`${apiUrl}/api/masters/${path}/${id}`, {
+                method: nextActive ? 'PUT' : 'DELETE',
+                headers,
+                body: nextActive ? JSON.stringify({ is_active: 1 }) : undefined
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.message || data.error || 'Update failed');
+              await loadMasters();
+              showSaved(
+                nextActive ? 'Activated' : 'Deactivated',
+                data.message || (nextActive ? 'Record is active again.' : 'Record deactivated.')
+              );
+            } catch (err) {
+              Alert.alert('Error', err.message || 'Could not update record.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const renderMasterActions = (row, active) => {
+    const id = catalogIdOf(row);
+    if (!id) return null;
+    return (
+      <View style={styles.actionRow}>
+        <TouchableOpacity
+          style={[styles.actionBtn, styles.editBtn]}
+          onPress={() => openMasterEdit(row)}
+        >
+          <Ionicons name="create-outline" size={13} color="#fff" />
+          <Text style={styles.actionBtnText}>Edit</Text>
+        </TouchableOpacity>
+        {active ? (
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.denyBtn]}
+            onPress={() => setMasterActive(row, false)}
+          >
+            <Ionicons name="trash-outline" size={13} color="#fff" />
+            <Text style={styles.actionBtnText}>Delete</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.approveBtn]}
+            onPress={() => setMasterActive(row, true)}
+          >
+            <Ionicons name="refresh-outline" size={13} color="#fff" />
+            <Text style={styles.actionBtnText}>Activate</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
   };
 
   return (
@@ -851,6 +988,7 @@ export default function SubAdminAdminPanel({
                       <View style={[styles.statusPill, styles.statusActive]}>
                         <Text style={[styles.statusPillText, styles.statusActiveText]}>Active</Text>
                       </View>
+                      {renderMasterActions(row, true)}
                     </View>
                   ))
                 )}
@@ -881,6 +1019,7 @@ export default function SubAdminAdminPanel({
                           Deactive
                         </Text>
                       </View>
+                      {renderMasterActions(row, false)}
                     </View>
                   ))
                 )}
@@ -971,7 +1110,10 @@ export default function SubAdminAdminPanel({
         visible={masterFormOpen}
         transparent
         animationType="slide"
-        onRequestClose={() => setMasterFormOpen(false)}
+        onRequestClose={() => {
+          setMasterFormOpen(false);
+          setEditingMasterId(null);
+        }}
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
@@ -980,7 +1122,13 @@ export default function SubAdminAdminPanel({
           <View style={styles.modalSheet}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>
-              {masterTab === 'warehouses' ? 'Add warehouse' : 'Add client'}
+              {masterTab === 'warehouses'
+                ? editingMasterId
+                  ? 'Edit warehouse'
+                  : 'Add warehouse'
+                : editingMasterId
+                  ? 'Edit client'
+                  : 'Add client'}
             </Text>
             {masterTab === 'warehouses' ? (
               <>
@@ -993,6 +1141,7 @@ export default function SubAdminAdminPanel({
                     autoCapitalize="characters"
                     placeholder="WH-01"
                     placeholderTextColor="#94a3b8"
+                    editable={!editingMasterId}
                   />
                 </View>
                 <View style={styles.field}>
@@ -1090,6 +1239,7 @@ export default function SubAdminAdminPanel({
                     autoCapitalize="characters"
                     placeholder="CL-WH-CLIENT"
                     placeholderTextColor="#94a3b8"
+                    editable={!editingMasterId}
                   />
                   <Text style={styles.fieldHint}>
                     Auto from client + warehouse name. Edit only if you need a custom code.
@@ -1100,7 +1250,10 @@ export default function SubAdminAdminPanel({
             <View style={styles.actionRow}>
               <TouchableOpacity
                 style={[styles.actionBtn, styles.editBtn, { flex: 1 }]}
-                onPress={() => setMasterFormOpen(false)}
+                onPress={() => {
+                  setMasterFormOpen(false);
+                  setEditingMasterId(null);
+                }}
               >
                 <Text style={styles.actionBtnText}>Cancel</Text>
               </TouchableOpacity>
