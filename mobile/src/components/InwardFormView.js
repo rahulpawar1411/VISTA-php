@@ -36,7 +36,7 @@ import {
   formatInwardClockTime,
   INWARD_PHOTO_VARIANCE_LIMIT_MINS,
 } from '../utils/inwardValidation';
-import { saveInwardLocally, markInwardAsSynced, markInwardSyncError } from '../database/db';
+import { saveInwardLocally, markInwardAsSynced, markInwardSyncError, markInwardSyncing } from '../database/db';
 import { buildInwardFormData, collectMissingPhotoUris } from '../utils/offlineLogFormData';
 import { appendLocalFile, multipartRequest } from '../utils/formDataAppendFile';
 import { saveFormDraft, loadFormDraft, clearFormDraft, stabilizePhotosForDraft } from '../utils/formDraftStorage';
@@ -629,6 +629,7 @@ export default function InwardFormView({
       if (!localId) {
         throw new Error('Could not save inward record to device queue.');
       }
+      markInwardSyncing(localId);
 
       let syncedNow = false;
       let referenceNo = null;

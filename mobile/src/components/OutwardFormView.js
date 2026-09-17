@@ -36,7 +36,7 @@ import {
   formatOutwardClockTime,
   OUTWARD_PHOTO_VARIANCE_LIMIT_MINS,
 } from '../utils/outwardValidation';
-import { saveOutwardLocally, markOutwardAsSynced, markOutwardSyncError } from '../database/db';
+import { saveOutwardLocally, markOutwardAsSynced, markOutwardSyncError, markOutwardSyncing } from '../database/db';
 import { buildOutwardFormData, collectMissingPhotoUris } from '../utils/offlineLogFormData';
 import { appendLocalFile, multipartRequest } from '../utils/formDataAppendFile';
 import { saveFormDraft, loadFormDraft, clearFormDraft, stabilizePhotosForDraft } from '../utils/formDraftStorage';
@@ -629,6 +629,7 @@ export default function OutwardFormView({
       if (!localId) {
         throw new Error('Could not save outward record to device queue.');
       }
+      markOutwardSyncing(localId);
 
       let syncedNow = false;
       let referenceNo = null;

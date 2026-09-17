@@ -33,7 +33,7 @@ export default function LoginScreen({
   apiUrl,
   onUpdateApiUrl,
   productionApiUrl = 'https://reeferon-crm-backend.onrender.com',
-  localApiUrl = 'http://192.168.161.129:5000'
+  localApiUrl = 'http://192.168.64.129:5000'
 }) {
   // Input form state variables
   const [email, setEmail] = useState('');
@@ -52,7 +52,7 @@ export default function LoginScreen({
   }, [apiUrl]);
 
   const applyServer = (url) => {
-    const clean = String(url || '').trim().replace(/\/$/, '');
+    const clean = String(url || '').trim().replace(/\/$/, '').replace(/\/api$/i, '');
     setApiUrlInput(clean);
     onUpdateApiUrl(clean);
   };
@@ -73,7 +73,7 @@ export default function LoginScreen({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json'
+          Accept: 'application/json'
         },
         body: JSON.stringify({
           email: loginEmail.trim().toLowerCase(),
@@ -85,7 +85,6 @@ export default function LoginScreen({
 
       if (response.ok && data.success) {
         const role = String(data.user?.role || '').trim();
-        // Role-based mobile access — keep backend role exactly (email/password map to one role table)
         if (role === 'do_operator' || role === 'customer' || role === 'sub_admin') {
           console.log('🔑 Login success:', role, data.user?.email);
           if (role === 'do_operator' || role === 'sub_admin') {
@@ -107,7 +106,6 @@ export default function LoginScreen({
       }
     } catch (err) {
       console.warn('⚠️ Server unreachable:', err.message);
-      
       Alert.alert(
         'Connection Error',
         `Could not reach the server at:\n${apiUrl}\n\nPlease check your internet connection or configure the correct Server Connection URL below.`,

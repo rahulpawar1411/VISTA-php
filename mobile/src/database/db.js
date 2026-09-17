@@ -1323,15 +1323,19 @@ export const saveOutwardLocally = ({
 
 export const getPendingInwardLogs = (operatorEmail = null) => {
   if (!db) return [];
+  const staleBefore = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   try {
+    const where =
+      "(sync_status = 'pending' OR (sync_status = 'syncing' AND updated_at < ?))";
     if (operatorEmail) {
       return db.getAllSync(
-        "SELECT * FROM local_inward_logs WHERE sync_status = 'pending' AND LOWER(operator_email) = LOWER(?) ORDER BY created_at ASC;",
-        [operatorEmail]
+        `SELECT * FROM local_inward_logs WHERE ${where} AND LOWER(operator_email) = LOWER(?) ORDER BY created_at ASC;`,
+        [staleBefore, operatorEmail]
       );
     }
     return db.getAllSync(
-      "SELECT * FROM local_inward_logs WHERE sync_status = 'pending' ORDER BY created_at ASC;"
+      `SELECT * FROM local_inward_logs WHERE ${where} ORDER BY created_at ASC;`,
+      [staleBefore]
     );
   } catch (error) {
     console.error('❌ Failed to fetch pending inward logs:', error);
@@ -1341,15 +1345,19 @@ export const getPendingInwardLogs = (operatorEmail = null) => {
 
 export const getPendingOutwardLogs = (operatorEmail = null) => {
   if (!db) return [];
+  const staleBefore = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   try {
+    const where =
+      "(sync_status = 'pending' OR (sync_status = 'syncing' AND updated_at < ?))";
     if (operatorEmail) {
       return db.getAllSync(
-        "SELECT * FROM local_outward_logs WHERE sync_status = 'pending' AND LOWER(operator_email) = LOWER(?) ORDER BY created_at ASC;",
-        [operatorEmail]
+        `SELECT * FROM local_outward_logs WHERE ${where} AND LOWER(operator_email) = LOWER(?) ORDER BY created_at ASC;`,
+        [staleBefore, operatorEmail]
       );
     }
     return db.getAllSync(
-      "SELECT * FROM local_outward_logs WHERE sync_status = 'pending' ORDER BY created_at ASC;"
+      `SELECT * FROM local_outward_logs WHERE ${where} ORDER BY created_at ASC;`,
+      [staleBefore]
     );
   } catch (error) {
     console.error('❌ Failed to fetch pending outward logs:', error);
@@ -1383,7 +1391,29 @@ export const getPendingSyncFailures = (operatorEmail = null) => {
   }
 };
 
-export const markInwardAsSynced = (id, referenceNo, serverLogId = null) => {
+export const markInwardSyncing = (id) => {
+  if (!db || !id) return;
+  try {
+    db.runSync(
+      "UPDATE local_inward_logs SET sync_status = 'syncing', updated_at = ? WHERE id = ? AND sync_status != 'synced';",
+      [new Date().toISOString(), id]
+    );
+  } catch (error) {
+    console.error('❌ Failed to mark inward as syncing:', error);
+  }
+};
+
+export const markOutwardSyncing = (id) => {
+  if (!db || !id) return;
+  try {
+    db.runSync(
+      "UPDATE local_outward_logs SET sync_status = 'syncing', updated_at = ? WHERE id = ? AND sync_status != 'synced';",
+      [new Date().toISOString(), id]
+    );
+  } catch (error) {
+    console.error('❌ Failed to mark outward as syncing:', error);
+  }
+};
   if (!db || !id) return;
   try {
     db.runSync(
@@ -1411,7 +1441,7 @@ export const markInwardSyncError = (id, message) => {
   if (!db || !id) return;
   try {
     db.runSync(
-      "UPDATE local_inward_logs SET sync_error = ?, updated_at = ? WHERE id = ?;",
+      "UPDATE local_inward_logs SET sync_status = 'pending', sync_error = ?, updated_at = ? WHERE id = ?;",
       [String(message || 'Upload failed').slice(0, 500), new Date().toISOString(), id]
     );
   } catch (error) {
@@ -1423,7 +1453,7 @@ export const markOutwardSyncError = (id, message) => {
   if (!db || !id) return;
   try {
     db.runSync(
-      "UPDATE local_outward_logs SET sync_error = ?, updated_at = ? WHERE id = ?;",
+      "UPDATE local_outward_logs SET sync_status = 'pending', sync_error = ?, updated_at = ? WHERE id = ?;",
       [String(message || 'Upload failed').slice(0, 500), new Date().toISOString(), id]
     );
   } catch (error) {

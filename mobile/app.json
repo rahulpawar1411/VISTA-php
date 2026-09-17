@@ -27,6 +27,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.reeferon.crm",
+      "usesCleartextTraffic": true,
       "versionCode": 1,
       "permissions": [
         "android.permission.CAMERA",
@@ -90,6 +91,8 @@
       "expo-font"
     ],
     "extra": {
+      "apiUrl": "https://reeferon-crm-backend.onrender.com",
+      "cloudinaryCloudName": "de9ba8bpk",
       "eas": {
         "projectId": "05781cac-f64a-4635-a343-5613ba0302eb"
       }

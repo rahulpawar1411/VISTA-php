@@ -12,6 +12,8 @@ import {
   markOutwardAsSynced,
   markInwardSyncError,
   markOutwardSyncError,
+  markInwardSyncing,
+  markOutwardSyncing,
   countPendingSyncItems,
   upsertSyncedInspectionFromServer,
   reconcileSyncedInspectionsFromServer,
@@ -299,6 +301,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
     const pendingInwards = getPendingInwardLogs(operatorEmail);
     for (const record of pendingInwards) {
       try {
+        markInwardSyncing(record.id);
         await assertQueuePhotosExist(record);
         const formData = buildInwardFormData(record);
         const response = await multipartRequest(`${apiBaseUrl}/api/inward-logs`, {
@@ -328,6 +331,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
     const pendingOutwards = getPendingOutwardLogs(operatorEmail);
     for (const record of pendingOutwards) {
       try {
+        markOutwardSyncing(record.id);
         await assertQueuePhotosExist(record);
         const formData = buildOutwardFormData(record);
         const response = await multipartRequest(`${apiBaseUrl}/api/outward-logs`, {

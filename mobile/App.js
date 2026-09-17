@@ -7,8 +7,8 @@
 //   sub_admin   → SubAdminScreen   — overview, permissions, DO masters
 //
 // API URL:
-//   - Dev: getLocalApiUrl() from Metro LAN IP → http://IP:5000
-//   - Prod: PRODUCTION_API_URL (Render)
+//   - Local: getLocalApiUrl() → http://LAN-IP:5000 (same DB as Render)
+//   - Live:  PRODUCTION_API_URL (Render)
 //   - FALLBACK_LOCAL_IP: update if Wi‑Fi IPv4 changes (ipconfig)
 // ====================================================================
 
@@ -23,11 +23,22 @@ import SubAdminScreen from './src/screens/SubAdminScreen';
 import SplashScreen from './src/screens/SplashScreen';
 import { clearSyncedInspectionsLocally, initDatabase } from './src/database/db';
 
-/** Production backend base URL (no trailing slash, no /api path). */
-export const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
+/** Live backend: Render. No trailing slash, no /api (app adds /api/...). */
+function readProductionApiUrl() {
+  const raw =
+    process.env.EXPO_PUBLIC_API_URL ||
+    Constants.expoConfig?.extra?.apiUrl ||
+    'https://reeferon-crm-backend.onrender.com';
+  return String(raw)
+    .trim()
+    .replace(/\/$/, '')
+    .replace(/\/api$/i, '');
+}
+
+export const PRODUCTION_API_URL = readProductionApiUrl();
 
 /** Used only when Metro host IP cannot be detected — keep in sync with PC Wi‑Fi IPv4. */
-const FALLBACK_LOCAL_IP = '192.168.161.129';
+const FALLBACK_LOCAL_IP = '192.168.64.129';
 
 /** Pull first usable LAN IPv4 from a host string / URL. */
 function extractLanIp(raw) {
@@ -116,9 +127,12 @@ export default function App() {
         const storedUser = await AsyncStorage.getItem('user_profile');
         const storedApiUrl = await AsyncStorage.getItem('api_url');
 
-        // Restore last chosen server (production or local)
         if (storedApiUrl && storedApiUrl.trim()) {
-          let nextApi = storedApiUrl.replace(/\/$/, '');
+          let nextApi = storedApiUrl.replace(/\/$/, '').replace(/\/api$/i, '');
+          if (/railway\.app/i.test(nextApi)) {
+            nextApi = PRODUCTION_API_URL;
+            console.log('[api] dropped unused Railway URL → Render');
+          }
           if (isLocalApiUrl(nextApi)) {
             nextApi = getLocalApiUrl();
             await AsyncStorage.setItem('api_url', nextApi);
@@ -126,6 +140,7 @@ export default function App() {
           }
           resolvedApiUrl = nextApi;
           setApiUrl(nextApi);
+          await AsyncStorage.setItem('api_url', nextApi);
         } else {
           setApiUrl(PRODUCTION_API_URL);
           await AsyncStorage.setItem('api_url', PRODUCTION_API_URL);
@@ -215,9 +230,13 @@ export default function App() {
 
   const handleUpdateApiUrl = async (newUrl) => {
     try {
-      const clean = String(newUrl || '').trim().replace(/\/$/, '');
-      setApiUrl(clean);
-      await AsyncStorage.setItem('api_url', clean);
+      const clean = String(newUrl || '')
+        .trim()
+        .replace(/\/$/, '')
+        .replace(/\/api$/i, '');
+      const next = /railway\.app/i.test(clean) ? PRODUCTION_API_URL : clean;
+      setApiUrl(next);
+      await AsyncStorage.setItem('api_url', next);
     } catch (err) {
       console.warn('Failed to save API URL:', err);
     }
