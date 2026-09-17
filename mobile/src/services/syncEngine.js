@@ -312,7 +312,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           },
           body: formData,
         });
-        const resData = await response.json();
+        const resData = await response.json().catch(() => ({}));
         if (response.status === 200 || response.status === 201) {
           markInwardAsSynced(record.id, resData.reference_no, resData.id);
           syncedCount += 1;
@@ -342,7 +342,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           },
           body: formData,
         });
-        const resData = await response.json();
+        const resData = await response.json().catch(() => ({}));
         if (response.status === 200 || response.status === 201) {
           markOutwardAsSynced(record.id, resData.reference_no, resData.id);
           syncedCount += 1;

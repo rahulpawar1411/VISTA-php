@@ -657,7 +657,7 @@ export default function OutwardFormView({
             body: formData,
           });
 
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
           if (res.ok) {
             referenceNo = data.reference_no || null;
             markOutwardAsSynced(localId, referenceNo, data.id);
