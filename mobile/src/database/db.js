@@ -1278,7 +1278,7 @@ export const saveInwardLocally = ({
       ]
     );
     console.log(`💾 Saved inward log locally: ${id}`);
-    return id;
+    return { id, created_at: now };
   } catch (error) {
     console.error('❌ Failed to save inward locally:', error);
     return null;
@@ -1314,7 +1314,7 @@ export const saveOutwardLocally = ({
       ]
     );
     console.log(`💾 Saved outward log locally: ${id}`);
-    return id;
+    return { id, created_at: now };
   } catch (error) {
     console.error('❌ Failed to save outward locally:', error);
     return null;

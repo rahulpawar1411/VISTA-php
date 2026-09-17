@@ -618,7 +618,7 @@ export default function OutwardFormView({
         );
       }
 
-      const localId = saveOutwardLocally({
+      const savedLocal = saveOutwardLocally({
         form: submitForm,
         photos: stablePhotos,
         driverCountryCode,
@@ -626,6 +626,7 @@ export default function OutwardFormView({
         warehouse_code: warehouseCode || null,
         operator_email: operatorEmail || null,
       });
+      const localId = savedLocal?.id || savedLocal;
       if (!localId) {
         throw new Error('Could not save outward record to device queue.');
       }
@@ -637,6 +638,8 @@ export default function OutwardFormView({
       if (apiUrl && token) {
         try {
           const formData = buildOutwardFormData({
+            id: localId,
+            created_at: savedLocal?.created_at,
             form_json: JSON.stringify(submitForm),
             photos_json: JSON.stringify(stablePhotos),
             driver_country_code: driverCountryCode,

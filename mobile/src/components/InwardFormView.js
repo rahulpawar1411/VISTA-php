@@ -618,7 +618,7 @@ export default function InwardFormView({
         );
       }
 
-      const localId = saveInwardLocally({
+      const savedLocal = saveInwardLocally({
         form: submitForm,
         photos: stablePhotos,
         driverCountryCode,
@@ -626,6 +626,7 @@ export default function InwardFormView({
         warehouse_code: warehouseCode || null,
         operator_email: operatorEmail || null,
       });
+      const localId = savedLocal?.id || savedLocal;
       if (!localId) {
         throw new Error('Could not save inward record to device queue.');
       }
@@ -637,6 +638,8 @@ export default function InwardFormView({
       if (apiUrl && token) {
         try {
           const formData = buildInwardFormData({
+            id: localId,
+            created_at: savedLocal?.created_at,
             form_json: JSON.stringify(submitForm),
             photos_json: JSON.stringify(stablePhotos),
             driver_country_code: driverCountryCode,

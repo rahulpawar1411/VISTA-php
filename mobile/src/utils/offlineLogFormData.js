@@ -138,6 +138,12 @@ export function buildInwardFormData(record) {
   if (photoMeta) {
     formData.append('photo_capture_metadata', JSON.stringify(photoMeta));
   }
+  if (record.id) {
+    formData.append('client_submission_id', String(record.id));
+  }
+  if (record.created_at) {
+    formData.append('client_submitted_at', String(record.created_at));
+  }
 
   return formData;
 }
@@ -198,6 +204,12 @@ export function buildOutwardFormData(record) {
   const photoMeta = buildPhotoMetadataPayload(photos, OUTWARD_PHOTO_FIELDS);
   if (photoMeta) {
     formData.append('photo_capture_metadata', JSON.stringify(photoMeta));
+  }
+  if (record.id) {
+    formData.append('client_submission_id', String(record.id));
+  }
+  if (record.created_at) {
+    formData.append('client_submitted_at', String(record.created_at));
   }
 
   return formData;
