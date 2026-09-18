@@ -1801,7 +1801,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       morningDone: Number(t.morning_completed) || 0,
       morningExpected: Number(t.morning_expected) || 0,
       eveningDone: Number(t.evening_completed) || 0,
-      eveningExpected: Number(t.evening_expected) || 0
+      eveningExpected: Number(t.evening_expected) || 0,
+      totalInward: Number(t.total_inward) || 0,
+      totalOutward: Number(t.total_outward) || 0,
+      todayInward: Number(t.today_inward) || 0,
+      todayOutward: Number(t.today_outward) || 0
     };
   }, [taskSummary]);
 
@@ -2549,6 +2553,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         evening_completed: Number(merged.evening_completed) || 0,
         evening_expected: Number(merged.evening_expected) || 0,
         evening_pending: Number(merged.evening_pending) || 0,
+        total_inward: Number(merged.total_inward) || 0,
+        total_outward: Number(merged.total_outward) || 0,
+        today_inward: Number(merged.today_inward) || 0,
+        today_outward: Number(merged.today_outward) || 0,
         task_date: toLocalYmd()
       };
     },
@@ -2571,8 +2579,33 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         chamber_limit: profile.chamber_limit != null ? String(profile.chamber_limit) : '4'
       });
       setDoProfileAssignments([]);
+
+      const email = String(profile.email || '').trim();
+      if (apiUrl && token && email) {
+        const qs = new URLSearchParams({ email });
+        fetch(`${apiUrl}/api/dashboard/do-operator-io-counts?${qs.toString()}`, {
+          headers: authHeaders
+        })
+          .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) return;
+            setSelectedDoProfile((prev) => {
+              if (!prev || String(prev.email || '').trim().toLowerCase() !== email.toLowerCase()) {
+                return prev;
+              }
+              return {
+                ...prev,
+                total_inward: Number(data.total_inward) || 0,
+                total_outward: Number(data.total_outward) || 0,
+                today_inward: Number(data.today_inward) || 0,
+                today_outward: Number(data.today_outward) || 0
+              };
+            });
+          })
+          .catch(() => {});
+      }
     },
-    [resolveDoProfile, homeListFocus]
+    [resolveDoProfile, homeListFocus, apiUrl, token, authHeaders]
   );
 
   const loadDoProfileAssignments = useCallback(async () => {
@@ -2619,6 +2652,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         evening_completed: refreshed.evening_completed,
         evening_expected: refreshed.evening_expected,
         evening_pending: refreshed.evening_pending,
+        total_inward: refreshed.total_inward,
+        total_outward: refreshed.total_outward,
+        today_inward: refreshed.today_inward,
+        today_outward: refreshed.today_outward,
         task_date: refreshed.task_date
       };
     });
@@ -3709,16 +3746,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.dashHeroEyebrow}>DO monitor · daily tasks</Text>
                       <Text style={styles.dashHeroTitle}>Today's status</Text>
-                      <Text style={styles.dashHeroDate}>{todayLabel}</Text>
-                      <Text style={styles.dashHeroHint}>
-                        Pending = today shifts · Overdue = prior 5 days missing
+                      <Text style={styles.dashHeroDate}>
+                        {todayLabel}
+                        {homeLastUpdated ? ` · Updated ${homeLastUpdated}` : ''}
                       </Text>
-                      {homeLastUpdated ? (
-                        <Text style={styles.dashUpdatedAt}>Updated · {homeLastUpdated}</Text>
-                      ) : null}
                     </View>
                     <View style={styles.dashHeroIcon}>
-                      <Ionicons name="pulse-outline" size={22} color="#003580" />
+                      <Ionicons name="pulse-outline" size={18} color="#003580" />
                     </View>
                   </View>
 
@@ -3747,6 +3781,36 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                     </View>
                   </View>
 
+                  <View style={styles.todayOpsCard}>
+                    <View style={styles.todayOpsCell}>
+                      <Text style={[styles.todayOpsNum, { color: '#1967d2' }]}>
+                        {todayOps.totalInward}
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Total In</Text>
+                    </View>
+                    <View style={styles.todayOpsDivider} />
+                    <View style={styles.todayOpsCell}>
+                      <Text style={[styles.todayOpsNum, { color: '#e37400' }]}>
+                        {todayOps.totalOutward}
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Total Out</Text>
+                    </View>
+                    <View style={styles.todayOpsDivider} />
+                    <View style={styles.todayOpsCell}>
+                      <Text style={[styles.todayOpsNum, { color: '#137333' }]}>
+                        {todayOps.todayInward}
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Today In</Text>
+                    </View>
+                    <View style={styles.todayOpsDivider} />
+                    <View style={styles.todayOpsCell}>
+                      <Text style={[styles.todayOpsNum, { color: '#7627bb' }]}>
+                        {todayOps.todayOutward}
+                      </Text>
+                      <Text style={styles.todayOpsLbl}>Today Out</Text>
+                    </View>
+                  </View>
+
                   {pendingNotifCount > 0 ? (
                     <TouchableOpacity
                       style={styles.permAlertBanner}
@@ -3766,31 +3830,6 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       <Ionicons name="chevron-forward" size={18} color="#b45309" />
                     </TouchableOpacity>
                   ) : null}
-
-                  <View style={styles.quickRow}>
-                    <TouchableOpacity style={styles.quickBtn} onPress={openLogsToday} activeOpacity={0.85}>
-                      <Ionicons name="list-outline" size={15} color="#003580" />
-                      <Text style={styles.quickText}>Logs</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.quickBtn}
-                      onPress={() => {
-                        setHomeListFocus('ops');
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="people-outline" size={15} color="#003580" />
-                      <Text style={styles.quickText}>DOs</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.quickBtn}
-                      onPress={() => openAdminSection('dos')}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="settings-outline" size={15} color="#003580" />
-                      <Text style={styles.quickText}>Manage</Text>
-                    </TouchableOpacity>
-                  </View>
 
                   <Text style={styles.dashSectionLbl}>Browse by category</Text>
                   <View style={styles.statsGrid}>
@@ -3954,58 +3993,67 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           const mornExp = Number(op.morning_expected) || 0;
                           const eveDone = Number(op.evening_completed) || 0;
                           const eveExp = Number(op.evening_expected) || 0;
+                          const todayIn = Number(op.today_inward) || 0;
+                          const todayOut = Number(op.today_outward) || 0;
                           const color =
                             overdue > 0 ? '#dc2626' : pending > 0 ? '#d97706' : '#059669';
                           return (
-                        <TouchableOpacity
+                            <TouchableOpacity
                               key={`${op.id || op.email || op.name}-${idx}`}
-                              style={[styles.doOverviewRow, idx > 0 && styles.doOverviewRowBorder]}
+                              style={[styles.doOverviewDoRow, idx > 0 && styles.doOverviewRowBorder]}
                               activeOpacity={0.85}
                               onPress={() => openDoProfile(op, op.warehouse_name)}
                             >
-                              <View style={[styles.doOverviewDotSm, { backgroundColor: color }]} />
-                              <View style={{ flex: 1, minWidth: 0 }}>
-                                <Text style={styles.doOverviewWh} numberOfLines={1}>
-                                  {op.name || 'DO'}
-                            </Text>
-                                <Text style={styles.doOverviewMeta} numberOfLines={1}>
-                                  {op.warehouse_name || 'Unassigned'}
-                                  {op.email ? ` · ${op.email}` : ''}
-                            </Text>
-                          </View>
-                              <View style={styles.doCountPills}>
+                              <View style={styles.doOverviewRowTop}>
+                                <View style={[styles.doOverviewDotSm, { backgroundColor: color }]} />
+                                <View style={{ flex: 1, minWidth: 0 }}>
+                                  <Text style={styles.doOverviewWh} numberOfLines={1}>
+                                    {op.name || 'DO'}
+                                  </Text>
+                                  <Text style={styles.doOverviewMeta} numberOfLines={1}>
+                                    {op.warehouse_name || 'Unassigned'}
+                                    {op.email ? ` · ${op.email}` : ''}
+                                  </Text>
+                                </View>
+                                <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+                              </View>
+                              <View style={styles.doCountPillsWrap}>
                                 <View style={[styles.doCountPill, styles.doCountPillDone]}>
                                   <Text style={[styles.doCountPillNum, { color: '#059669' }]}>
                                     {mornDone}/{mornExp}
-                          </Text>
-                                  <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>
-                                    Mor
                                   </Text>
+                                  <Text style={[styles.doCountPillLbl, { color: '#059669' }]}>Mor</Text>
                                 </View>
                                 <View style={[styles.doCountPill, { backgroundColor: '#eff6ff' }]}>
                                   <Text style={[styles.doCountPillNum, { color: '#003580' }]}>
                                     {eveDone}/{eveExp}
                                   </Text>
-                                  <Text style={[styles.doCountPillLbl, { color: '#003580' }]}>
-                                    Evn
-                                  </Text>
+                                  <Text style={[styles.doCountPillLbl, { color: '#003580' }]}>Evn</Text>
                                 </View>
                                 <View style={[styles.doCountPill, styles.doCountPillOver]}>
                                   <Text style={[styles.doCountPillNum, { color: '#dc2626' }]}>
                                     {overdue}
                                   </Text>
-                                  <Text style={[styles.doCountPillLbl, { color: '#dc2626' }]}>
-                                    Over
+                                  <Text style={[styles.doCountPillLbl, { color: '#dc2626' }]}>Over</Text>
+                                </View>
+                                <View style={[styles.doCountPill, { backgroundColor: '#e6f4ea' }]}>
+                                  <Text style={[styles.doCountPillNum, { color: '#137333' }]}>
+                                    {todayIn}
+                                  </Text>
+                                  <Text style={[styles.doCountPillLbl, { color: '#137333' }]}>
+                                    Today In
+                                  </Text>
+                                </View>
+                                <View style={[styles.doCountPill, { backgroundColor: '#f3e8fd' }]}>
+                                  <Text style={[styles.doCountPillNum, { color: '#7627bb' }]}>
+                                    {todayOut}
+                                  </Text>
+                                  <Text style={[styles.doCountPillLbl, { color: '#7627bb' }]}>
+                                    Today Out
                                   </Text>
                                 </View>
                               </View>
-                              <Ionicons
-                                name="chevron-forward"
-                                size={16}
-                                color="#94a3b8"
-                                style={{ marginLeft: 4 }}
-                              />
-                        </TouchableOpacity>
+                            </TouchableOpacity>
                           );
                         })
                     )}
@@ -5292,6 +5340,40 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   </View>
                 </View>
 
+                <View style={styles.doProfileCard}>
+                  <Text style={[styles.doProfileSectionTitle, { marginBottom: 10 }]}>
+                    Inward / Outward
+                  </Text>
+                  <View style={[styles.doProfileStatRow, { marginBottom: 8 }]}>
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#e8f0fe', flex: 1 }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#1967d2' }]}>
+                        {Number(selectedDoProfile.total_inward) || 0}
+                      </Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#1967d2' }]}>Total In</Text>
+                    </View>
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#fef7e0', flex: 1 }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#e37400' }]}>
+                        {Number(selectedDoProfile.total_outward) || 0}
+                      </Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#e37400' }]}>Total Out</Text>
+                    </View>
+                  </View>
+                  <View style={styles.doProfileStatRow}>
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#e6f4ea', flex: 1 }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#137333' }]}>
+                        {Number(selectedDoProfile.today_inward) || 0}
+                      </Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#137333' }]}>Today In</Text>
+                    </View>
+                    <View style={[styles.doProfileStatPill, { backgroundColor: '#f3e8fd', flex: 1 }]}>
+                      <Text style={[styles.doProfileStatNum, { color: '#7627bb' }]}>
+                        {Number(selectedDoProfile.today_outward) || 0}
+                      </Text>
+                      <Text style={[styles.doProfileStatLbl, { color: '#7627bb' }]}>Today Out</Text>
+                    </View>
+                  </View>
+                </View>
+
                 {selectedDoProfile.warehouse_name ? (
                   <View style={styles.doProfileCard}>
                     <View style={styles.doProfileCardHead}>
@@ -5942,24 +6024,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderLeftWidth: 4,
+    borderLeftWidth: 3,
     borderLeftColor: '#003580'
   },
   dashHeroEyebrow: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '800',
     color: '#64748b',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 2
+    letterSpacing: 0.4,
+    marginBottom: 1
   },
-  dashHeroTitle: { fontSize: 17, fontWeight: '800', color: '#0f172a' },
-  dashHeroDate: { fontSize: 12, color: '#64748b', fontWeight: '600', marginTop: 3 },
+  dashHeroTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a', lineHeight: 18 },
+  dashHeroDate: { fontSize: 11, color: '#64748b', fontWeight: '600', marginTop: 1 },
   dashHeroHint: {
     fontSize: 11,
     color: '#94a3b8',
@@ -6009,32 +6092,32 @@ const styles = StyleSheet.create({
     marginTop: 6
   },
   dashHeroIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     backgroundColor: '#eff6ff',
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 10
+    marginLeft: 8
   },
   todayOpsCard: {
     flexDirection: 'row',
     backgroundColor: '#fff',
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    marginBottom: 10,
+    marginBottom: 8,
     overflow: 'hidden'
   },
-  todayOpsCell: { flex: 1, alignItems: 'center', paddingVertical: 12 },
+  todayOpsCell: { flex: 1, alignItems: 'center', paddingVertical: 8 },
   todayOpsDivider: { width: 1, backgroundColor: '#e2e8f0' },
-  todayOpsNum: { fontSize: 18, fontWeight: '800' },
-  todayOpsDen: { fontSize: 12, fontWeight: '700', color: '#94a3b8' },
+  todayOpsNum: { fontSize: 16, fontWeight: '800', lineHeight: 20 },
+  todayOpsDen: { fontSize: 11, fontWeight: '700', color: '#94a3b8' },
   todayOpsLbl: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     color: '#64748b',
-    marginTop: 2,
+    marginTop: 1,
     textTransform: 'uppercase',
     letterSpacing: 0.3
   },
@@ -6159,20 +6242,6 @@ const styles = StyleSheet.create({
   },
   statValue: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
   statLabel: { fontSize: 10, color: '#64748b', marginTop: 1, fontWeight: '700', textAlign: 'center' },
-  quickRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  quickBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#bfdbfe',
-    borderRadius: 10,
-    paddingVertical: 9
-  },
-  quickText: { color: '#003580', fontWeight: '700', fontSize: 12 },
   card: {
     backgroundColor: '#fff',
     borderRadius: 14,
@@ -6255,6 +6324,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingVertical: 8
+  },
+  doOverviewDoRow: {
+    gap: 8,
+    paddingVertical: 10
+  },
+  doOverviewRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
   },
   doOverviewRowBorder: {
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -6353,12 +6431,19 @@ const styles = StyleSheet.create({
     marginTop: 8
   },
   doCountPills: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  doCountPill: {
-    minWidth: 44,
+  doCountPillsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
-    paddingHorizontal: 5,
-    paddingVertical: 4,
-    borderRadius: 7
+    gap: 6,
+    paddingLeft: 15
+  },
+  doCountPill: {
+    minWidth: 52,
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 5,
+    borderRadius: 8
   },
   doCountPillDone: { backgroundColor: '#ecfdf5' },
   doCountPillPend: { backgroundColor: '#fffbeb' },
