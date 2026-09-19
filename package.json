@@ -1,12 +1,12 @@
 {
   "name": "reeferon-crm-monorepo",
   "version": "1.0.0",
-  "description": "Integrated workspace for ReeferON CRM & Temp Monitor",
+  "description": "ReeferON CRM — React web, Expo mobile, PHP API",
   "scripts": {
-    "install:all": "npm install && npm install --prefix frontend && npm install --prefix backend",
+    "install:frontend": "npm install --prefix frontend",
+    "install:mobile": "npm install --prefix mobile",
     "build:frontend": "npm run build --prefix frontend",
-    "start": "node backend/server.js",
     "dev:frontend": "npm run dev --prefix frontend",
-    "dev:backend": "npm run dev --prefix backend"
+    "dev:api": "powershell -ExecutionPolicy Bypass -File backend-php/start.ps1"
   }
 }

@@ -32,8 +32,8 @@ export default function LoginScreen({
   onLoginSuccess,
   apiUrl,
   onUpdateApiUrl,
-  productionApiUrl = 'https://reeferon-crm-backend.onrender.com',
-  localApiUrl = 'http://192.168.64.129:5000'
+  productionApiUrl = 'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public',
+  localApiUrl = 'http://192.168.64.129:5080'
 }) {
   // Input form state variables
   const [email, setEmail] = useState('');
@@ -45,6 +45,7 @@ export default function LoginScreen({
 
   const isProduction =
     (apiUrl || '').toLowerCase().includes('onrender.com') ||
+    (apiUrl || '').toLowerCase().includes('hostingersite.com') ||
     (apiUrl || '').toLowerCase().startsWith('https://');
 
   useEffect(() => {

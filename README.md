@@ -3,7 +3,9 @@
 **English:** Modern reefer logistics CRM with Super Admin (web), Sub Admin (mobile), Data Operator (mobile), and Customer (mobile).  
 **Hinglish:** Reefer logistics CRM — Super Admin web pe, Sub Admin / DO / Customer mobile pe.
 
-**Stack:** React (Vite) · Express.js · MySQL (`reeferon_crm_db`) · Expo React Native
+**Stack:** React (Vite) · **PHP 8 API** (`backend-php`) · MySQL (`reeferon_crm_db`) · Expo React Native
+
+> Active API is `backend-php/` (shared-hosting ready). Old Node Express code was removed; see `backend/ARCHIVED.md`.
 
 ---
 
@@ -46,12 +48,11 @@ Catalog CRUD ≠ chamber–client assignments.
 | Sub Admin | Overview, permissions, DO masters | `mobile/src/screens/SubAdminScreen.js` |
 | Customer | Scoped logs / inventory | `mobile/src/screens/CustomerScreen.js` |
 | Web Super Admin | Full control + Role & Permission | `frontend/src/pages/SuperAdminSecureWindow/` |
-| Catalog APIs | Warehouses / clients | `backend/controllers/masterController.js` |
-| Chambers / assignments | DO graph + inspections | `backend/controllers/chamberController.js` |
-| Log codes | Name → WH-/CL- code | `backend/utils/masterResolver.js` |
-| API errors | Safe client message + checkpoint log | `backend/utils/errorHandler.js` |
+| Catalog APIs | Warehouses / clients | `backend-php/src/Controllers/MasterController.php` |
+| Chambers / assignments | DO graph + inspections | `backend-php/src/Controllers/ChamberController.php` |
+| Log codes | Name → WH-/CL- code | `backend-php/src/Services/MasterResolver.php` |
 | Mobile errors | Network/session → Retry UI | `mobile/src/utils/userFacingError.js` |
-| Push | Token refresh + dead cleanup | `mobile/src/services/expoPushRegistration.js`, `backend/utils/expoPush.js` |
+| Push | Token refresh + dead cleanup | `mobile/src/services/expoPushRegistration.js`, `backend-php/src/Services/ExpoPush.php` |
 
 Roles detail: [`docs/ROLES.md`](docs/ROLES.md)
 

@@ -7,8 +7,8 @@
 //   sub_admin   → SubAdminScreen   — overview, permissions, DO masters
 //
 // API URL:
-//   - Local: getLocalApiUrl() → http://LAN-IP:5000 (same DB as Render)
-//   - Live:  PRODUCTION_API_URL (Render)
+//   - Local: getLocalApiUrl() → http://LAN-IP:5080 (PHP backend-php)
+//   - Live:  PRODUCTION_API_URL (Hostinger PHP API)
 //   - FALLBACK_LOCAL_IP: update if Wi‑Fi IPv4 changes (ipconfig)
 // ====================================================================
 
@@ -23,12 +23,15 @@ import SubAdminScreen from './src/screens/SubAdminScreen';
 import SplashScreen from './src/screens/SplashScreen';
 import { clearSyncedInspectionsLocally, initDatabase } from './src/database/db';
 
-/** Live backend: Render. No trailing slash, no /api (app adds /api/...). */
+/** Live backend (Hostinger PHP). No trailing slash, no /api (app adds /api/...). */
+const DEFAULT_PRODUCTION_API_URL =
+  'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public';
+
 function readProductionApiUrl() {
   const raw =
     process.env.EXPO_PUBLIC_API_URL ||
     Constants.expoConfig?.extra?.apiUrl ||
-    'https://reeferon-crm-backend.onrender.com';
+    DEFAULT_PRODUCTION_API_URL;
   return String(raw)
     .trim()
     .replace(/\/$/, '')
@@ -54,18 +57,18 @@ function extractLanIp(raw) {
 
 /**
  * Local backend URL for Expo Go / emulator on the same Wi‑Fi.
- * @returns {string} e.g. http://192.168.x.x:5000
+ * @returns {string} e.g. http://192.168.x.x:5080
  */
 export function getLocalApiUrl() {
   try {
     const scriptURL = NativeModules.SourceCode?.scriptURL || '';
     const fromScript = extractLanIp(scriptURL);
-    if (fromScript) return `http://${fromScript}:5000`;
+    if (fromScript) return `http://${fromScript}:5080`;
 
     const address = scriptURL.split('://')[1] || '';
     const host = (address.split('/')[0] || '').split(':')[0];
     if (host === 'localhost' || host === '127.0.0.1' || host === '10.0.2.2' || host === '::1') {
-      return Platform.OS === 'android' ? 'http://10.0.2.2:5000' : 'http://localhost:5000';
+      return Platform.OS === 'android' ? 'http://10.0.2.2:5080' : 'http://localhost:5080';
     }
   } catch (e) {
     console.warn('Failed to detect local API host from SourceCode:', e);
@@ -79,12 +82,12 @@ export function getLocalApiUrl() {
       Constants.linkingUri ||
       '';
     const fromExpo = extractLanIp(String(hostUri));
-    if (fromExpo) return `http://${fromExpo}:5000`;
+    if (fromExpo) return `http://${fromExpo}:5080`;
   } catch (e) {
     console.warn('Failed to detect local API host from Expo Constants:', e);
   }
 
-  return `http://${FALLBACK_LOCAL_IP}:5000`;
+  return `http://${FALLBACK_LOCAL_IP}:5080`;
 }
 
 export function isProductionApiUrl(url) {
@@ -100,7 +103,8 @@ export function isLocalApiUrl(url) {
   if (u.includes('onrender.com') || u.startsWith('https://')) return false;
   return (
     u.startsWith('http://') &&
-    (/:\s*5000\/?$/.test(u) ||
+    (/:\s*5080\/?$/.test(u) ||
+      /:\s*5000\/?$/.test(u) ||
       u.includes('localhost') ||
       u.includes('127.0.0.1') ||
       u.includes('10.0.2.2') ||
@@ -129,9 +133,10 @@ export default function App() {
 
         if (storedApiUrl && storedApiUrl.trim()) {
           let nextApi = storedApiUrl.replace(/\/$/, '').replace(/\/api$/i, '');
-          if (/railway\.app/i.test(nextApi)) {
+          // Migrate old Node hosts → current Hostinger PHP API
+          if (/railway\.app|onrender\.com/i.test(nextApi)) {
             nextApi = PRODUCTION_API_URL;
-            console.log('[api] dropped unused Railway URL → Render');
+            console.log('[api] migrated legacy URL → Hostinger PHP');
           }
           if (isLocalApiUrl(nextApi)) {
             nextApi = getLocalApiUrl();
@@ -234,7 +239,7 @@ export default function App() {
         .trim()
         .replace(/\/$/, '')
         .replace(/\/api$/i, '');
-      const next = /railway\.app/i.test(clean) ? PRODUCTION_API_URL : clean;
+      const next = /railway\.app|onrender\.com/i.test(clean) ? PRODUCTION_API_URL : clean;
       setApiUrl(next);
       await AsyncStorage.setItem('api_url', next);
     } catch (err) {

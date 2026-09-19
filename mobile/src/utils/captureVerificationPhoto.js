@@ -12,14 +12,18 @@ import { stabilizePhotoForDraft } from './formDraftStorage';
 
 const PENDING_KEY = 'pending_camera_capture_v1';
 
-/** Camera JPEG quality — avoid 1.0 (OOM risk on Android). */
-const CAMERA_QUALITY = 0.7;
+/** Camera JPEG quality — avoid 1.0 (OOM / process death on Android Expo Go). */
+const CAMERA_QUALITY = 0.65;
 
 function mediaTypeImages() {
   // Prefer new SDK 57 API: MediaType array
   if (ImagePicker.MediaType?.Images) return [ImagePicker.MediaType.Images];
   if (typeof ImagePicker.MediaType === 'string') return ['images'];
   return ['images'];
+}
+
+export function pickerMediaTypes() {
+  return mediaTypeImages();
 }
 
 export async function savePendingCameraCapture({ formType, fieldKey, multi }) {

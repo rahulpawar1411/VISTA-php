@@ -30,6 +30,7 @@ import {
   BackHandler,
   Dimensions,
   InteractionManager,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -99,7 +100,14 @@ import { subscribeToSync, triggerSync, formatLastSyncLabel, getLastSyncAt } from
 import { ensureCameraPermission } from '../utils/permissions';
 import { compressImageOnly } from '../utils/compressImage';
 import { appendLocalFile, multipartRequest } from '../utils/formDataAppendFile';
-import { buildPhotoCaptureMeta, beginPhotoLocationCapture } from '../utils/photoCaptureMeta';
+import {
+  savePendingCameraCapture,
+  clearPendingCameraCapture,
+  launchVerificationCamera,
+  finalizeCapturedPhotoAsset,
+  recoverPendingVerificationPhoto,
+  pickerMediaTypes,
+} from '../utils/captureVerificationPhoto';
 import SplashScreen from './SplashScreen';
 import { dedupeInventoryLots, chamberZoneStyle, normalizeChamberZone, pickComplianceZone } from '../utils/dedupeInventoryLots';
 import { resolveLogImageUrl, splitLogPhotoPaths } from '../utils/customerLogReportHelpers';
@@ -131,7 +139,8 @@ import {
   clearExpoPushToken
 } from '../services/expoPushRegistration';
 
-const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
+const PRODUCTION_API_URL =
+  'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public';
 
 function pickDoLogImage(log) {
   if (!log) return null;
@@ -3481,62 +3490,93 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     fetchChamberLogsForDate(dateStr);
   }, [currentNavTab, selectedReportDate]);
 
-  // Launch phone camera — then compress only (no resize)
+  // Launch phone camera — GPS AFTER return (safer). Pending marker survives Android process death.
+  const chamberCameraInFlightRef = useRef(false);
+  const applyChamberCapturedAsset = useCallback((asset) => {
+    if (!asset?.uri) return;
+    setCapturedImage(asset.uri);
+    setCapturedImageTimestamp(asset.capturedAt || Date.now());
+    if (asset.latitude != null && asset.longitude != null) {
+      setCapturedImageGeo({
+        latitude: asset.latitude,
+        longitude: asset.longitude,
+        accuracy: asset.accuracy ?? null,
+      });
+    } else {
+      setCapturedImageGeo(null);
+      setTimeout(() => {
+        Alert.alert(
+          'Location not saved',
+          'Photo saved, but GPS coordinates were not available. Turn on Location/GPS, wait a few seconds, and capture again if coordinates are required.'
+        );
+      }, 300);
+    }
+  }, []);
+
   const handleLaunchCamera = async () => {
     try {
-      // Permission + GPS services first (blocks camera if Location is OFF)
       const allowed = await ensureCameraPermission();
       if (!allowed) return;
 
-      const locationPromise = beginPhotoLocationCapture();
-
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions?.Images
-          ? ImagePicker.MediaTypeOptions.Images
-          : ImagePicker.MediaType?.Images || 'images',
-        allowsEditing: false,
-        quality: 1,
-        exif: true,
+      chamberCameraInFlightRef.current = true;
+      await savePendingCameraCapture({
+        formType: 'chamber',
+        fieldKey: 'sensor',
+        multi: false,
       });
 
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const originalUri = result.assets[0].uri;
-        const compressedUri = await compressImageOnly(originalUri, 0.5);
-        const meta = await buildPhotoCaptureMeta(locationPromise);
-
-        // EXIF GPS fallback (some devices embed coords in the photo)
-        let geo =
-          meta.latitude != null && meta.longitude != null
-            ? {
-                latitude: meta.latitude,
-                longitude: meta.longitude,
-                accuracy: meta.accuracy,
-              }
-            : null;
-        if (!geo) {
-          const exif = result.assets[0].exif || {};
-          const lat = parseFloat(exif.GPSLatitude ?? exif.gpsLatitude);
-          const lng = parseFloat(exif.GPSLongitude ?? exif.gpsLongitude);
-          if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
-            geo = { latitude: lat, longitude: lng, accuracy: null };
-          }
-        }
-
-        setCapturedImage(compressedUri);
-        setCapturedImageTimestamp(meta.capturedAt);
-        setCapturedImageGeo(geo);
-
-        if (!geo) {
-          Alert.alert(
-            'Location not saved',
-            'Photo saved, but GPS coordinates were not available. Turn on Location/GPS, wait a few seconds, and capture again if coordinates are required.'
-          );
-        }
+      let result;
+      try {
+        // Do NOT start GPS while camera is open — that increases process-death risk.
+        result = await launchVerificationCamera();
+      } catch (err) {
+        await clearPendingCameraCapture();
+        throw err;
       }
+
+      if (result?.canceled || !result?.assets?.length) {
+        await clearPendingCameraCapture();
+        return;
+      }
+
+      const asset = await finalizeCapturedPhotoAsset({
+        pickerAsset: result.assets[0],
+        fieldKey: 'sensor',
+        multi: false,
+        existingCount: 0,
+      });
+      await clearPendingCameraCapture();
+      applyChamberCapturedAsset(asset);
     } catch (error) {
+      await clearPendingCameraCapture();
       Alert.alert('Camera Error', 'Could not access device camera.');
+    } finally {
+      chamberCameraInFlightRef.current = false;
     }
   };
+
+  // Android may kill Expo Go while system camera is open — restore photo on return
+  useEffect(() => {
+    let cancelled = false;
+    const tryRecover = async () => {
+      if (chamberCameraInFlightRef.current) return;
+      try {
+        const recovered = await recoverPendingVerificationPhoto('chamber', {});
+        if (cancelled || !recovered?.asset) return;
+        applyChamberCapturedAsset(recovered.asset);
+      } catch (_) {
+        /* ignore */
+      }
+    };
+    tryRecover();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') tryRecover();
+    });
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [applyChamberCapturedAsset]);
 
   // Open Log Form for a specific client
   const handleOpenClientLogForm = (clientName) => {
@@ -11660,9 +11700,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         if (!allowed) return;
 
         const result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          mediaTypes: pickerMediaTypes(),
           allowsEditing: false,
-          quality: 1,
+          quality: 0.65,
         });
         if (result.canceled || !result.assets?.length) return;
 
@@ -12404,9 +12444,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         if (!allowed) return;
 
         const result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          mediaTypes: pickerMediaTypes(),
           allowsEditing: false,
-          quality: 1,
+          quality: 0.65,
         });
         if (result.canceled || !result.assets?.length) return;
 

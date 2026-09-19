@@ -1,0 +1,11 @@
+# Block PHP execution inside upload trees if a host maps uploads into the web root by mistake.
+<IfModule mod_authz_core.c>
+  <FilesMatch "\.(?i:php|phtml|phar|cgi|pl)$">
+    Require all denied
+  </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+  <FilesMatch "\.(?i:php|phtml|phar|cgi|pl)$">
+    Deny from all
+  </FilesMatch>
+</IfModule>

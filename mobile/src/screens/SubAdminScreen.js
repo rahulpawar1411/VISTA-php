@@ -101,7 +101,8 @@ function isCatalogActive(row) {
 
 const TouchableOpacity = FastTouchable;
 
-const PRODUCTION_API_URL = 'https://reeferon-crm-backend.onrender.com';
+const PRODUCTION_API_URL =
+  'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public';
 
 function resolveImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
   return resolveLogImageUrl(raw, baseUrl, folderHint);

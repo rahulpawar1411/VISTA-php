@@ -1,0 +1,6 @@
+# ReeferON PHP API — ignore secrets & local noise
+.env
+logs/
+*.log
+.DS_Store
+Thumbs.db
