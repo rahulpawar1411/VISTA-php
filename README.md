@@ -1,41 +1,41 @@
 # ReeferON CRM & DO Temperature Monitor
 
 **English:** Modern reefer logistics CRM with Super Admin (web), Sub Admin (mobile), Data Operator (mobile), and Customer (mobile).  
-**Hinglish:** Reefer logistics CRM — Super Admin web pe, Sub Admin / DO / Customer mobile pe.
+**Hinglish:** Reefer logistics CRM â€” Super Admin web pe, Sub Admin / DO / Customer mobile pe.
 
-**Stack:** React (Vite) · **PHP 8 API** (`backend-php`) · MySQL (`reeferon_crm_db`) · Expo React Native
+**Stack:** React (Vite) Â· **PHP 8 API** (`backend`) Â· MySQL (`reeferon_crm_db`) Â· Expo React Native
 
-> Active API is `backend-php/` (shared-hosting ready). Old Node Express code was removed; see `backend/ARCHIVED.md`.
+> Active API is `backend/` (shared-hosting ready). Old Node Express code was removed; see [`Rules-and-docs/docs/NODE_BACKEND_ARCHIVED.md`](Rules-and-docs/docs/NODE_BACKEND_ARCHIVED.md).
 
 ---
 
 ## Read this first / Pehle yeh padho (mental model)
 
-Keep this picture in mind — **code + product same story**:
+Keep this picture in mind â€” **code + product same story**:
 
 ```
 Catalog masters          Operational masters              Daily work
-warehouse_master    →    chambers                         DO morning/evening tasks
-client_master       →    chamber_client_assignments  →    inward / outward / reports
+warehouse_master    â†’    chambers                         DO morning/evening tasks
+client_master       â†’    chamber_client_assignments  â†’    inward / outward / reports
                          (scoped by warehouse_name)       customer sees allowed scope only
 ```
 
 **English**
-1. **Catalog** = names + codes (WH- / CL-). Super Admin web or Sub Admin → Admin → Master.
+1. **Catalog** = names + codes (WH- / CL-). Super Admin web or Sub Admin â†’ Admin â†’ Master.
 2. **Assignments** = which clients sit in which chamber **for that warehouse**. This is what DO tasks use.
-3. **DO** logs data (offline SQLite → sync). Changing chambers/clients usually needs **permission**.
+3. **DO** logs data (offline SQLite â†’ sync). Changing chambers/clients usually needs **permission**.
 4. **Sub Admin / Super Admin** approve/deny. Deny needs a **remark**. Push works even if the app is closed.
-5. **Customer** never edits masters — only reads allowed warehouses/clients.
+5. **Customer** never edits masters â€” only reads allowed warehouses/clients.
 
 **Hinglish**
 1. **Catalog** = warehouse + client list (codes ke saath).
-2. **Assignments** = us warehouse ke chamber mein kaunse clients active — yahi DO ki daily list hai.
+2. **Assignments** = us warehouse ke chamber mein kaunse clients active â€” yahi DO ki daily list hai.
 3. **DO** field pe log karta hai; master change pe allow maangta hai.
 4. **Sub Admin / SA** approve/deny (deny pe remark). App band ho to bhi push.
 5. **Customer** sirf apna data dekhta hai, master nahi badalta.
 
-**Do not mix:** Master Data panel ≠ DO Master Setup.  
-Catalog CRUD ≠ chamber–client assignments.
+**Do not mix:** Master Data panel â‰  DO Master Setup.  
+Catalog CRUD â‰  chamberâ€“client assignments.
 
 ---
 
@@ -43,16 +43,16 @@ Catalog CRUD ≠ chamber–client assignments.
 
 | Topic | English | File |
 |-------|---------|------|
-| Login → which screen | Role routes to one mobile screen | `mobile/App.js` |
+| Login â†’ which screen | Role routes to one mobile screen | `mobile/App.js` |
 | DO field app | Tasks, inward/outward, offline | `mobile/src/screens/DashboardScreen.js` |
 | Sub Admin | Overview, permissions, DO masters | `mobile/src/screens/SubAdminScreen.js` |
 | Customer | Scoped logs / inventory | `mobile/src/screens/CustomerScreen.js` |
 | Web Super Admin | Full control + Role & Permission | `frontend/src/pages/SuperAdminSecureWindow/` |
-| Catalog APIs | Warehouses / clients | `backend-php/src/Controllers/MasterController.php` |
-| Chambers / assignments | DO graph + inspections | `backend-php/src/Controllers/ChamberController.php` |
-| Log codes | Name → WH-/CL- code | `backend-php/src/Services/MasterResolver.php` |
-| Mobile errors | Network/session → Retry UI | `mobile/src/utils/userFacingError.js` |
-| Push | Token refresh + dead cleanup | `mobile/src/services/expoPushRegistration.js`, `backend-php/src/Services/ExpoPush.php` |
+| Catalog APIs | Warehouses / clients | `backend/src/Controllers/MasterController.php` |
+| Chambers / assignments | DO graph + inspections | `backend/src/Controllers/ChamberController.php` |
+| Log codes | Name â†’ WH-/CL- code | `backend/src/Services/MasterResolver.php` |
+| Mobile errors | Network/session â†’ Retry UI | `mobile/src/utils/userFacingError.js` |
+| Push | Token refresh + dead cleanup | `mobile/src/services/expoPushRegistration.js`, `backend/src/Services/ExpoPush.php` |
 
 Roles detail: [`Rules-and-docs/docs/ROLES.md`](Rules-and-docs/docs/ROLES.md)
 
@@ -89,23 +89,23 @@ Masters ke **do layers** hain:
 
 ```
 1) Catalog (codes + names)
-   warehouse_master  → sites (WH-CODE)
-   client_master     → companies (CL-CODE)
+   warehouse_master  â†’ sites (WH-CODE)
+   client_master     â†’ companies (CL-CODE)
 
 2) Operational (daily DO work)
    chambers + chamber_client_assignments
-   → “is warehouse pe is chamber mein ye clients active”
+   â†’ â€œis warehouse pe is chamber mein ye clients activeâ€
 ```
 
 | Step | English | Hinglish |
 |------|---------|----------|
-| 1 | Create warehouse + clients in **Master Data** (web or Sub Admin → Master) | Pehle warehouse + client catalog banao |
+| 1 | Create warehouse + clients in **Master Data** (web or Sub Admin â†’ Master) | Pehle warehouse + client catalog banao |
 | 2 | Assign DO to a warehouse + `chamber_limit` | DO ko warehouse + chamber limit do |
 | 3 | Sub Admin / DO Master Setup: chambers + assign clients | Chambers banao, clients assign karo |
 | 4 | DO tasks / inward / outward use those assignments | Daily kaam usi list se chalta hai |
 
-**Tip:** Chamber names are globally unique in DB — prefer names like `Bhopal Chamber 1` (not only `Chamber 1` across every warehouse).  
-**Tip:** DB mein chamber name globally unique hai — har warehouse pe alag clear naam rakho.
+**Tip:** Chamber names are globally unique in DB â€” prefer names like `Bhopal Chamber 1` (not only `Chamber 1` across every warehouse).  
+**Tip:** DB mein chamber name globally unique hai â€” har warehouse pe alag clear naam rakho.
 
 ---
 
@@ -114,26 +114,26 @@ Masters ke **do layers** hain:
 ### Big picture / Poora flow ek nazar mein
 
 ```
-┌─────────────┐     JWT login      ┌──────────────────┐
-│  Mobile /   │ ─────────────────► │  Express API     │
-│  Web app    │ ◄───────────────── │  :5000           │
-└─────────────┘   JSON + photos    └────────┬─────────┘
-                                            │
-                    ┌───────────────────────┼───────────────────────┐
-                    ▼                       ▼                       ▼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     JWT login      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  Mobile /   â”‚ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º â”‚  Express API     â”‚
+â”‚  Web app    â”‚ â—„â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ â”‚  :5000           â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜   JSON + photos    â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                            â”‚
+                    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                    â–¼                       â–¼                       â–¼
               MySQL DB              Cloudinary (images)      Expo Push (alerts)
          reeferon_crm_db            temp / POD photos        Sub Admin + DO
 ```
 
-**English — daily business flow**
+**English â€” daily business flow**
 1. Super Admin / Sub Admin set up **warehouse + clients** (catalog) and assign a **DO** to a warehouse.
 2. Sub Admin (or DO after allow) sets **chambers + which clients** live in each chamber.
-3. Every day the DO opens the app → sees Morning / Evening **tasks** from those assignments.
+3. Every day the DO opens the app â†’ sees Morning / Evening **tasks** from those assignments.
 4. DO fills chamber temp / inward / outward (photos + GPS). If offline, data sits in **SQLite** until sync.
 5. Sub Admin / Super Admin watch **Dashboard, Logs, Reports**. Customers only see their allowed WH/clients.
-6. If DO needs to change a chamber/client setup → **permission request** → approve/deny → DO notified.
+6. If DO needs to change a chamber/client setup â†’ **permission request** â†’ approve/deny â†’ DO notified.
 
-**Hinglish — daily business flow**
+**Hinglish â€” daily business flow**
 1. Pehle masters + DO warehouse setup.
 2. Chambers ke andar clients assign.
 3. DO daily tasks complete karta hai (offline bhi chal sakta hai).
@@ -147,21 +147,21 @@ Masters ke **do layers** hain:
 |------|---------|----------|
 | 1 | User enters email + password | Email/password |
 | 2 | Backend checks role table (`super_admin` / `sub_admins` / `do_operators` / `customers`) | Role ke hisaab se table |
-| 3 | Password checked with **bcrypt**; **JWT** returned | Hash match → token |
-| 4 | Web → Super Admin window; Mobile → one screen by role | App role se screen kholta hai |
+| 3 | Password checked with **bcrypt**; **JWT** returned | Hash match â†’ token |
+| 4 | Web â†’ Super Admin window; Mobile â†’ one screen by role | App role se screen kholta hai |
 
 ### Data write process / Data save kaise hoti hai
 
 | Action | English | Hinglish |
 |--------|---------|----------|
-| Chamber temp / inward / outward | DO form → API (or SQLite first if offline) → MySQL + Cloudinary photo | Pehle local queue ho sakta hai, phir sync |
-| Catalog master create | SA / Sub Admin → `/api/masters/*` | Direct (no DO permission) |
-| Chamber / client assignment change by DO | Request → activity row Pending → Approve → apply | Allow ke baad apply |
+| Chamber temp / inward / outward | DO form â†’ API (or SQLite first if offline) â†’ MySQL + Cloudinary photo | Pehle local queue ho sakta hai, phir sync |
+| Catalog master create | SA / Sub Admin â†’ `/api/masters/*` | Direct (no DO permission) |
+| Chamber / client assignment change by DO | Request â†’ activity row Pending â†’ Approve â†’ apply | Allow ke baad apply |
 | Reports / inventory | Read from logs + masters codes via `masterResolver` | Codes se filter / reconcile |
 
 ---
 
-## Permissions — full flow / Permission poora flow
+## Permissions â€” full flow / Permission poora flow
 
 Permissions are **not a separate table**. They live in `do_operator_activities` as request / grant / deny / use rows.
 
@@ -179,24 +179,24 @@ Permissions are **not a separate table**. They live in `do_operator_activities` 
 
 ```
 DO taps Save / Edit / Delete
-        │
-        ▼
+        â”‚
+        â–¼
 POST /api/permission-requests
-  → activity: REQUEST_EDIT or REQUEST_DELETE  (status Pending)
-        │
-        ├─► Expo push → all Sub Admins (app closed OK)
-        │
-        ▼
+  â†’ activity: REQUEST_EDIT or REQUEST_DELETE  (status Pending)
+        â”‚
+        â”œâ”€â–º Expo push â†’ all Sub Admins (app closed OK)
+        â”‚
+        â–¼
 Sub Admin (mobile) or Super Admin (web)
-  → Approve  → GRANT_*   (optional remark)
-  → Deny     → DENY_*    (remark REQUIRED)
-        │
-        ├─► Expo push → that DO
-        │
-        ▼
+  â†’ Approve  â†’ GRANT_*   (optional remark)
+  â†’ Deny     â†’ DENY_*    (remark REQUIRED)
+        â”‚
+        â”œâ”€â–º Expo push â†’ that DO
+        â”‚
+        â–¼
 DO app: bell / popup
-  → Approved: apply change / open edit
-  → Denied: show Admin remark clearly
+  â†’ Approved: apply change / open edit
+  â†’ Denied: show Admin remark clearly
 ```
 
 ### Activity actions (names in DB)
@@ -207,9 +207,9 @@ DO app: bell / popup
 | `GRANT_PERMISSION` / `GRANT_DELETE` | Approved |
 | `DENY_PERMISSION` / `DENY_DELETE` | Denied |
 | `USE_EDIT_PERMISSION` / `USE_DELETE_PERMISSION` | DO used the allow |
-| Description often includes | `Admin remark: …` · `Decided by: Sub-Admin Name (email)` |
+| Description often includes | `Admin remark: â€¦` Â· `Decided by: Sub-Admin Name (email)` |
 
-**English:** Audit trail shows **who** (name + email) approved/denied — Super Admin web Role & Permission + Activity.  
+**English:** Audit trail shows **who** (name + email) approved/denied â€” Super Admin web Role & Permission + Activity.  
 **Hinglish:** Web pe dikhta hai kaunse Sub Admin / SA ne decide kiya (naam + email).
 
 ### Push rules (important)
@@ -217,12 +217,12 @@ DO app: bell / popup
 | Event | Who gets notify | Overdue tasks? |
 |-------|-----------------|----------------|
 | New permission request | Sub Admin | **No** overdue push |
-| Approved / Denied | That DO | — |
-| Token | Refresh on every app open; dead tokens cleared on server | — |
+| Approved / Denied | That DO | â€” |
+| Token | Refresh on every app open; dead tokens cleared on server | â€” |
 
 ---
 
-## Tech stack & libraries / Tech aur libraries — kya + kyun
+## Tech stack & libraries / Tech aur libraries â€” kya + kyun
 
 ### Architecture layers
 
@@ -234,7 +234,7 @@ DO app: bell / popup
 | **DB** | MySQL (`mysql2` pool) | Relational logs, roles, masters; WAMP/local + cloud |
 | **Auth** | JWT (`jsonwebtoken`) + bcryptjs | Stateless mobile/web login; hashed passwords |
 | **Files** | Multer + Cloudinary | Photos off-server CDN; EXIF via `exifr` |
-| **Offline (DO)** | expo-sqlite + AsyncStorage | Cold rooms / weak network — queue then sync |
+| **Offline (DO)** | expo-sqlite + AsyncStorage | Cold rooms / weak network â€” queue then sync |
 | **Push** | expo-notifications + Expo Push HTTP API | Alerts when app closed; no full FCM SDK required |
 | **Email** | Nodemailer (SMTP) / Resend optional | Login / alerts when configured |
 | **Security** | helmet, cors, express-rate-limit, cookie-parser | Headers, origin control, login flood limit |
@@ -253,7 +253,7 @@ DO app: bell / popup
 | `exifr` | Read photo EXIF / GPS | Verify capture metadata |
 | `nodemailer` | SMTP email | Local Gmail / any SMTP |
 | `helmet` | Security headers | Harden HTTP |
-| `cors` | Cross-origin | Web `:3000` → API `:5000` |
+| `cors` | Cross-origin | Web `:3000` â†’ API `:5000` |
 | `express-rate-limit` | Login throttle | Brute-force protection |
 | `cookie-parser` | Cookies | Web HttpOnly session support |
 
@@ -286,7 +286,7 @@ DO app: bell / popup
 
 **English:** Field DOs need **offline-first mobile**; managers need a **fast web console**; one **MySQL** source of truth; photos on **Cloudinary** so the API server stays light; **JWT** so mobile and web share the same API securely; **Expo Push** so permission decisions reach people even when the app is closed.
 
-**Hinglish:** DO ko offline chahiye → SQLite. Boss ko web dashboard → React/Vite. Sab data ek DB → MySQL. Photos heavy hain → Cloudinary. Mobile + web same API → JWT. App band pe bhi alert → Expo Push.
+**Hinglish:** DO ko offline chahiye â†’ SQLite. Boss ko web dashboard â†’ React/Vite. Sab data ek DB â†’ MySQL. Photos heavy hain â†’ Cloudinary. Mobile + web same API â†’ JWT. App band pe bhi alert â†’ Expo Push.
 
 ---
 
@@ -329,15 +329,10 @@ mysql -u root -p < backend/database/schema.sql
 
 ```
 CRM/
-├── backend/                 # Express API + MySQL
-│   ├── controllers/
-│   ├── routes/
-│   ├── utils/               # errorHandler, masterResolver, expoPush, …
-│   ├── logs/                # error.log + daily error files
-│   └── server.js
-├── frontend/                # Super Admin (Vite React)
-├── mobile/                  # Expo app (DO / Sub Admin / Customer)
-└── docs/                    # ROLES, BACKUP, …
+â”œâ”€â”€ backend/             # PHP API (Hostinger / shared hosting)
+â”œâ”€â”€ frontend/                # Super Admin (Vite React)
+â”œâ”€â”€ mobile/                  # Expo app (DO / Sub Admin / Customer)
+â””â”€â”€ Rules-and-docs/          # agents + vscode + docs (ROLES, BACKUP, Hostinger)
 ```
 
 ---
@@ -346,7 +341,7 @@ CRM/
 
 ### Backend pattern (English)
 Controllers catch errors with `handleControllerError` so clients get a **safe message**, while details go to:
-- console (`[ERROR] …`)
+- console (`[ERROR] â€¦`)
 - `backend/logs/error.log` (+ daily file)
 - Super Admin activity as `[CHECKPOINT]` rows
 
@@ -354,10 +349,10 @@ Controllers catch errors with `handleControllerError` so clients get a **safe me
 API fail hone pe user ko **seedha SQL/stack mat dikhao**.  
 `handleControllerError` safe message bhejta hai, asal detail log + Super Admin checkpoint mein save hoti hai.
 
-**Example — backend controller:**
+**Example â€” backend controller:**
 ```js
 try {
-  // … business logic …
+  // â€¦ business logic â€¦
 } catch (err) {
   return handleControllerError(res, err, {
     checkpoint: 'createPermissionRequest',      // where it failed
@@ -367,20 +362,20 @@ try {
 }
 ```
 
-**Example — what Super Admin may see in Activity:**
+**Example â€” what Super Admin may see in Activity:**
 ```text
 [CHECKPOINT] | type=DatabaseError | status=500 | file=permissionController.js
 | line=612 | checkpoint=createPermissionRequest | method=POST
-| url=/api/permission-requests | msg=…
+| url=/api/permission-requests | msg=â€¦
 ```
 
 ### Mobile pattern (English)
 Use `formatUserError` + `InlineErrorState` (Retry) so network/session errors are actionable.
 
 ### Mobile pattern (Hinglish)
-Raw `Network request failed` mat dikhao — `formatUserError` se clear message + Retry button.
+Raw `Network request failed` mat dikhao â€” `formatUserError` se clear message + Retry button.
 
-**Example — mobile screen:**
+**Example â€” mobile screen:**
 ```js
 import { formatUserError } from '../utils/userFacingError';
 import InlineErrorState from '../components/InlineErrorState';
@@ -400,11 +395,11 @@ try {
 ) : null}
 ```
 
-**Example — what user sees:**
+**Example â€” what user sees:**
 
 | Raw error | Shown message |
 |-----------|----------------|
-| `Network request failed` | `Cannot reach server (http://…). Check WiFi…` |
+| `Network request failed` | `Cannot reach server (http://â€¦). Check WiFiâ€¦` |
 | `401 Unauthorized` | `Session expired. Logout and sign in again.` |
 | Timeout | `Request timed out. Check connection and retry.` |
 
@@ -417,14 +412,14 @@ try {
 | 1 | Note the screen + action that failed | Kaunsi screen / button pe fail hua |
 | 2 | Check mobile Metro log / backend terminal | Red error / `[ERROR]` line dekho |
 | 3 | Open `backend/logs/error.log` or SA **System / Activity** checkpoint | File + line + URL mil jayega |
-| 4 | Fix code or config; retry with **Retry** / sync | Fix → app Retry / sync dubara |
+| 4 | Fix code or config; retry with **Retry** / sync | Fix â†’ app Retry / sync dubara |
 
 **Common fixes / Common solutions:**
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| Cannot reach server | Wrong API URL / Render sleep / Wi‑Fi | Login API URL check; backend `npm start` |
-| Session expired | Bad/expired JWT | Logout → login; prod `JWT_SECRET` match |
+| Cannot reach server | Wrong API URL / Render sleep / Wiâ€‘Fi | Login API URL check; backend `npm start` |
+| Session expired | Bad/expired JWT | Logout â†’ login; prod `JWT_SECRET` match |
 | Permission denied / 403 | Role or pending allow | Approve request; check role |
 | Duplicate chamber/client | Unique name/code | Use unique names (`Bhopal Chamber 1`) |
 | Sync pending forever | Upload / Cloudinary / network | Check Cloudinary env; retry sync |
@@ -434,9 +429,9 @@ try {
 
 ## Other important examples / Aur important examples
 
-### 1) Permission flow (DO → Sub Admin / Super Admin)
-**English:** DO requests edit → Sub Admin/SA approves or denies (deny needs remark) → DO gets popup + push.  
-**Hinglish:** DO allow maangta hai → Sub Admin/SA approve/deny (deny pe remark zaroori) → DO ko popup + push.
+### 1) Permission flow (DO â†’ Sub Admin / Super Admin)
+**English:** DO requests edit â†’ Sub Admin/SA approves or denies (deny needs remark) â†’ DO gets popup + push.  
+**Hinglish:** DO allow maangta hai â†’ Sub Admin/SA approve/deny (deny pe remark zaroori) â†’ DO ko popup + push.
 
 ### 2) Push token refresh
 **English:** On every app open/foreground, mobile registers Expo push token; dead tokens are cleared on server.  
@@ -466,14 +461,14 @@ Set at least:
 - `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
 - `JWT_SECRET` (strong unique value in production)
 - Email: SMTP or Resend
-- `APP_LOGIN_URL` → live web URL in production (not `localhost`)
+- `APP_LOGIN_URL` â†’ live web URL in production (not `localhost`)
 
 ### Photos / Cloudinary (important deploy decision)
 
-**English — today (dev):** Cloudinary is ON for easier photo CDN testing.  
-**Hinglish — abhi:** Development mein Cloudinary use ho raha hai.
+**English â€” today (dev):** Cloudinary is ON for easier photo CDN testing.  
+**Hinglish â€” abhi:** Development mein Cloudinary use ho raha hai.
 
-**At deployment (agreed):** We will **not** use Cloudinary on production. Switch to **local disk uploads** (Multer → `uploads/` served by Express).
+**At deployment (agreed):** We will **not** use Cloudinary on production. Switch to **local disk uploads** (Multer â†’ `uploads/` served by Express).
 
 ```env
 # Development (current)
@@ -482,15 +477,15 @@ CLOUDINARY_CLOUD_NAME=...
 CLOUDINARY_API_KEY=...
 CLOUDINARY_API_SECRET=...
 
-# Production / deploy (planned — change at deploy time)
+# Production / deploy (planned â€” change at deploy time)
 UPLOAD_TO_CLOUDINARY=false
 # Cloudinary keys can be omitted when false
 # Ensure uploads/ folder is writable and backed up on the server
 ```
 
 Code already supports this flag in `backend/config/multer.js`:
-- `true` → local + Cloudinary (DB stores Cloudinary URL)
-- `false` → local disk only (DB stores local `/uploads/...` path)
+- `true` â†’ local + Cloudinary (DB stores Cloudinary URL)
+- `false` â†’ local disk only (DB stores local `/uploads/...` path)
 
 **Deploy checklist item:** set `UPLOAD_TO_CLOUDINARY=false`, verify photos open in web + mobile, backup `uploads/` with DB.
 
@@ -501,11 +496,11 @@ Code already supports this flag in `backend/config/multer.js`:
 ## Pre-deploy smoke test / Deploy se pehle quick test
 
 1. Login all 4 roles  
-2. Create warehouse + client master → assign to DO  
+2. Create warehouse + client master â†’ assign to DO  
 3. DO chamber morning log + inward (online + offline sync)  
-4. Permission request → approve/deny with remark → DO popup  
+4. Permission request â†’ approve/deny with remark â†’ DO popup  
 5. Push with app closed (Sub Admin + DO)  
-6. Photos appear (**local uploads** on deploy — not Cloudinary)  
+6. Photos appear (**local uploads** on deploy â€” not Cloudinary)  
 7. Customer sees only allowed warehouse/clients  
 
 Backup notes: [`Rules-and-docs/docs/BACKUP.md`](Rules-and-docs/docs/BACKUP.md)

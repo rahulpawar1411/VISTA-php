@@ -1,12 +1,12 @@
 // ====================================================================
-// Sub Admin — mobile/src/screens/SubAdminScreen.js
+// Sub Admin â€” mobile/src/screens/SubAdminScreen.js
 // --------------------------------------------------------------------
 // Role `sub_admin`: mobile mini-admin (same data scope as Super Admin).
 // Tabs: Dashboard | Logs | Reports | Admin | More
-// Admin → Master = catalog (warehouse_master / client_master).
-// DO profile → Edit chambers & clients = assignments (operational).
+// Admin â†’ Master = catalog (warehouse_master / client_master).
+// DO profile â†’ Edit chambers & clients = assignments (operational).
 // Permissions: approve free; deny requires remark. Push on new request
-// even if this app is closed. No overdue push — overdue is dashboard only.
+// even if this app is closed. No overdue push â€” overdue is dashboard only.
 // Errors: formatUserError + InlineErrorState; reports keep last cache offline.
 // ====================================================================
 
@@ -102,7 +102,7 @@ function isCatalogActive(row) {
 const TouchableOpacity = FastTouchable;
 
 const PRODUCTION_API_URL =
-  'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public';
+  'https://darkcyan-octopus-294935.hostingersite.com/backend/public';
 
 function resolveImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
   return resolveLogImageUrl(raw, baseUrl, folderHint);
@@ -312,7 +312,7 @@ function SmallLogImage({ rawPath, apiUrl, folderHint, latitude, longitude, accur
 }
 
 /**
- * Mobile Sub-Admin — overview, permission approve/deny, catalog Master,
+ * Mobile Sub-Admin â€” overview, permission approve/deny, catalog Master,
  * and per-DO chamber/client assignments (not mixed with catalog CRUD).
  */
 const SUBADMIN_BOTTOM_TAB_COUNT = 5;
@@ -595,7 +595,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     setWarehouseFilter('All');
     setClientFilter('All');
     setOpenFilter(null);
-    // Chambers = daily view → reset to today; other types clear dates
+    // Chambers = daily view â†’ reset to today; other types clear dates
     if (logType === 'chambers') {
       const t = toLocalYmd();
       applyDateRange(t, t);
@@ -1572,10 +1572,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       (type === 'ChamberMaster' || type === 'Chamber') && chamberLabel
         ? chamberLabel
         : type;
-    if (status === 'Pending') return `Role & Permission · ${action} · ${typeLabel}`;
-    if (status === 'Approved') return `${action} approved · ${typeLabel}`;
-    if (status === 'Denied') return `${action} denied · ${typeLabel}`;
-    return `${status} · ${typeLabel}`;
+    if (status === 'Pending') return `Role & Permission Â· ${action} Â· ${typeLabel}`;
+    if (status === 'Approved') return `${action} approved Â· ${typeLabel}`;
+    if (status === 'Denied') return `${action} denied Â· ${typeLabel}`;
+    return `${status} Â· ${typeLabel}`;
   };
 
   const filteredNotifications = useMemo(() => {
@@ -1601,7 +1601,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   );
 
   // Bell badge = only actionable pending items (matches default "pending" tab).
-  // Empty pending list → no number on the bell.
+  // Empty pending list â†’ no number on the bell.
   const unreadNotifCount = useMemo(() => {
     const count = Number(pendingNotifCount) || 0;
     return count > 0 ? count : 0;
@@ -1684,7 +1684,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         onPress: async () => {
           setBusy(true);
           try {
-            // Session first — don't block on push cleanup
+            // Session first â€” don't block on push cleanup
             const done = onLogout?.();
             clearSubAdminPushToken({ apiUrl, token }).catch(() => {});
             resetSubAdminPushAlerts();
@@ -1738,12 +1738,12 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
   const homeListSubtitle = useMemo(() => {
     if (homeListFocus === 'warehouses') {
-      return 'Tap a row to edit · add / delete';
+      return 'Tap a row to edit Â· add / delete';
     }
     if (homeListFocus === 'customers') {
-      return 'Portal logins · tap to edit · add / delete';
+      return 'Portal logins Â· tap to edit Â· add / delete';
     }
-    return "Today's tasks · Morning & Evening";
+    return "Today's tasks Â· Morning & Evening";
   }, [homeListFocus]);
 
   const activeCatalogWarehouses = useMemo(
@@ -2233,7 +2233,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       return;
     }
     if (catalogModal.mode === 'create' && !warehouse_code) {
-      Alert.alert('Missing fields', 'Warehouse code is required (WH-…).');
+      Alert.alert('Missing fields', 'Warehouse code is required (WH-â€¦).');
       return;
     }
     if (!apiUrl || !token) return;
@@ -2666,7 +2666,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     if (!selectedDoProfile?.id || !apiUrl || !token) {
       Alert.alert(
         'Cannot edit',
-        'Open this DO from Admin → DOs to edit full profile (needs operator id).'
+        'Open this DO from Admin â†’ DOs to edit full profile (needs operator id).'
       );
       return;
     }
@@ -2858,13 +2858,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
   };
 
   const formatReportTime = (row) => {
-    // Prefer actual submit time (created_at), then capture/submit fields — always 24h
+    // Prefer actual submit time (created_at), then capture/submit fields â€” always 24h
     const candidates = [row.created_at, row.submit_time, row.photo_capture_time, row.inspection_time];
     for (const c of candidates) {
       const t = to24hTime(c);
       if (t) return t;
     }
-    return '—';
+    return 'â€”';
   };
 
   const openReportDetail = useCallback(
@@ -2950,7 +2950,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
     const outward = Math.max(0, Number(item.total_outward_boxes) || 0);
     const balance = Math.max(0, Number(item.calculated_balance) || 0);
     const physical = Math.max(0, Number(item.physical_audit_count) || 0);
-    // Diff = system balance vs physical (never show a minus sign — show gap size)
+    // Diff = system balance vs physical (never show a minus sign â€” show gap size)
     const rawDiff = balance - physical;
     const mismatch = rawDiff !== 0;
     const gap = Math.abs(rawDiff);
@@ -2967,8 +2967,8 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             </Text>
             <Text style={styles.dailyMetaLine} numberOfLines={1}>
               {item.chamber_name || 'Chamber'}
-              {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
-              {` · In ${inward} · Out ${outward} · Bal ${balance} · Phys ${physical}`}
+              {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
+              {` Â· In ${inward} Â· Out ${outward} Â· Bal ${balance} Â· Phys ${physical}`}
             </Text>
           </View>
           <Text style={[styles.dailyTemp, { color: mismatch ? '#dc2626' : '#059669' }]}>
@@ -2986,10 +2986,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       );
       const temp =
         item.box_temp != null
-          ? `${item.box_temp}°C`
+          ? `${item.box_temp}Â°C`
           : item.chamber_temp != null
-            ? `${item.chamber_temp}°C`
-            : '—';
+            ? `${item.chamber_temp}Â°C`
+            : 'â€”';
       return (
         <TouchableOpacity
           style={styles.dailyCard}
@@ -3000,13 +3000,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             <View style={styles.dailyTextCol}>
               <Text style={styles.dailyChamber} numberOfLines={1}>
                 {item.chamber_name || 'Chamber'}
-                {item.client_name ? ` · ${item.client_name}` : ''}
+                {item.client_name ? ` Â· ${item.client_name}` : ''}
               </Text>
               <Text style={styles.dailyMetaLine} numberOfLines={1}>
                 {dateLabel}
-                {item.shift ? ` · ${item.shift}` : ''}
-                {item.box_count != null ? ` · ${item.box_count} boxes` : ''}
-                {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
+                {item.shift ? ` Â· ${item.shift}` : ''}
+                {item.box_count != null ? ` Â· ${item.box_count} boxes` : ''}
+                {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
               </Text>
             </View>
             <Text style={styles.dailyTemp}>{temp}</Text>
@@ -3019,12 +3019,12 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
       item._logType === 'inward' ? 'Inward' : item._logType === 'outward' ? 'Outward' : 'Chamber';
     const rightValue =
       item.box_temp != null
-        ? `${item.box_temp}°C`
+        ? `${item.box_temp}Â°C`
         : item.chamber_temp != null
-          ? `${item.chamber_temp}°C`
+          ? `${item.chamber_temp}Â°C`
           : item.box_count != null
             ? `${item.box_count}`
-            : '—';
+            : 'â€”';
     return (
       <TouchableOpacity
         style={styles.logCard}
@@ -3039,11 +3039,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             </Text>
           </View>
           <Text style={styles.logMeta} numberOfLines={2}>
-            {item.chamber_name || '—'}
-            {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
-            {' · '}
-            {String(item.formatted_date || item.entry_date || '').slice(0, 10) || '—'}
-            {item.shift ? ` · ${item.shift}` : ''}
+            {item.chamber_name || 'â€”'}
+            {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
+            {' Â· '}
+            {String(item.formatted_date || item.entry_date || '').slice(0, 10) || 'â€”'}
+            {item.shift ? ` Â· ${item.shift}` : ''}
           </Text>
         </View>
         <Text style={styles.logTemp}>{rightValue}</Text>
@@ -3357,9 +3357,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 <View style={[styles.todayOpsCard, styles.logOpsCard]}>
                   <View style={[styles.todayOpsCell, styles.logOpsCell]}>
                     <Text style={[styles.todayOpsNum, styles.logOpsNum, { color: '#059669' }]}>
-                      {logTaskSummaryLoading ? '—' : logTaskSummary?.completed ?? 0}
+                      {logTaskSummaryLoading ? 'â€”' : logTaskSummary?.completed ?? 0}
                       <Text style={[styles.todayOpsDen, styles.logOpsDen]}>
-                        /{logTaskSummaryLoading ? '—' : logTaskSummary?.expected ?? 0}
+                        /{logTaskSummaryLoading ? 'â€”' : logTaskSummary?.expected ?? 0}
                       </Text>
                     </Text>
                     <Text style={[styles.todayOpsLbl, styles.logOpsLbl]}>Completed</Text>
@@ -3367,9 +3367,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   <View style={styles.todayOpsDivider} />
                   <View style={[styles.todayOpsCell, styles.logOpsCell]}>
                     <Text style={[styles.todayOpsNum, styles.logOpsNum, { color: '#059669' }]}>
-                      {logTaskSummaryLoading ? '—' : logTaskSummary?.morningDone ?? 0}
+                      {logTaskSummaryLoading ? 'â€”' : logTaskSummary?.morningDone ?? 0}
                       <Text style={[styles.todayOpsDen, styles.logOpsDen]}>
-                        /{logTaskSummaryLoading ? '—' : logTaskSummary?.morningExp ?? 0}
+                        /{logTaskSummaryLoading ? 'â€”' : logTaskSummary?.morningExp ?? 0}
                       </Text>
                     </Text>
                     <Text style={[styles.todayOpsLbl, styles.logOpsLbl]}>Morning</Text>
@@ -3377,9 +3377,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   <View style={styles.todayOpsDivider} />
                   <View style={[styles.todayOpsCell, styles.logOpsCell]}>
                     <Text style={[styles.todayOpsNum, styles.logOpsNum, { color: '#003580' }]}>
-                      {logTaskSummaryLoading ? '—' : logTaskSummary?.eveningDone ?? 0}
+                      {logTaskSummaryLoading ? 'â€”' : logTaskSummary?.eveningDone ?? 0}
                       <Text style={[styles.todayOpsDen, styles.logOpsDen]}>
-                        /{logTaskSummaryLoading ? '—' : logTaskSummary?.eveningExp ?? 0}
+                        /{logTaskSummaryLoading ? 'â€”' : logTaskSummary?.eveningExp ?? 0}
                       </Text>
                     </Text>
                     <Text style={[styles.todayOpsLbl, styles.logOpsLbl]}>Evening</Text>
@@ -3391,11 +3391,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                     Tasks for filter dates
                     {dateFrom !== 'All' && dateTo !== 'All'
                       ? dateFrom === dateTo
-                        ? ` · ${formatDateLabel(dateFrom)}`
-                        : ` · ${formatDateLabel(dateFrom)} → ${formatDateLabel(dateTo)}`
+                        ? ` Â· ${formatDateLabel(dateFrom)}`
+                        : ` Â· ${formatDateLabel(dateFrom)} â†’ ${formatDateLabel(dateTo)}`
                       : ''}
-                    {warehouseFilter !== 'All' ? ` · ${warehouseFilter}` : ''}
-                    {logTaskSummaryLoading ? ' · …' : ''}
+                    {warehouseFilter !== 'All' ? ` Â· ${warehouseFilter}` : ''}
+                    {logTaskSummaryLoading ? ' Â· â€¦' : ''}
                   </Text>
                 </View>
               </>
@@ -3406,7 +3406,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               <ActivityIndicator size="large" color="#003580" />
               <Text style={styles.stateText}>
                 Loading {logType === 'inward' ? 'inward' : logType === 'outward' ? 'outward' : 'chamber'}{' '}
-                logs…
+                logsâ€¦
               </Text>
             </View>
           ) : logsError && logs.length === 0 ? (
@@ -3445,7 +3445,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       </TouchableOpacity>
                       <Text style={styles.dockReportPageMeta}>
                         Page {logPage}
-                        {logTotal ? ` · ${logTotal} total` : ''}
+                        {logTotal ? ` Â· ${logTotal} total` : ''}
                       </Text>
                       <TouchableOpacity
                         style={[
@@ -3470,7 +3470,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             />
               <ListLoadingOverlay
                 visible={isSoftListLoad(logsLoading, logsRefreshing, logs.length)}
-                label="Loading logs…"
+                label="Loading logsâ€¦"
               />
             </View>
           )}
@@ -3563,9 +3563,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
           <View style={styles.dailyBanner}>
             <Ionicons name="cube-outline" size={14} color="#003580" />
             <Text style={styles.dailyBannerText}>
-              Inventory · {reportSummary.lots} lot{reportSummary.lots === 1 ? '' : 's'}
-              {` · In ${reportSummary.inward} · Out ${reportSummary.outward}`}
-              {reportSummary.mismatches ? ` · ${reportSummary.mismatches} mismatch` : ''}
+              Inventory Â· {reportSummary.lots} lot{reportSummary.lots === 1 ? '' : 's'}
+              {` Â· In ${reportSummary.inward} Â· Out ${reportSummary.outward}`}
+              {reportSummary.mismatches ? ` Â· ${reportSummary.mismatches} mismatch` : ''}
             </Text>
           </View>
 
@@ -3589,7 +3589,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                     ? 'Using last saved inventory data. Retry when you are back online.'
                     : reportsError ||
                       (reportsLastUpdated
-                        ? `Last good load · ${reportsLastUpdated}`
+                        ? `Last good load Â· ${reportsLastUpdated}`
                         : 'Pull to refresh or tap Retry.')}
                 </Text>
               </View>
@@ -3605,13 +3605,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               </TouchableOpacity>
             </View>
           ) : reportsLastUpdated ? (
-            <Text style={styles.reportsUpdatedAt}>Updated · {reportsLastUpdated}</Text>
+            <Text style={styles.reportsUpdatedAt}>Updated Â· {reportsLastUpdated}</Text>
           ) : null}
 
           {isBlockingListLoad(reportsLoading, reportsRefreshing, filteredReportRows.length) ? (
             <View style={styles.centerState}>
               <ActivityIndicator size="large" color="#003580" />
-              <Text style={styles.stateText}>Loading inventory…</Text>
+              <Text style={styles.stateText}>Loading inventoryâ€¦</Text>
             </View>
           ) : reportsError && filteredReportRows.length === 0 ? (
             <InlineErrorState
@@ -3639,7 +3639,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                     <View style={{ paddingVertical: 14, alignItems: 'center' }}>
                       <ActivityIndicator size="small" color="#003580" />
                       <Text style={{ marginTop: 6, fontSize: 11, color: '#64748b', fontWeight: '600' }}>
-                        Loading more…
+                        Loading moreâ€¦
                       </Text>
                     </View>
                   ) : null
@@ -3667,7 +3667,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   reportsRefreshing,
                   filteredReportRows.length
                 )}
-                label="Updating inventory…"
+                label="Updating inventoryâ€¦"
               />
             </View>
           )}
@@ -3737,7 +3737,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
               {homeLoading && !homeRefreshing ? (
                 <View style={styles.centerState}>
                   <ActivityIndicator size="large" color="#003580" />
-                  <Text style={styles.stateText}>Loading overview…</Text>
+                  <Text style={styles.stateText}>Loading overviewâ€¦</Text>
                 </View>
               ) : homeError ? (
                 <InlineErrorState message={homeError} onRetry={loadHomeOverview} />
@@ -3745,11 +3745,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 <>
                   <View style={styles.dashHero}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.dashHeroEyebrow}>DO monitor · daily tasks</Text>
+                      <Text style={styles.dashHeroEyebrow}>DO monitor Â· daily tasks</Text>
                       <Text style={styles.dashHeroTitle}>Today's status</Text>
                       <Text style={styles.dashHeroDate}>
                         {todayLabel}
-                        {homeLastUpdated ? ` · Updated ${homeLastUpdated}` : ''}
+                        {homeLastUpdated ? ` Â· Updated ${homeLastUpdated}` : ''}
                       </Text>
                     </View>
                     <View style={styles.dashHeroIcon}>
@@ -3826,7 +3826,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           {pendingNotifCount} permission request
                           {pendingNotifCount === 1 ? '' : 's'} pending
                         </Text>
-                        <Text style={styles.permAlertSub}>Review in Admin → Permission</Text>
+                        <Text style={styles.permAlertSub}>Review in Admin â†’ Permission</Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color="#b45309" />
                     </TouchableOpacity>
@@ -3912,10 +3912,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                                 </Text>
                                 <Text style={styles.doOverviewMeta} numberOfLines={2}>
                                   {wh.warehouse_code || 'No code'}
-                                  {wh.city ? ` · ${wh.city}` : ''}
-                                  {` · Mor ${mornDone}/${mornExp}`}
-                                  {` · Evn ${eveDone}/${eveExp}`}
-                                  {overdue ? ` · Over ${overdue}` : ''}
+                                  {wh.city ? ` Â· ${wh.city}` : ''}
+                                  {` Â· Mor ${mornDone}/${mornExp}`}
+                                  {` Â· Evn ${eveDone}/${eveExp}`}
+                                  {overdue ? ` Â· Over ${overdue}` : ''}
                                 </Text>
                               </Pressable>
                               <Pressable
@@ -3959,10 +3959,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                                   {c.full_name || c.email || 'Customer'}
                                 </Text>
                                 <Text style={styles.doOverviewMeta} numberOfLines={2}>
-                                  {c.email || '—'}
-                                  {c.phone_no ? ` · ${c.phone_no}` : ''}
-                                  {` · WH: ${formatScopeList(c.allowed_warehouses)}`}
-                                  {` · Clients: ${formatScopeList(c.allowed_clients)}`}
+                                  {c.email || 'â€”'}
+                                  {c.phone_no ? ` Â· ${c.phone_no}` : ''}
+                                  {` Â· WH: ${formatScopeList(c.allowed_warehouses)}`}
+                                  {` Â· Clients: ${formatScopeList(c.allowed_clients)}`}
                                 </Text>
                               </TouchableOpacity>
                               <TouchableOpacity
@@ -4013,7 +4013,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                                   </Text>
                                   <Text style={styles.doOverviewMeta} numberOfLines={1}>
                                     {op.warehouse_name || 'Unassigned'}
-                                    {op.email ? ` · ${op.email}` : ''}
+                                    {op.email ? ` Â· ${op.email}` : ''}
                                   </Text>
                                 </View>
                                 <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
@@ -4079,11 +4079,11 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 </Text>
                 <Text style={styles.profileRow}>
                   <Text style={styles.profileKey}>Email: </Text>
-                  <Text style={styles.profileVal}>{user?.email || '—'}</Text>
+                  <Text style={styles.profileVal}>{user?.email || 'â€”'}</Text>
                 </Text>
                 <Text style={styles.profileRow}>
                   <Text style={styles.profileKey}>Phone: </Text>
-                  <Text style={styles.profileVal}>{user?.phone_no || '—'}</Text>
+                  <Text style={styles.profileVal}>{user?.phone_no || 'â€”'}</Text>
                 </Text>
               </View>
 
@@ -4112,7 +4112,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 <Text style={styles.aboutTitle}>About ReeferON</Text>
                 <Text style={styles.aboutBody}>
                   Sub-Admin can monitor all cold-chain logs and inventory reports across the
-                  operation — separate from scoped Customer accounts.
+                  operation â€” separate from scoped Customer accounts.
                 </Text>
                 <TouchableOpacity onPress={() => Linking.openURL('tel:+917678047222')}>
                   <Text style={styles.aboutContact}>+91 76780 47222</Text>
@@ -4321,13 +4321,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                                 [
                                   'Vehicle temp',
                                   item.inward_vehicle_temp != null
-                                    ? `${item.inward_vehicle_temp}°C`
+                                    ? `${item.inward_vehicle_temp}Â°C`
                                     : null
                                 ],
                                 [
                                   'Material temp',
                                   item.inward_material_temp != null
-                                    ? `${item.inward_material_temp}°C`
+                                    ? `${item.inward_material_temp}Â°C`
                                     : null
                                 ],
                                 ['Pallets in', item.inward_pallets_in_qty],
@@ -4405,12 +4405,12 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                               rows: [
                                 [
                                   'Pre vehicle temp',
-                                  preVehicleTemp != null ? `${preVehicleTemp}°C` : null
+                                  preVehicleTemp != null ? `${preVehicleTemp}Â°C` : null
                                 ],
                                 [
                                   'Material temp',
                                   item.outward_material_temp != null
-                                    ? `${item.outward_material_temp}°C`
+                                    ? `${item.outward_material_temp}Â°C`
                                     : null
                                 ],
                                 ['Pallets out', item.outward_pallets_in_qty],
@@ -4514,7 +4514,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                         ['Shift', selectedLog.shift || selectedLog.inspection_time],
                       [
                         'Box temp',
-                        selectedLog.box_temp != null ? `${selectedLog.box_temp}°C` : null
+                        selectedLog.box_temp != null ? `${selectedLog.box_temp}Â°C` : null
                       ],
                         ['Boxes', selectedLog.box_count],
                         ['Reference', selectedLog.reference_no],
@@ -4551,7 +4551,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
         </View>
       </Modal>
 
-      {/* Inventory report detail — Excel-style day history */}
+      {/* Inventory report detail â€” Excel-style day history */}
       <Modal
         visible={!!selectedReport}
         transparent
@@ -4567,7 +4567,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                 </Text>
                 <Text style={styles.excelSub} numberOfLines={1}>
                   {selectedReport?.warehouse_name || 'Warehouse'}
-                  {selectedReport?.chamber_name ? ` · ${selectedReport.chamber_name}` : ''}
+                  {selectedReport?.chamber_name ? ` Â· ${selectedReport.chamber_name}` : ''}
                 </Text>
               </View>
               <TouchableOpacity onPress={closeReportDetail}>
@@ -4587,7 +4587,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             {reportHistoryLoading ? (
               <View style={styles.centerState}>
                 <ActivityIndicator size="large" color="#003580" />
-                <Text style={styles.stateText}>Loading day records…</Text>
+                <Text style={styles.stateText}>Loading day recordsâ€¦</Text>
               </View>
             ) : reportHistoryError ? (
               <View style={styles.centerState}>
@@ -4608,17 +4608,17 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                   </View>
                 ) : (
                   reportHistory.map((row, idx) => {
-                    const dateLabel = String(row.formatted_date || row.entry_date || '').slice(0, 10) || '—';
+                    const dateLabel = String(row.formatted_date || row.entry_date || '').slice(0, 10) || 'â€”';
                     const timeLabel = formatReportTime(row);
                     const temp =
                       row.box_temp != null
-                        ? `${row.box_temp}°C`
+                        ? `${row.box_temp}Â°C`
                         : row.chamber_temp != null
-                          ? `${row.chamber_temp}°C`
-                          : '—';
+                          ? `${row.chamber_temp}Â°C`
+                          : 'â€”';
                     const qty = row._qty != null ? row._qty : null;
-                    const inQty = row._inQty != null ? row._inQty : '—';
-                    const outQty = row._outQty != null ? row._outQty : '—';
+                    const inQty = row._inQty != null ? row._inQty : 'â€”';
+                    const outQty = row._outQty != null ? row._outQty : 'â€”';
 
                     return (
                       <View
@@ -4638,7 +4638,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           style={[
                             styles.excelCell,
                             styles.excelColIn,
-                            inQty !== '—' && inQty !== '0' && styles.excelIn
+                            inQty !== 'â€”' && inQty !== '0' && styles.excelIn
                           ]}
                           numberOfLines={1}
                         >
@@ -4648,14 +4648,14 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           style={[
                             styles.excelCell,
                             styles.excelColOut,
-                            outQty !== '—' && outQty !== '0' && styles.excelOut
+                            outQty !== 'â€”' && outQty !== '0' && styles.excelOut
                           ]}
                           numberOfLines={1}
                         >
                           {outQty}
                         </Text>
                         <Text style={[styles.excelCell, styles.excelColQty, styles.excelQty]} numberOfLines={1}>
-                          {qty == null ? '—' : qty}
+                          {qty == null ? 'â€”' : qty}
                         </Text>
                       </View>
                     );
@@ -4743,9 +4743,9 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       <Text style={styles.notifMsg}>{getNotifMessage(n)}</Text>
                       <Text style={styles.notifMeta} numberOfLines={2}>
                         {n.operator_email || 'DO'}
-                        {n.client_name ? ` · ${n.client_name}` : ''}
-                        {n.chamber_name ? ` · ${n.chamber_name}` : ''}
-                        {` · ${formatNotifTime(n.created_at)}`}
+                        {n.client_name ? ` Â· ${n.client_name}` : ''}
+                        {n.chamber_name ? ` Â· ${n.chamber_name}` : ''}
+                        {` Â· ${formatNotifTime(n.created_at)}`}
                       </Text>
                       {status === 'Pending' ? (
                         <View style={styles.notifActions}>
@@ -5020,7 +5020,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
             <Text style={styles.denySub}>
               {catalogModal.kind === 'client'
                 ? 'Company in the catalog. Optional warehouse ties it to a site.'
-                : 'Catalog site. Code is WH-… and stays unique.'}
+                : 'Catalog site. Code is WH-â€¦ and stays unique.'}
             </Text>
             <ScrollView
               style={styles.customerModalScroll}
@@ -5049,7 +5049,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       clientCodeManualRef.current = true;
                       setClientForm((p) => ({ ...p, client_code: txt.toUpperCase() }));
                     }}
-                    placeholder="Code (CL-… auto)"
+                    placeholder="Code (CL-â€¦ auto)"
                     placeholderTextColor="#94a3b8"
                     autoCapitalize="characters"
                     editable={catalogModal.mode !== 'edit'}
@@ -5124,7 +5124,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       warehouseCodeManualRef.current = true;
                       setWarehouseForm((p) => ({ ...p, warehouse_code: txt.toUpperCase() }));
                     }}
-                    placeholder="Code (WH-… auto)"
+                    placeholder="Code (WH-â€¦ auto)"
                     placeholderTextColor="#94a3b8"
                     autoCapitalize="characters"
                     editable={catalogModal.mode !== 'edit'}
@@ -5270,7 +5270,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       <View style={styles.doProfileRow}>
                         <Text style={styles.doProfileLabel}>Email</Text>
                         <Text style={styles.doProfileValue}>
-                          {selectedDoProfile.email || '—'}
+                          {selectedDoProfile.email || 'â€”'}
                         </Text>
                       </View>
                       <TouchableOpacity
@@ -5308,10 +5308,10 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
 
                 <View style={styles.doProfileCard}>
                   <Text style={[styles.doProfileSectionTitle, { marginBottom: 4 }]}>
-                    Today's tasks · Mor / Evn
+                    Today's tasks Â· Mor / Evn
                   </Text>
                   <Text style={[styles.doProfileHeroRole, { marginBottom: 10, textAlign: 'left' }]}>
-                    {toLocalYmd()} · Today
+                    {toLocalYmd()} Â· Today
                   </Text>
                   <View style={styles.doProfileStatRow}>
                     <View style={[styles.doProfileStatPill, { backgroundColor: '#ecfdf5' }]}>
@@ -5387,7 +5387,7 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                       <ActivityIndicator color="#003580" style={{ marginVertical: 12 }} />
                     ) : doProfileChamberGroups.length === 0 ? (
                       <Text style={styles.doProfileEmptyAssign}>
-                        No chamber–client assignments yet.
+                        No chamberâ€“client assignments yet.
                       </Text>
                     ) : (
                       doProfileChamberGroups.map((ch) => (
@@ -5400,13 +5400,13 @@ export default function SubAdminScreen({ user, token, apiUrl, onLogout }) {
                           </View>
                           <Text style={styles.doProfileClientsLine}>
                             Active ({ch.active.length}):{' '}
-                            {ch.active.length ? ch.active.join(' · ') : '—'}
+                            {ch.active.length ? ch.active.join(' Â· ') : 'â€”'}
                           </Text>
                           <Text
                             style={[styles.doProfileClientsLine, { color: '#94a3b8' }]}
                           >
                             Deactive ({ch.deactive.length}):{' '}
-                            {ch.deactive.length ? ch.deactive.join(' · ') : '—'}
+                            {ch.deactive.length ? ch.deactive.join(' Â· ') : 'â€”'}
                           </Text>
                         </View>
                       ))

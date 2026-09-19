@@ -2,14 +2,14 @@
 // ReeferON Mobile Entry (mobile/App.js)
 // --------------------------------------------------------------------
 // After login, ONE screen per role (do not mix their jobs):
-//   do_operator → DashboardScreen  — field logs + offline SQLite sync
-//   customer    → CustomerScreen   — read-only allowed WH/clients
-//   sub_admin   → SubAdminScreen   — overview, permissions, DO masters
+//   do_operator â†’ DashboardScreen  â€” field logs + offline SQLite sync
+//   customer    â†’ CustomerScreen   â€” read-only allowed WH/clients
+//   sub_admin   â†’ SubAdminScreen   â€” overview, permissions, DO masters
 //
 // API URL:
-//   - Local: getLocalApiUrl() → http://LAN-IP:5080 (PHP backend-php)
+//   - Local: getLocalApiUrl() â†’ http://LAN-IP:5080 (PHP backend)
 //   - Live:  PRODUCTION_API_URL (Hostinger PHP API)
-//   - FALLBACK_LOCAL_IP: update if Wi‑Fi IPv4 changes (ipconfig)
+//   - FALLBACK_LOCAL_IP: update if Wiâ€‘Fi IPv4 changes (ipconfig)
 // ====================================================================
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -25,7 +25,7 @@ import { clearSyncedInspectionsLocally, initDatabase } from './src/database/db';
 
 /** Live backend (Hostinger PHP). No trailing slash, no /api (app adds /api/...). */
 const DEFAULT_PRODUCTION_API_URL =
-  'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public';
+  'https://darkcyan-octopus-294935.hostingersite.com/backend/public';
 
 function readProductionApiUrl() {
   const raw =
@@ -40,7 +40,7 @@ function readProductionApiUrl() {
 
 export const PRODUCTION_API_URL = readProductionApiUrl();
 
-/** Used only when Metro host IP cannot be detected — keep in sync with PC Wi‑Fi IPv4. */
+/** Used only when Metro host IP cannot be detected â€” keep in sync with PC Wiâ€‘Fi IPv4. */
 const FALLBACK_LOCAL_IP = '192.168.64.129';
 
 /** Pull first usable LAN IPv4 from a host string / URL. */
@@ -56,7 +56,7 @@ function extractLanIp(raw) {
 }
 
 /**
- * Local backend URL for Expo Go / emulator on the same Wi‑Fi.
+ * Local backend URL for Expo Go / emulator on the same Wiâ€‘Fi.
  * @returns {string} e.g. http://192.168.x.x:5080
  */
 export function getLocalApiUrl() {
@@ -133,15 +133,15 @@ export default function App() {
 
         if (storedApiUrl && storedApiUrl.trim()) {
           let nextApi = storedApiUrl.replace(/\/$/, '').replace(/\/api$/i, '');
-          // Migrate old Node hosts → current Hostinger PHP API
+          // Migrate old Node hosts â†’ current Hostinger PHP API
           if (/railway\.app|onrender\.com/i.test(nextApi)) {
             nextApi = PRODUCTION_API_URL;
-            console.log('[api] migrated legacy URL → Hostinger PHP');
+            console.log('[api] migrated legacy URL â†’ Hostinger PHP');
           }
           if (isLocalApiUrl(nextApi)) {
             nextApi = getLocalApiUrl();
             await AsyncStorage.setItem('api_url', nextApi);
-            console.log('[api] refreshed local server URL →', nextApi);
+            console.log('[api] refreshed local server URL â†’', nextApi);
           }
           resolvedApiUrl = nextApi;
           setApiUrl(nextApi);
@@ -172,7 +172,7 @@ export default function App() {
               if (meRes.status === 401 || meRes.status === 403) {
                 keepSession = false;
                 await AsyncStorage.multiRemove(['user_token', 'user_profile']);
-                console.warn('[auth] Stored session expired or revoked — login required.');
+                console.warn('[auth] Stored session expired or revoked â€” login required.');
               } else if (meRes.ok) {
                 const meData = await meRes.json().catch(() => ({}));
                 if (meData?.user) {
@@ -197,7 +197,7 @@ export default function App() {
       } catch (err) {
         console.warn('Failed to restore session:', err);
       } finally {
-        // Session ready — app still waits until splash animation finishes
+        // Session ready â€” app still waits until splash animation finishes
         setSessionReady(true);
       }
     };

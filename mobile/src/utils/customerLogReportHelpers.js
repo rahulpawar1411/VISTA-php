@@ -17,7 +17,7 @@ export function splitLogPhotoPaths(value) {
     .filter((s) => s && s !== 'null' && s !== 'undefined');
 }
 
-/** Map a Cloudinary CRM asset URL back to local uploads/crm/… path. */
+/** Map a Cloudinary CRM asset URL back to local uploads/images/… path. */
 export function cloudinaryUrlToUploadsPath(raw) {
   if (raw == null) return null;
   const value = String(raw).trim();
@@ -26,32 +26,30 @@ export function cloudinaryUrlToUploadsPath(raw) {
   if (!match) return null;
   let rest = match[1];
   if (rest.startsWith('crm/')) rest = rest.slice(4);
-  if (
-    !/^(outward_images|inward_images|daily_temp_monitor_images)\//i.test(rest)
-  ) {
-    return null;
-  }
-  return `uploads/crm/${rest}`;
+  const fileMatch = rest.match(
+    /^(?:images|outward_images|inward_images|daily_temp_monitor_images)\/(.+)$/i
+  );
+  if (fileMatch) return `uploads/images/${fileMatch[1]}`;
+  return null;
 }
 
-/** Map uploads/… path → Cloudinary CDN URL (same public_id / folder). */
+/** Map uploads/… path → Cloudinary CDN URL (optional). */
 export function uploadsPathToCloudinaryUrl(raw, cloudName = 'de9ba8bpk') {
   if (raw == null) return null;
   const value = String(raw).trim().replace(/\\/g, '/').replace(/^\/+/, '');
   if (!value.startsWith('uploads/')) return null;
   const match = value.match(
-    /^uploads\/(?:crm\/)?(outward_images|inward_images|daily_temp_monitor_images)\/(.+)$/i
+    /^uploads\/(?:crm\/)?(images|outward_images|inward_images|daily_temp_monitor_images)\/(.+)$/i
   );
   if (!match || !match[2]) return null;
   const file = String(match[2]).replace(/\.(jpe?g|png|webp|gif)$/i, '');
-  return `https://res.cloudinary.com/${cloudName}/image/upload/crm/${match[1]}/${file}`;
+  return `https://res.cloudinary.com/${cloudName}/image/upload/crm/images/${file}`;
 }
 
 /**
  * Resolve image URL for React Native.
- * Cloudinary URLs in DB stay unchanged; map them to API /uploads/<folder>/<file>.
  */
-export function resolveLogImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
+export function resolveLogImageUrl(raw, baseUrl, folderHint = 'images') {
   if (raw == null) return null;
   let value = String(raw).trim();
   if (!value || value === 'null' || value === 'undefined') return null;
@@ -75,17 +73,22 @@ export function resolveLogImageUrl(raw, baseUrl, folderHint = 'daily_temp_monito
     return value;
   }
   value = value.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (value.startsWith('uploads/crm/images/')) {
+    value = value.replace(/^uploads\/crm\/images\//i, 'uploads/images/');
+  }
   if (value.startsWith('uploads/')) {
     if (!base) return null;
     return `${base}/${value}`;
   }
   if (!base) return null;
-  if (!value.includes('/')) return `${base}/uploads/${folderHint}/${value}`;
+  if (!value.includes('/')) {
+    return `${base}/uploads/images/${value}`;
+  }
   return `${base}/${value}`;
 }
 
 /** Ordered candidates: local /uploads first, then original Cloudinary URL. */
-export function resolveLogImageUrlCandidates(raw, baseUrl, folderHint = 'daily_temp_monitor_images') {
+export function resolveLogImageUrlCandidates(raw, baseUrl, folderHint = 'images') {
   const out = [];
   const push = (u) => {
     if (u && !out.includes(u)) out.push(u);
@@ -99,6 +102,9 @@ export function resolveLogImageUrlCandidates(raw, baseUrl, folderHint = 'daily_t
 
   const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
   const base = String(baseUrl || '').replace(/\/$/, '');
+  if (!normalized.includes('/') && base) {
+    push(`${base}/uploads/images/${normalized}`);
+  }
   if (normalized.startsWith('uploads/')) {
     if (base) push(`${base}/${normalized}`);
   } else if (/^https?:\/\/res\.cloudinary\.com\//i.test(value)) {

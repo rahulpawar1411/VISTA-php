@@ -32,7 +32,7 @@ export default function LoginScreen({
   onLoginSuccess,
   apiUrl,
   onUpdateApiUrl,
-  productionApiUrl = 'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public',
+  productionApiUrl = 'https://darkcyan-octopus-294935.hostingersite.com/backend/public',
   localApiUrl = 'http://192.168.64.129:5080'
 }) {
   // Input form state variables
@@ -87,7 +87,7 @@ export default function LoginScreen({
       if (response.ok && data.success) {
         const role = String(data.user?.role || '').trim();
         if (role === 'do_operator' || role === 'customer' || role === 'sub_admin') {
-          console.log('🔑 Login success:', role, data.user?.email);
+          console.log('ðŸ”‘ Login success:', role, data.user?.email);
           if (role === 'do_operator' || role === 'sub_admin') {
             void ensureLocationPermission({ required: false });
           }
@@ -106,7 +106,7 @@ export default function LoginScreen({
         alert(data.message || 'Login failed. Please check your credentials.');
       }
     } catch (err) {
-      console.warn('⚠️ Server unreachable:', err.message);
+      console.warn('âš ï¸ Server unreachable:', err.message);
       Alert.alert(
         'Connection Error',
         `Could not reach the server at:\n${apiUrl}\n\nPlease check your internet connection or configure the correct Server Connection URL below.`,
@@ -167,7 +167,7 @@ export default function LoginScreen({
             </View>
             <Text style={styles.headerTitle}>VISTA</Text>
             <Text style={styles.headerSubtitle}>
-              Visibility · Inspection · Stock · Trust · Audit
+              Visibility Â· Inspection Â· Stock Â· Trust Â· Audit
             </Text>
           </View>
         </ImageBackground>
@@ -240,7 +240,7 @@ export default function LoginScreen({
               {loading ? (
                 <>
                   <ActivityIndicator size="small" color="#ffffff" style={styles.buttonSpinner} />
-                  <Text style={styles.signInButtonText}>Signing in…</Text>
+                  <Text style={styles.signInButtonText}>Signing inâ€¦</Text>
                 </>
               ) : (
                 <>

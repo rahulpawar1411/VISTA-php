@@ -1,9 +1,9 @@
-# Hostinger (shared hosting) — first deploy guide
+# Hostinger (shared hosting) â€” first deploy guide
 
 This app is ready for Hostinger shared hosting:
 - API = pure PHP (no Composer / no Node on server)
 - Web = React build (`frontend/dist`)
-- Photos = `backend-php/uploads/crm/...` (Cloudinary-style names)
+- Photos = `backend/uploads/crm/...` (Cloudinary-style names)
 
 ---
 
@@ -11,16 +11,16 @@ This app is ready for Hostinger shared hosting:
 
 | Part | Upload this | Do NOT upload |
 |------|-------------|---------------|
-| API | whole `backend-php/` folder | `.env` from laptop with local DB (create new on host) |
+| API | whole `backend/` folder | `.env` from laptop with local DB (create new on host) |
 | Web | contents of `frontend/dist/` | `frontend/src`, `node_modules` |
-| DB | `.sql` dump | — |
+| DB | `.sql` dump | â€” |
 
 ---
 
 ## B. Hostinger checklist (order matters)
 
 ### 1) PHP version
-hPanel → **Advanced** → **PHP Configuration** → select **PHP 8.1 / 8.2 / 8.3**  
+hPanel â†’ **Advanced** â†’ **PHP Configuration** â†’ select **PHP 8.1 / 8.2 / 8.3**  
 Enable extensions if listed: `pdo_mysql`, `curl`, `mbstring`, `openssl`, `fileinfo`
 
 ### 2) MySQL
@@ -28,16 +28,16 @@ Enable extensions if listed: `pdo_mysql`, `curl`, `mbstring`, `openssl`, `filein
 2. Export local DB from WAMP phpMyAdmin
 3. Import into Hostinger phpMyAdmin
 
-### 3) API (`backend-php`)
-1. Upload `backend-php` via File Manager or FTP  
-   Example path: `domains/yourdomain.com/backend-php/`
+### 3) API (`backend`)
+1. Upload `backend` via File Manager or FTP  
+   Example path: `domains/yourdomain.com/backend/`
 2. On server, create `.env` from `.env.example` with Hostinger DB values
 3. Create subdomain **`api`**
-4. Set subdomain **Document Root** = `backend-php/public`
-5. Make `backend-php/uploads` writable (775)
+4. Set subdomain **Document Root** = `backend/public`
+5. Make `backend/uploads` writable (775)
 6. Test:
    - `https://api.yourdomain.com/api/health`
-   - `https://api.yourdomain.com/api/health/db` → must say connected
+   - `https://api.yourdomain.com/api/health/db` â†’ must say connected
 
 ### 4) Web (React)
 On your laptop:
@@ -45,7 +45,7 @@ On your laptop:
 ```powershell
 cd frontend
 copy .env.production.example .env.production
-# Edit .env.production → VITE_API_BASE_URL=https://api.yourdomain.com/api
+# Edit .env.production â†’ VITE_API_BASE_URL=https://api.yourdomain.com/api
 npm install
 npm run build
 ```
@@ -97,10 +97,10 @@ Set production API to `https://api.yourdomain.com`
 
 ```
 domains/yourdomain.com/
-  public_html/          ← React dist files (index.html, assets, .htaccess)
-  backend-php/
+  public_html/          â† React dist files (index.html, assets, .htaccess)
+  backend/
     .env
-    public/             ← api.yourdomain.com document root
+    public/             â† api.yourdomain.com document root
     src/
     uploads/crm/...
 ```

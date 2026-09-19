@@ -1,8 +1,8 @@
 // ====================================================================
-// Customer — mobile/src/screens/CustomerScreen.js
+// Customer â€” mobile/src/screens/CustomerScreen.js
 // --------------------------------------------------------------------
 // Role `customer`: read-only scoped portal.
-// Super Admin sets allowed_warehouses + allowed_clients — this screen
+// Super Admin sets allowed_warehouses + allowed_clients â€” this screen
 // never edits catalog masters or DO assignments.
 // Lists: chamber / inward / outward / inventory (first 50, then +20).
 // Errors: formatUserError + InlineErrorState + Retry.
@@ -63,7 +63,7 @@ import {
 const TouchableOpacity = FastTouchable;
 
 const PRODUCTION_API_URL =
-  'https://darkcyan-octopus-294935.hostingersite.com/backend-php/public';
+  'https://darkcyan-octopus-294935.hostingersite.com/backend/public';
 const BOTTOM_SHEET_MAX_H = Math.round(Dimensions.get('window').height * 0.5);
 const BOTTOM_SHEET_SCROLL_H = Math.max(180, BOTTOM_SHEET_MAX_H - 130);
 
@@ -202,7 +202,7 @@ function SensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_ima
 }
 
 /**
- * Customer portal — scoped read-only logs/inventory (allowed WH + clients only).
+ * Customer portal â€” scoped read-only logs/inventory (allowed WH + clients only).
  * Does not edit masters or DO assignments.
  */
 export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUpdate }) {
@@ -811,7 +811,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
     }
     const parts = raw.split('|').map((p) => p.trim()).filter(Boolean);
     const last = parts[parts.length - 1] || raw;
-    return last.length > 90 ? `${last.slice(0, 90)}…` : last;
+    return last.length > 90 ? `${last.slice(0, 90)}â€¦` : last;
   };
   const loadLogs = useCallback(async (overrides = {}) => {
     if (!apiUrl || !token) return;
@@ -1349,7 +1349,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
     } catch (err) {
       const msg =
         err?.message === 'Network request failed'
-          ? `Cannot reach server: ${apiUrl}. Open Login settings → Local server, or use Production.`
+          ? `Cannot reach server: ${apiUrl}. Open Login settings â†’ Local server, or use Production.`
           : err.message || 'Failed to load temperature logs.';
       setChamberReportLogs([]);
       setChamberReportsError(msg);
@@ -1429,7 +1429,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
       const t = to24hTime(c);
       if (t) return t;
     }
-    return '—';
+    return 'â€”';
   };
 
   const openReportDetail = useCallback(
@@ -1808,9 +1808,9 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
             </Text>
             <Text style={styles.dailyMetaLine} numberOfLines={1}>
               {item.chamber_name || 'Chamber'}
-              {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
-              {` · In ${inward} · Out ${outward} · Bal ${balance}`}
-              {` · Total ${totalBoxes}`}
+              {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
+              {` Â· In ${inward} Â· Out ${outward} Â· Bal ${balance}`}
+              {` Â· Total ${totalBoxes}`}
             </Text>
             {outOfStock ? (
               <Text style={styles.outOfStockTag} numberOfLines={1}>
@@ -2138,7 +2138,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
               ) ? (
                 <View style={styles.reportsCenterState}>
                   <ActivityIndicator size="large" color="#003580" />
-                  <Text style={styles.reportsStateText}>Loading temperature logs…</Text>
+                  <Text style={styles.reportsStateText}>Loading temperature logsâ€¦</Text>
                 </View>
               ) : chamberReportsError && getFilteredLogsTemperature().length === 0 ? (
                 <View style={styles.reportsCenterState}>
@@ -2158,10 +2158,10 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                     renderItem={({ item }) => {
                       const temp =
                         item.box_temp != null
-                          ? `${item.box_temp}°C`
+                          ? `${item.box_temp}Â°C`
                           : item.chamber_temp != null
-                            ? `${item.chamber_temp}°C`
-                            : '—';
+                            ? `${item.chamber_temp}Â°C`
+                            : 'â€”';
                       return (
                         <TouchableOpacity
                           style={styles.dailyCard}
@@ -2175,14 +2175,14 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                               </Text>
                               <Text style={styles.dailyMetaLine} numberOfLines={1}>
                                 {item.chamber_name || 'Chamber'}
-                                {item.shift ? ` · ${item.shift}` : ''}
-                                {` · ${chamberZoneStyle(resolveReportLotType(item)).type}`}
+                                {item.shift ? ` Â· ${item.shift}` : ''}
+                                {` Â· ${chamberZoneStyle(resolveReportLotType(item)).type}`}
                               </Text>
                             </View>
                             <View style={styles.totalBoxesCol}>
                               <Text style={styles.totalBoxesValue}>{temp}</Text>
                               <Text style={styles.totalBoxesLabel}>
-                                {item.formatted_date || item.entry_date || '—'}
+                                {item.formatted_date || item.entry_date || 'â€”'}
                               </Text>
                             </View>
                           </View>
@@ -2207,7 +2207,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                       refreshing,
                       getFilteredLogsTemperature().length
                     )}
-                    label="Updating logs…"
+                    label="Updating logsâ€¦"
                   />
                 </View>
               )
@@ -2227,7 +2227,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                   <Ionicons name="search-outline" size={18} color="#64748b" />
                   <TextInput
                     style={styles.dockReportSearchInput}
-                    placeholder="Search vehicle, client, ref…"
+                    placeholder="Search vehicle, client, refâ€¦"
                     placeholderTextColor="#94a3b8"
                     value={logSearch}
                     onChangeText={setLogSearch}
@@ -2295,8 +2295,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
             <View style={styles.dailyBanner}>
               <Ionicons name="document-text-outline" size={14} color="#003580" />
               <Text style={styles.dailyBannerText}>
-                {logsReportsMode === 'inward' ? 'Inward' : 'Outward'} reports · {logTotal} record
-                {logTotal === 1 ? '' : 's'} · Your data only
+                {logsReportsMode === 'inward' ? 'Inward' : 'Outward'} reports Â· {logTotal} record
+                {logTotal === 1 ? '' : 's'} Â· Your data only
               </Text>
             </View>
 
@@ -2304,7 +2304,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
               <View style={styles.centerState}>
                 <ActivityIndicator size="large" color="#003580" />
                 <Text style={styles.stateText}>
-                  Loading {logsReportsMode === 'inward' ? 'inward' : 'outward'} logs…
+                  Loading {logsReportsMode === 'inward' ? 'inward' : 'outward'} logsâ€¦
                 </Text>
               </View>
             ) : logsError && logs.length === 0 ? (
@@ -2330,7 +2330,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                           <Text style={styles.dockReportPageBtnText}>Previous</Text>
                         </TouchableOpacity>
                         <Text style={styles.dockReportPageMeta}>
-                          {(logPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}–
+                          {(logPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}â€“
                           {Math.min(logPage * DOCK_REPORT_PAGE_SIZE, logTotal)} of {logTotal}
                         </Text>
                         <TouchableOpacity
@@ -2357,7 +2357,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                 />
                 <ListLoadingOverlay
                   visible={isSoftListLoad(logsLoading, refreshing, logs.length)}
-                  label="Loading page…"
+                  label="Loading pageâ€¦"
                 />
               </View>
             )}
@@ -2547,15 +2547,15 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
           <View style={styles.dailyBanner}>
             <Ionicons name="cube-outline" size={14} color="#003580" />
             <Text style={styles.dailyBannerText}>
-              Inventory · {logsInventorySummary.lots} lot{logsInventorySummary.lots === 1 ? '' : 's'}
-              {` · ${logsInventorySummary.totalBoxes} boxes`}
+              Inventory Â· {logsInventorySummary.lots} lot{logsInventorySummary.lots === 1 ? '' : 's'}
+              {` Â· ${logsInventorySummary.totalBoxes} boxes`}
             </Text>
           </View>
 
           {isBlockingListLoad(reportsLoading, reportsRefreshing, filteredLogsInventoryRows.length) ? (
             <View style={styles.reportsCenterState}>
               <ActivityIndicator size="large" color="#003580" />
-              <Text style={styles.reportsStateText}>Loading inventory…</Text>
+              <Text style={styles.reportsStateText}>Loading inventoryâ€¦</Text>
             </View>
           ) : reportsError && filteredLogsInventoryRows.length === 0 ? (
             <InlineErrorState message={reportsError} onRetry={loadReports} icon="warning-outline" />
@@ -2579,7 +2579,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                     <View style={{ paddingVertical: 14, alignItems: 'center' }}>
                       <ActivityIndicator size="small" color="#003580" />
                       <Text style={{ marginTop: 6, fontSize: 11, color: '#64748b', fontWeight: '600' }}>
-                        Loading more…
+                        Loading moreâ€¦
                       </Text>
                     </View>
                   ) : null
@@ -2599,7 +2599,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                   reportsRefreshing,
                   filteredLogsInventoryRows.length
                 )}
-                label="Updating inventory…"
+                label="Updating inventoryâ€¦"
               />
             </View>
           )}
@@ -2629,25 +2629,25 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                 <Text style={styles.inwardReportDateInline}>{`  ${item.inward_entry_date || ''}`}</Text>
               </Text>
               <Text style={styles.inwardReportClient} numberOfLines={1}>
-                {item.inward_client_name || item.client_name || '—'}
-                {item.inward_vehicle_no ? ` · ${item.inward_vehicle_no}` : ''}
-                {item.inward_dock_no ? ` · Dock ${item.inward_dock_no}` : ''}
+                {item.inward_client_name || item.client_name || 'â€”'}
+                {item.inward_vehicle_no ? ` Â· ${item.inward_vehicle_no}` : ''}
+                {item.inward_dock_no ? ` Â· Dock ${item.inward_dock_no}` : ''}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
           </View>
           <View style={styles.inwardReportStatsRow}>
             <View style={styles.inwardReportStat}>
-              <Text style={styles.inwardReportStatLabel}>Veh °C</Text>
-              <Text style={styles.inwardReportStatValue}>{item.inward_vehicle_temp ?? '—'}</Text>
+              <Text style={styles.inwardReportStatLabel}>Veh Â°C</Text>
+              <Text style={styles.inwardReportStatValue}>{item.inward_vehicle_temp ?? 'â€”'}</Text>
             </View>
             <View style={styles.inwardReportStat}>
-              <Text style={styles.inwardReportStatLabel}>Mat °C</Text>
-              <Text style={styles.inwardReportStatValue}>{item.inward_material_temp ?? '—'}</Text>
+              <Text style={styles.inwardReportStatLabel}>Mat Â°C</Text>
+              <Text style={styles.inwardReportStatValue}>{item.inward_material_temp ?? 'â€”'}</Text>
             </View>
             <View style={styles.inwardReportStat}>
               <Text style={styles.inwardReportStatLabel}>Received</Text>
-              <Text style={styles.inwardReportStatValue}>{received ?? '—'}</Text>
+              <Text style={styles.inwardReportStatValue}>{received ?? 'â€”'}</Text>
             </View>
             <View style={styles.inwardReportStat}>
               <Text style={styles.inwardReportStatLabel}>
@@ -2685,27 +2685,27 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                 <Text style={styles.inwardReportDateInline}>{`  ${item.outward_entry_date || ''}`}</Text>
               </Text>
               <Text style={styles.inwardReportClient} numberOfLines={1}>
-                {item.outward_client_name || item.client_name || '—'}
-                {item.outward_vehicle_no ? ` · ${item.outward_vehicle_no}` : ''}
-                {item.outward_dock_no ? ` · Dock ${item.outward_dock_no}` : ''}
+                {item.outward_client_name || item.client_name || 'â€”'}
+                {item.outward_vehicle_no ? ` Â· ${item.outward_vehicle_no}` : ''}
+                {item.outward_dock_no ? ` Â· Dock ${item.outward_dock_no}` : ''}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
           </View>
           <View style={styles.inwardReportStatsRow}>
             <View style={styles.inwardReportStat}>
-              <Text style={styles.inwardReportStatLabel}>Pre °C</Text>
+              <Text style={styles.inwardReportStatLabel}>Pre Â°C</Text>
               <Text style={styles.inwardReportStatValue}>
-                {item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp ?? '—'}
+                {item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp ?? 'â€”'}
               </Text>
             </View>
             <View style={styles.inwardReportStat}>
-              <Text style={styles.inwardReportStatLabel}>Mat °C</Text>
-              <Text style={styles.inwardReportStatValue}>{item.outward_material_temp ?? '—'}</Text>
+              <Text style={styles.inwardReportStatLabel}>Mat Â°C</Text>
+              <Text style={styles.inwardReportStatValue}>{item.outward_material_temp ?? 'â€”'}</Text>
             </View>
             <View style={styles.inwardReportStat}>
               <Text style={styles.inwardReportStatLabel}>Loaded</Text>
-              <Text style={styles.inwardReportStatValue}>{loaded ?? '—'}</Text>
+              <Text style={styles.inwardReportStatValue}>{loaded ?? 'â€”'}</Text>
             </View>
             <View style={styles.inwardReportStat}>
               <Text style={styles.inwardReportStatLabel}>
@@ -2722,12 +2722,12 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
 
     const rightValue =
       item.box_temp != null
-        ? `${item.box_temp}°C`
+        ? `${item.box_temp}Â°C`
         : item.chamber_temp != null
-          ? `${item.chamber_temp}°C`
+          ? `${item.chamber_temp}Â°C`
           : item.box_count != null
             ? `${item.box_count}`
-            : '—';
+            : 'â€”';
     return (
       <TouchableOpacity
         style={styles.compactLogCard}
@@ -2742,11 +2742,11 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
             </Text>
           </View>
           <Text style={styles.logMeta} numberOfLines={2}>
-            {item.chamber_name || '—'}
-            {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
-            {' · '}
-            {String(item.formatted_date || item.entry_date || '').slice(0, 10) || '—'}
-            {item.shift ? ` · ${item.shift}` : ''}
+            {item.chamber_name || 'â€”'}
+            {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
+            {' Â· '}
+            {String(item.formatted_date || item.entry_date || '').slice(0, 10) || 'â€”'}
+            {item.shift ? ` Â· ${item.shift}` : ''}
           </Text>
         </View>
         <Text style={styles.logTemp}>{rightValue}</Text>
@@ -2773,8 +2773,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
       const shortQty = parseInt(item.inward_short_received_boxes_qty, 10) || 0;
       const excessQty = parseInt(item.inward_excess_received_boxes_qty, 10) || 0;
       const damageQty = parseInt(item.inward_damage_received_boxes_qty, 10) || 0;
-      const recordWarehouse = item.warehouse_name || '—';
-      const recordOperator = item.operator_email || '—';
+      const recordWarehouse = item.warehouse_name || 'â€”';
+      const recordOperator = item.operator_email || 'â€”';
       const operatorLabel = recordOperator.includes('@') ? recordOperator.split('@')[0] : recordOperator;
       const sections = [
         {
@@ -2816,8 +2816,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
         {
           title: 'Temperature & Quantity',
           rows: [
-            ['Vehicle temp', item.inward_vehicle_temp != null ? `${item.inward_vehicle_temp}°C` : null],
-            ['Material temp', item.inward_material_temp != null ? `${item.inward_material_temp}°C` : null],
+            ['Vehicle temp', item.inward_vehicle_temp != null ? `${item.inward_vehicle_temp}Â°C` : null],
+            ['Material temp', item.inward_material_temp != null ? `${item.inward_material_temp}Â°C` : null],
             ['Pallets in', item.inward_pallets_in_qty],
             ['Invoice boxes', item.inward_invoice_qty],
             ['Boxes received', item.inward_received_boxes_qty ?? item.inward_received_qty],
@@ -2842,21 +2842,21 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
               <View style={{ flex: 1 }}>
                 <Text style={styles.doDetailTitle} numberOfLines={1}>Inward details</Text>
                 <Text style={styles.doDetailSub} numberOfLines={2}>
-                  {item.reference_no || `INW-${item.inward_id}`} · {item.inward_client_name || item.client_name || 'Client'}
+                  {item.reference_no || `INW-${item.inward_id}`} Â· {item.inward_client_name || item.client_name || 'Client'}
                   {'\n'}
-                  {recordWarehouse} · {operatorLabel}
+                  {recordWarehouse} Â· {operatorLabel}
                 </Text>
               </View>
             </View>
             <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
               <View style={styles.doDetailHeroCard}>
                 <Text style={styles.doDetailHeroTemp}>
-                  {item.inward_material_temp != null ? `${item.inward_material_temp}°C` : '—'}
+                  {item.inward_material_temp != null ? `${item.inward_material_temp}Â°C` : 'â€”'}
                 </Text>
                 <Text style={styles.doDetailHeroMeta}>
                   {recordWarehouse}
-                  {item.inward_entry_date ? ` · ${item.inward_entry_date}` : ''}
-                  {' · Material temp'}
+                  {item.inward_entry_date ? ` Â· ${item.inward_entry_date}` : ''}
+                  {' Â· Material temp'}
                 </Text>
               </View>
               {sections.map((section) => (
@@ -2887,8 +2887,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
       const excessQty = parseInt(item.outward_excess_received_boxes_qty, 10) || 0;
       const damageQty = parseInt(item.outward_damage_received_boxes_qty, 10) || 0;
       const preVehicleTemp = item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp;
-      const recordWarehouse = item.warehouse_name || '—';
-      const recordOperator = item.operator_email || '—';
+      const recordWarehouse = item.warehouse_name || 'â€”';
+      const recordOperator = item.operator_email || 'â€”';
       const operatorLabel = recordOperator.includes('@') ? recordOperator.split('@')[0] : recordOperator;
       const sections = [
         {
@@ -2930,8 +2930,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
         {
           title: 'Temperature & Quantity',
           rows: [
-            ['Pre vehicle temp', preVehicleTemp != null ? `${preVehicleTemp}°C` : null],
-            ['Material temp', item.outward_material_temp != null ? `${item.outward_material_temp}°C` : null],
+            ['Pre vehicle temp', preVehicleTemp != null ? `${preVehicleTemp}Â°C` : null],
+            ['Material temp', item.outward_material_temp != null ? `${item.outward_material_temp}Â°C` : null],
             ['Pallets out', item.outward_pallets_in_qty],
             ['Invoice boxes', item.outward_invoice_qty],
             ['Boxes loaded', item.outward_received_boxes_qty ?? item.outward_received_qty],
@@ -2956,21 +2956,21 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
               <View style={{ flex: 1 }}>
                 <Text style={styles.doDetailTitle} numberOfLines={1}>Outward details</Text>
                 <Text style={styles.doDetailSub} numberOfLines={2}>
-                  {item.reference_no || `OUT-${item.outward_id}`} · {item.outward_client_name || item.client_name || 'Client'}
+                  {item.reference_no || `OUT-${item.outward_id}`} Â· {item.outward_client_name || item.client_name || 'Client'}
                   {'\n'}
-                  {recordWarehouse} · {operatorLabel}
+                  {recordWarehouse} Â· {operatorLabel}
                 </Text>
               </View>
             </View>
             <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
               <View style={styles.doDetailHeroCard}>
                 <Text style={styles.doDetailHeroTemp}>
-                  {item.outward_material_temp != null ? `${item.outward_material_temp}°C` : '—'}
+                  {item.outward_material_temp != null ? `${item.outward_material_temp}Â°C` : 'â€”'}
                 </Text>
                 <Text style={styles.doDetailHeroMeta}>
                   {recordWarehouse}
-                  {item.outward_entry_date ? ` · ${item.outward_entry_date}` : ''}
-                  {' · Material temp'}
+                  {item.outward_entry_date ? ` Â· ${item.outward_entry_date}` : ''}
+                  {' Â· Material temp'}
                 </Text>
               </View>
               {sections.map((section) => (
@@ -2999,10 +2999,10 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
     const imagePath = pickLogImage(item);
     const tempText =
       item.box_temp != null
-        ? `${item.box_temp}°C`
+        ? `${item.box_temp}Â°C`
         : item.chamber_temp != null
-          ? `${item.chamber_temp}°C`
-          : '—';
+          ? `${item.chamber_temp}Â°C`
+          : 'â€”';
 
     return (
       <Modal visible animationType="slide" onRequestClose={() => setSelectedLog(null)}>
@@ -3015,7 +3015,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
             <View style={{ flex: 1 }}>
               <Text style={styles.doDetailTitle} numberOfLines={1}>Chamber log</Text>
               <Text style={styles.doDetailSub} numberOfLines={1}>
-                {item.chamber_name || 'Chamber'} · {item.client_name || 'Client'}
+                {item.chamber_name || 'Chamber'} Â· {item.client_name || 'Client'}
               </Text>
             </View>
           </View>
@@ -3023,8 +3023,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
             <View style={styles.doDetailHeroCard}>
               <Text style={styles.doDetailHeroTemp}>{tempText}</Text>
               <Text style={styles.doDetailHeroMeta}>
-                {item.box_count != null && item.box_count !== '' ? `${item.box_count} boxes` : 'Box qty —'}
-                {item.shift ? ` · ${item.shift}` : ''}
+                {item.box_count != null && item.box_count !== '' ? `${item.box_count} boxes` : 'Box qty â€”'}
+                {item.shift ? ` Â· ${item.shift}` : ''}
               </Text>
             </View>
             <View style={styles.doDetailCard}>
@@ -3087,7 +3087,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
               </Text>
               <Text style={styles.excelSub} numberOfLines={1}>
                 {selectedReport?.warehouse_name || 'Warehouse'}
-                {selectedReport?.chamber_name ? ` · ${selectedReport.chamber_name}` : ''}
+                {selectedReport?.chamber_name ? ` Â· ${selectedReport.chamber_name}` : ''}
               </Text>
             </View>
             <TouchableOpacity onPress={closeReportDetail}>
@@ -3108,8 +3108,8 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
               ]}
             >
               {outOfStock
-                ? 'Out of stock · Total boxes 0'
-                : `Total boxes · ${totalBoxes}`}
+                ? 'Out of stock Â· Total boxes 0'
+                : `Total boxes Â· ${totalBoxes}`}
             </Text>
           </View>
 
@@ -3125,7 +3125,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
           {reportHistoryLoading ? (
             <View style={styles.centerState}>
               <ActivityIndicator size="large" color="#003580" />
-              <Text style={styles.stateText}>Loading day records…</Text>
+              <Text style={styles.stateText}>Loading day recordsâ€¦</Text>
             </View>
           ) : reportHistoryError ? (
             <View style={styles.centerState}>
@@ -3147,17 +3147,17 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
               ) : (
                 reportHistory.map((row, idx) => {
                   const dateLabel =
-                    String(row.formatted_date || row.entry_date || '').slice(0, 10) || '—';
+                    String(row.formatted_date || row.entry_date || '').slice(0, 10) || 'â€”';
                   const timeLabel = formatReportTime(row);
                   const temp =
                     row.box_temp != null
-                      ? `${row.box_temp}°C`
+                      ? `${row.box_temp}Â°C`
                       : row.chamber_temp != null
-                        ? `${row.chamber_temp}°C`
-                        : '—';
+                        ? `${row.chamber_temp}Â°C`
+                        : 'â€”';
                   const qty = row._qty != null ? row._qty : null;
-                  const inQty = row._inQty != null ? row._inQty : '—';
-                  const outQty = row._outQty != null ? row._outQty : '—';
+                  const inQty = row._inQty != null ? row._inQty : 'â€”';
+                  const outQty = row._outQty != null ? row._outQty : 'â€”';
 
                   return (
                     <View
@@ -3177,7 +3177,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                         style={[
                           styles.excelCell,
                           styles.excelColIn,
-                          inQty !== '—' && inQty !== '0' && styles.excelIn
+                          inQty !== 'â€”' && inQty !== '0' && styles.excelIn
                         ]}
                         numberOfLines={1}
                       >
@@ -3187,7 +3187,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                         style={[
                           styles.excelCell,
                           styles.excelColOut,
-                          outQty !== '—' && outQty !== '0' && styles.excelOut
+                          outQty !== 'â€”' && outQty !== '0' && styles.excelOut
                         ]}
                         numberOfLines={1}
                       >
@@ -3197,7 +3197,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                         style={[styles.excelCell, styles.excelColQty, styles.excelQty]}
                         numberOfLines={1}
                       >
-                        {qty == null ? '—' : qty}
+                        {qty == null ? 'â€”' : qty}
                       </Text>
                     </View>
                   );
@@ -3282,7 +3282,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                 {homeLoading && !homeRefreshing ? (
                   <View style={styles.centerState}>
                     <ActivityIndicator size="large" color="#003580" />
-                    <Text style={styles.stateText}>Loading today logs…</Text>
+                    <Text style={styles.stateText}>Loading today logsâ€¦</Text>
                   </View>
                 ) : homeError ? (
                   <InlineErrorState message={homeError} onRetry={loadHomeOverview} />
@@ -3327,7 +3327,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                         <View style={styles.cardTitleRow}>
                           <Text style={styles.cardTitle}>Log changes</Text>
                           <TouchableOpacity onPress={() => setActiveTab('Logs')} activeOpacity={0.85}>
-                            <Text style={styles.linkText}>View all →</Text>
+                            <Text style={styles.linkText}>View all â†’</Text>
                           </TouchableOpacity>
                         </View>
                         {homeUpdates.map((item, idx) => (
@@ -3343,17 +3343,17 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                             <View style={{ flex: 1, minWidth: 0 }}>
                               <Text style={styles.recentClient} numberOfLines={1}>
                                 {item.client_name || 'Client'}
-                                {item.chamber_name ? ` · ${item.chamber_name}` : ''}
+                                {item.chamber_name ? ` Â· ${item.chamber_name}` : ''}
                               </Text>
                               <Text style={styles.recentMeta} numberOfLines={2}>
                                 {formatUpdatePreview(item)}
                               </Text>
                               <Text style={styles.updateMetaLine} numberOfLines={1}>
                                 {String(item.formatted_date || item.entry_date || '').slice(0, 10) ||
-                                  '—'}
-                                {item.shift ? ` · ${item.shift}` : ''}
+                                  'â€”'}
+                                {item.shift ? ` Â· ${item.shift}` : ''}
                                 {Number(item.update_count) > 0
-                                  ? ` · ${item.update_count} update${
+                                  ? ` Â· ${item.update_count} update${
                                       Number(item.update_count) === 1 ? '' : 's'
                                     }`
                                   : ''}
@@ -3368,7 +3368,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                       <View style={styles.cardTitleRow}>
                         <Text style={styles.cardTitle}>Today logs</Text>
                         <TouchableOpacity onPress={() => setActiveTab('Logs')} activeOpacity={0.85}>
-                          <Text style={styles.linkText}>View all →</Text>
+                          <Text style={styles.linkText}>View all â†’</Text>
                         </TouchableOpacity>
                       </View>
                       {todayLogItems.length === 0 ? (
@@ -3386,17 +3386,17 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                                 {item.client_name || 'Client'}
                               </Text>
                               <Text style={styles.recentMeta} numberOfLines={1}>
-                                {item.chamber_name || 'Chamber'} ·{' '}
-                                {item.shift || item.inspection_time || '—'}
-                                {item.warehouse_name ? ` · ${item.warehouse_name}` : ''}
+                                {item.chamber_name || 'Chamber'} Â·{' '}
+                                {item.shift || item.inspection_time || 'â€”'}
+                                {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
                               </Text>
                             </View>
                             <Text style={styles.recentTemp}>
                               {item.box_temp != null
-                                ? `${item.box_temp}°C`
+                                ? `${item.box_temp}Â°C`
                                 : item.chamber_temp != null
-                                  ? `${item.chamber_temp}°C`
-                                  : '—'}
+                                  ? `${item.chamber_temp}Â°C`
+                                  : 'â€”'}
                             </Text>
                           </TouchableOpacity>
                         ))
@@ -3417,11 +3417,11 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                   </Text>
                   <Text style={styles.profileRow}>
                     <Text style={styles.profileKey}>Email: </Text>
-                    <Text style={styles.profileVal}>{user?.email || '—'}</Text>
+                    <Text style={styles.profileVal}>{user?.email || 'â€”'}</Text>
                   </Text>
                   <Text style={styles.profileRow}>
                     <Text style={styles.profileKey}>Phone: </Text>
-                    <Text style={styles.profileVal}>{user?.phone_no || '—'}</Text>
+                    <Text style={styles.profileVal}>{user?.phone_no || 'â€”'}</Text>
                   </Text>
                   <Text style={styles.profileRow}>
                     <Text style={styles.profileKey}>Clients: </Text>
@@ -3446,7 +3446,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                     style={[styles.queryInput, styles.queryMessageInput]}
                     value={queryMessage}
                     onChangeText={setQueryMessage}
-                    placeholder="Type your query…"
+                    placeholder="Type your queryâ€¦"
                     placeholderTextColor="#94a3b8"
                     multiline
                     textAlignVertical="top"
@@ -3522,7 +3522,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                     'Packaging Solutions'
                   ].map((item) => (
                     <Text key={item} style={styles.aboutBullet}>
-                      • {item}
+                      â€¢ {item}
                     </Text>
                   ))}
 
@@ -3534,7 +3534,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
                     'Collaboration'
                   ].map((item) => (
                     <Text key={item} style={styles.aboutBullet}>
-                      • {item}
+                      â€¢ {item}
                     </Text>
                   ))}
 
@@ -3564,7 +3564,7 @@ export default function CustomerScreen({ user, token, apiUrl, onLogout, onUserUp
         )}
       </View>
 
-      {/* Bottom navigation — same pattern as DO */}
+      {/* Bottom navigation â€” same pattern as DO */}
       <View style={styles.tabBarContainer}>
         {[
           { id: 'Dashboard', label: 'Dashboard', icon: 'home', iconOutline: 'home-outline' },
