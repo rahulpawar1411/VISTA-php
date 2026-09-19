@@ -54,7 +54,7 @@ Catalog CRUD ≠ chamber–client assignments.
 | Mobile errors | Network/session → Retry UI | `mobile/src/utils/userFacingError.js` |
 | Push | Token refresh + dead cleanup | `mobile/src/services/expoPushRegistration.js`, `backend-php/src/Services/ExpoPush.php` |
 
-Roles detail: [`docs/ROLES.md`](docs/ROLES.md)
+Roles detail: [`Rules-and-docs/docs/ROLES.md`](Rules-and-docs/docs/ROLES.md)
 
 ---
 
@@ -79,7 +79,7 @@ Roles detail: [`docs/ROLES.md`](docs/ROLES.md)
 | `do_operator` | Field logging + master-setup *requests* | Field pe logs; chamber/client change pe allow maangta hai |
 | `customer` | Read-scoped portal | Sirf apna scope dekhta hai |
 
-More detail: [`docs/ROLES.md`](docs/ROLES.md)
+More detail: [`Rules-and-docs/docs/ROLES.md`](Rules-and-docs/docs/ROLES.md)
 
 ---
 
@@ -508,7 +508,7 @@ Code already supports this flag in `backend/config/multer.js`:
 6. Photos appear (**local uploads** on deploy — not Cloudinary)  
 7. Customer sees only allowed warehouse/clients  
 
-Backup notes: [`docs/BACKUP.md`](docs/BACKUP.md)
+Backup notes: [`Rules-and-docs/docs/BACKUP.md`](Rules-and-docs/docs/BACKUP.md)
 
 ---
 
@@ -517,7 +517,7 @@ Backup notes: [`docs/BACKUP.md`](docs/BACKUP.md)
 ```bash
 cd backend
 npm start                 # API server (frees port 5000 first)
-npm run db:backup         # DB backup helper (see docs/BACKUP.md)
+npm run db:backup         # DB backup helper (see Rules-and-docs/docs/BACKUP.md)
 npm run logs:archive      # Archive error logs
 ```
 
@@ -525,4 +525,4 @@ npm run logs:archive      # Archive error logs
 
 ## License / notes
 
-Internal ReeferON CRM project. For role rules see `docs/ROLES.md`.
+Internal ReeferON CRM project. For role rules see `Rules-and-docs/docs/ROLES.md`.

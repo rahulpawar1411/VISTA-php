@@ -2,7 +2,7 @@
 
 Pure PHP 8.1+ / MySQL / Apache. No Composer. Works on **Hostinger shared hosting**.
 
-Full first-time steps: see repo root [`HOSTINGER_DEPLOY.md`](../HOSTINGER_DEPLOY.md)
+Full first-time steps: see [`Rules-and-docs/docs/HOSTINGER_DEPLOY.md`](../Rules-and-docs/docs/HOSTINGER_DEPLOY.md)
 
 ## Local (WAMP)
 
