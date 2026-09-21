@@ -1,11 +1,11 @@
 // ====================================================================
-// DO (Data Operator) â€” mobile/src/screens/DashboardScreen.js
+// DO (Data Operator) - mobile/src/screens/DashboardScreen.js
 // --------------------------------------------------------------------
 // Field app for role `do_operator`.
 // Daily work comes from chamber_client_assignments for THIS DO warehouse
-// (not the global catalog). Offline: SQLite queue â†’ syncEngine.
+// (not the global catalog). Offline: SQLite queue -> syncEngine.
 // Chamber / client master edits: request permission; after approve/deny
-// a popup (and push) shows â€” deny includes Admin remark.
+// a popup (and push) shows - deny includes Admin remark.
 // Errors: prefer user-safe Alerts; network/sync failures stay in the queue.
 // ====================================================================
 
@@ -110,7 +110,7 @@ import {
 } from '../utils/captureVerificationPhoto';
 import SplashScreen from './SplashScreen';
 import { dedupeInventoryLots, chamberZoneStyle, normalizeChamberZone, pickComplianceZone } from '../utils/dedupeInventoryLots';
-import { resolveLogImageUrl, splitLogPhotoPaths } from '../utils/customerLogReportHelpers';
+import { resolveLogImageUrl, resolveLogImageUrlCandidates, splitLogPhotoPaths } from '../utils/customerLogReportHelpers';
 import { buildReportReadingRows, latestReadingQty } from '../utils/buildReportReadingRows';
 import { mergeChamberReportLogs } from '../utils/mergeChamberReportLogs';
 import { refreshTaskReminders } from '../utils/taskNotifications';
@@ -152,22 +152,32 @@ function resolveDoImageUrl(raw, baseUrl, folderHint = 'daily_temp_monitor_images
 }
 
 function DoSensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_images' }) {
-  const uri = useMemo(() => {
-    const primary = resolveDoImageUrl(rawPath, apiUrl, folderHint);
-    if (primary) return primary;
-    return resolveDoImageUrl(rawPath, PRODUCTION_API_URL, folderHint);
+  const candidates = useMemo(() => {
+    const urls = [];
+    const push = (u) => {
+      if (u && !urls.includes(u)) urls.push(u);
+    };
+    resolveLogImageUrlCandidates(rawPath, apiUrl, folderHint).forEach(push);
+    const prod = String(PRODUCTION_API_URL || '').replace(/\/$/, '');
+    const current = String(apiUrl || '').replace(/\/$/, '').replace(/\/api$/i, '');
+    if (prod && prod !== current) {
+      resolveLogImageUrlCandidates(rawPath, prod, folderHint).forEach(push);
+    }
+    return urls;
   }, [rawPath, apiUrl, folderHint]);
+  const [idx, setIdx] = useState(0);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
+    setIdx(0);
     setFailed(false);
     setLoading(true);
     setPreviewOpen(false);
-  }, [uri]);
+  }, [rawPath, apiUrl]);
 
-  if (!uri) {
+  if (!candidates.length) {
     return (
       <View style={styles.doDetailImageEmpty}>
         <Ionicons name="image-outline" size={28} color="#94a3b8" />
@@ -183,6 +193,9 @@ function DoSensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_i
       </View>
     );
   }
+
+  const uri = candidates[Math.min(idx, candidates.length - 1)];
+
   return (
     <>
       <TouchableOpacity
@@ -203,8 +216,13 @@ function DoSensorPhotoView({ rawPath, apiUrl, folderHint = 'daily_temp_monitor_i
           onLoadStart={() => setLoading(true)}
           onLoad={() => setLoading(false)}
           onError={() => {
-            setLoading(false);
-            setFailed(true);
+            if (idx + 1 < candidates.length) {
+              setIdx((v) => v + 1);
+              setLoading(true);
+            } else {
+              setLoading(false);
+              setFailed(true);
+            }
           }}
         />
         {!loading ? (
@@ -322,7 +340,7 @@ function LazyNavTabPanel({ isActive, isMounted, paintReady, dataLoading, loading
               includeFontPadding: false,
             }}
           >
-            {loadingLabel || 'Loadingâ€¦'}
+            {loadingLabel || 'Loading...'}
           </Text>
         </View>
       ) : null}
@@ -331,7 +349,7 @@ function LazyNavTabPanel({ isActive, isMounted, paintReady, dataLoading, loading
 }
 
 /**
- * DO field screen â€” warehouse assignments drive tasks; offline SQLite + sync.
+ * DO field screen - warehouse assignments drive tasks; offline SQLite + sync.
  * Master edits go through permission requests (not direct catalog writes).
  */
 export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserUpdate }) {
@@ -447,13 +465,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     const deleted = (draft.clients || []).filter((c) => c._op === 'delete').map((c) => c.client_name);
     const renamed = (draft.clients || []).filter((c) => c._op === 'rename');
     const parts = [];
-    if (typeChanged) parts.push(`Type ${draft.baselineType} â†’ ${draft.type}`);
+    if (typeChanged) parts.push(`Type ${draft.baselineType} -> ${draft.type}`);
     if (added.length) parts.push(`Add ${added.join(', ')}`);
     if (deleted.length) parts.push(`Delete ${deleted.join(', ')}`);
     if (renamed.length) {
-      parts.push(renamed.map((c) => `${c.oldName} â†’ ${c.client_name}`).join(', '));
+      parts.push(renamed.map((c) => `${c.oldName} -> ${c.client_name}`).join(', '));
     }
-    return { typeChanged, added, deleted, renamed, summary: parts.join(' Â· ') };
+    return { typeChanged, added, deleted, renamed, summary: parts.join(' | ') };
   };
 
   const openChamberSetupSavePermission = (chamber) => {
@@ -565,12 +583,12 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     return rows.slice(0, chamberLimit);
   };
 
-  /** UI number from chamber name (Chamber 1 â†’ 01), never raw DB auto-id. */
+  /** UI number from chamber name (Chamber 1 -> 01), never raw DB auto-id. */
   const getChamberDisplayNo = (chamber) => {
     const fromName = String(chamber?.name || '').match(/(\d+)/);
     if (fromName) return String(parseInt(fromName[1], 10)).padStart(2, '0');
     if (chamber?.id != null) return String(chamber.id).padStart(2, '0');
-    return 'â€”';
+    return '-';
   };
 
   /** Approval cards must show Chamber 1/2 from the name, never DB id 10/12. */
@@ -608,7 +626,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     if (fromPipe && !/^#?\d+$/.test(fromPipe)) return fromPipe;
 
     const grantName = (
-      text.match(/(?:Add|Edit|delete)\s+chamber\s*[Â·:]\s*([^Â·|]+)/i) || []
+      text.match(/(?:Add|Edit|delete)\s+chamber\s*[ | :]\s*([^ | |]+)/i) || []
     )[1];
     if (grantName && String(grantName).trim() && !/^#?\d+$/.test(grantName.trim())) {
       return String(grantName).trim();
@@ -668,7 +686,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       `${when} | ${displayName} saved Master Setup for ${chamberName}`
     ];
     if (info.typeChanged) {
-      lines.push(`Chamber type: ${draft.baselineType} â†’ ${draft.type}`);
+      lines.push(`Chamber type: ${draft.baselineType} -> ${draft.type}`);
     }
     if (info.added.length) {
       lines.push(`Client added: ${info.added.join(', ')}`);
@@ -678,7 +696,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
     if (info.renamed.length) {
       lines.push(
-        `Client renamed: ${info.renamed.map((c) => `${c.oldName} â†’ ${c.client_name}`).join(', ')}`
+        `Client renamed: ${info.renamed.map((c) => `${c.oldName} -> ${c.client_name}`).join(', ')}`
       );
     }
     if (remark) {
@@ -850,7 +868,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const [inventoryHistoryError, setInventoryHistoryError] = useState('');
   const [selectedReportLog, setSelectedReportLog] = useState(null); // Customer-style log detail from inventory day row
   const [editingExistingLog, setEditingExistingLog] = useState(null); // local completed log being edited after SA approval
-  const [updateTimeInput, setUpdateTimeInput] = useState(''); // HH:mm on edit form â†’ saved as inspection_time + updated_at
+  const [updateTimeInput, setUpdateTimeInput] = useState(''); // HH:mm on edit form -> saved as inspection_time + updated_at
   const [permissionModal, setPermissionModal] = useState({
     isOpen: false,
     status: 'None',
@@ -1258,7 +1276,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     currentNavTab
   ]);
 
-  // Schedule morning/evening reminders â€” skip if that shift is already completed today
+  // Schedule morning/evening reminders - skip if that shift is already completed today
   useEffect(() => {
     if (isLoadingData) return undefined;
 
@@ -1308,7 +1326,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     };
   }, [apiUrl, token]);
 
-  // Tap notification â†’ open Tasks (shift reminder) or permission decisions
+  // Tap notification -> open Tasks (shift reminder) or permission decisions
   useEffect(() => {
     const openFromNotificationData = async (data = {}) => {
       if (data.type === 'permission_decision') {
@@ -1358,7 +1376,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   }, []);
 
   const performLogout = useCallback(() => {
-    // End session immediately â€” never block logout on network / push cleanup
+    // End session immediately - never block logout on network / push cleanup
     const done = onLogout?.();
     clearExpoPushToken({ apiUrl, authToken: token }).catch(() => {});
     try {
@@ -1600,7 +1618,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     slideTabIndicator(getBottomTabIndex(currentNavTab), tabBarWidthRef.current, true);
   }, [currentNavTab, slideTabIndicator]);
 
-  // Sync state update when prop changes â€” removed (IP config is on Login only)
+  // Sync state update when prop changes - removed (IP config is on Login only)
 
   // Pre-select shift based on active shift filter when modal opens in editable mode
   useEffect(() => {
@@ -1639,7 +1657,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       chamberClients[0]?.chamber_type ||
       'Frozen';
     setNewClientType(currentType);
-    // Only when switching chambers â€” do not reset while user taps Frozen/Chilled/Dry
+    // Only when switching chambers - do not reset while user taps Frozen/Chilled/Dry
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [managerSelectedChamber?.id]);
 
@@ -1656,7 +1674,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const already = await AsyncStorage.getItem(purgedKey);
       const n = purgeAutoSeededMasterLotsOnce();
       if (!already) await AsyncStorage.setItem(purgedKey, '1');
-      if (n > 0) console.log(`ðŸ§¹ Cleared ${n} example client row(s) â€” DO will add chamber-wise.`);
+      if (n > 0) console.log(` Cleared ${n} example client row(s) - DO will add chamber-wise.`);
     } catch (_) {}
     try {
       await AsyncStorage.removeItem('chamber_client_targets');
@@ -1755,8 +1773,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     const fromCol = String(notif?.remark || '').trim();
     const desc = String(notif?.description || '');
     const fromDesc = (
-      desc.match(/Admin remark:\s*(.+?)(?:\s*Â·\s*Decided by:|$)/i) ||
-      desc.match(/SA remark:\s*(.+?)(?:\s*Â·\s*Decided by:|$)/i) ||
+      desc.match(/Admin remark:\s*(.+?)(?:\s* | \s*Decided by:|$)/i) ||
+      desc.match(/SA remark:\s*(.+?)(?:\s* | \s*Decided by:|$)/i) ||
       []
     )[1];
     return String(fromCol || fromDesc || '').trim();
@@ -1791,7 +1809,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
   };
 
-  /** Plus / More â†’ open Chambers & Clients master (add/delete chambers within limit). */
+  /** Plus / More -> open Chambers & Clients master (add/delete chambers within limit). */
   const openMasterManager = (options = {}) => {
     const preferredChamber = options.chamber || null;
     const tab = options.tab === 'clients' || options.tab === 'chambers' ? options.tab : 'chambers';
@@ -1813,7 +1831,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
   };
 
-  /** Open Master Setup â†’ Clients tab for a chamber (dashboard empty-client CTA). */
+  /** Open Master Setup -> Clients tab for a chamber (dashboard empty-client CTA). */
   const openMasterSetupAddClients = (chamber = null) => {
     const target =
       chamber ||
@@ -1823,7 +1841,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     openMasterManager({ chamber: target, tab: 'clients' });
   };
 
-  /** Master Setup opens directly â€” no Super Admin allow gate */
+  /** Master Setup opens directly - no Super Admin allow gate */
   const openMasterManagerWithPermission = async () => {
     openMasterManager();
   };
@@ -1887,7 +1905,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        // Permission already used after SA approve â€” still refresh list from server
+        // Permission already used after SA approve - still refresh list from server
         if (res.status === 403) {
           await fetchAndLoadAssignments();
           if (notifIdToComplete) await markPermissionNotificationComplete(notifIdToComplete);
@@ -2176,7 +2194,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         if (!cancelled) {
           const label =
             pendingMeta?.action === 'edit'
-              ? `"${pendingMeta.clientName}" â†’ "${pendingMeta.newName}" on ${pendingMeta.chamberName || 'chamber'}`
+              ? `"${pendingMeta.clientName}" -> "${pendingMeta.newName}" on ${pendingMeta.chamberName || 'chamber'}`
               : `"${pendingMeta?.clientName || 'Client'}" on ${pendingMeta?.chamberName || 'chamber'}`;
           Alert.alert(
             pendingMeta?.action === 'add' ? 'Client Added' : 'Client Master Updated',
@@ -2196,7 +2214,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       Alert.alert('Offline', 'Connect to server to request chamber add.');
       return;
     }
-    // Limit is ignored for the request â€” Super Admin decides on allow
+    // Limit is ignored for the request - Super Admin decides on allow
     const name = String(addChamberNameInput || '').trim();
     const remark = String(addChamberRemarkInput || '').trim();
     if (!name) {
@@ -2282,7 +2300,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       await refreshPermissionNotifications();
       Alert.alert(
         'Request sent to Super Admin',
-        `Super Admin approval is required to add "${name}". After approval, open Notifications â€” the chamber will be assigned automatically.`
+        `Super Admin approval is required to add "${name}". After approval, open Notifications - the chamber will be assigned automatically.`
       );
     } catch (err) {
       Alert.alert('Add Chamber', err.message || 'Could not send request.');
@@ -2291,7 +2309,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
   };
 
-  /** @deprecated â€” use openAddChamberPopup */
+  /** @deprecated - use openAddChamberPopup */
   const handleCreateChamber = () => {
     openAddChamberPopup();
   };
@@ -2467,7 +2485,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         await persistPendingChamberType(chamber.id, pendingPayload);
         Alert.alert(
           'Waiting for Super Admin',
-          `Type change for "${chamber.name}" (${resolvedOld} â†’ ${resolvedNext}) is already pending. It will update automatically after Super Admin allows.`
+          `Type change for "${chamber.name}" (${resolvedOld} -> ${resolvedNext}) is already pending. It will update automatically after Super Admin allows.`
         );
         return false;
       }
@@ -2564,7 +2582,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         `${displayName} requested Super Admin allow to DELETE client "${clientName}" from chamber "${chamber.name}" (id: ${chamber.id}). Remark: ${resolvedRemark}`;
     } else {
       description =
-        `${displayName} requested Super Admin allow to EDIT client "${clientName}" â†’ "${newName}" on chamber "${chamber.name}" (id: ${chamber.id}). Remark: ${resolvedRemark}`;
+        `${displayName} requested Super Admin allow to EDIT client "${clientName}" -> "${newName}" on chamber "${chamber.name}" (id: ${chamber.id}). Remark: ${resolvedRemark}`;
     }
 
     try {
@@ -2575,7 +2593,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const checkData = await checkRes.json().catch(() => ({}));
       if (checkRes.ok && checkData.approved) {
         // Only auto-apply if THIS change was already requested (pending stored).
-        // Live DBs often have leftover GRANTs â€” applying without pending would
+        // Live DBs often have leftover GRANTs - applying without pending would
         // update Master Setup without a new Super Admin allow.
         let pendingMeta = null;
         let hadPending = false;
@@ -2600,7 +2618,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           }
           return true;
         }
-        // Stale allow â€” fall through and send a fresh request
+        // Stale allow - fall through and send a fresh request
       }
       if (checkRes.ok && checkData.status === 'Pending') {
         await persistPendingClientMasterOp(recordId, pendingPayload);
@@ -2631,7 +2649,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (data.request?.status === 'Approved') {
-          // Stale GRANT without a stored pending request â€” do not apply silently.
+          // Stale GRANT without a stored pending request - do not apply silently.
           // Backend now consumes leftover ClientMaster grants; send a fresh request below
           // only if this is not ClientMaster. For safety, still refuse silent apply.
           let hadPending = false;
@@ -2820,14 +2838,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const openPermissionNotificationTask = async (notif) => {
     setShowNotificationsModal(false);
 
-    // Master Setup â€” no allow gate; open manager and dismiss stale allow notifs
+    // Master Setup - no allow gate; open manager and dismiss stale allow notifs
     if (notif.record_type === 'MasterSetup') {
       openMasterManager();
       await markPermissionNotificationComplete(notif.id);
       return;
     }
 
-    // Chamber type allow â€” apply automatically after Super Admin allows
+    // Chamber type allow - apply automatically after Super Admin allows
     if (notif.record_type === 'ChamberType') {
       const desc = `${notif.request_description || ''} ${notif.description || ''}`;
       const fromTo = desc.match(/from\s+([A-Za-z]+)\s+to\s+([A-Za-z]+)/i);
@@ -2985,7 +3003,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return;
     }
 
-    // Client master â€” apply after Super Admin approval (same as chamber type)
+    // Client master - apply after Super Admin approval (same as chamber type)
     if (notif.record_type === 'ClientMaster') {
       const desc = `${notif.request_description || ''} ${notif.description || ''}`;
       const clientMatch =
@@ -3058,7 +3076,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
     if (notif.status === 'Approved') {
       if (localByServerId) {
-        // Open edit form immediately â€” permission already approved
+        // Open edit form immediately - permission already approved
         openEditableLogForm(taskItem, localByServerId);
       } else {
         handleEditCompletedLog(taskItem);
@@ -3067,7 +3085,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       Alert.alert(
         'Edit Denied',
         buildDeniedAlertBody(
-          `Your edit request for ${taskItem.chamber_name} Â· ${taskItem.client_name} Â· ${shiftName} was denied.`,
+          `Your edit request for ${taskItem.chamber_name} | ${taskItem.client_name} | ${shiftName} was denied.`,
           notif
         )
       );
@@ -3121,7 +3139,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       // Load Chamber 1..N; create any missing so dashboard always has tasks
       loadedChambers = await ensureAssignedChambersFromServer();
     } catch (err) {
-      console.log('ðŸ“¶ Device is offline or server unreachable. Using cached assignments.');
+      console.log('“¶ Device is offline or server unreachable. Using cached assignments.');
     } finally {
       if (!sessionRevoked) {
         loadLocalAssignmentsData(loadedChambers);
@@ -3177,7 +3195,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       chambers = [];
     }
 
-    // Bootstrap only when empty â€” do not recreate chambers the user deleted
+    // Bootstrap only when empty - do not recreate chambers the user deleted
     if (!chambers.length && effectiveLimit > 0) {
       for (let i = 1; i <= effectiveLimit; i++) {
         try {
@@ -3240,7 +3258,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       chambers = applyChamberLimit(fromAssign);
     }
 
-    // Still empty â†’ show Chamber 1..limit so tasks appear on dashboard
+    // Still empty -> show Chamber 1..limit so tasks appear on dashboard
     if (chambers.length === 0 && chamberLimit > 0) {
       chambers = Array.from({ length: chamberLimit }, (_, idx) => ({
         id: idx + 1,
@@ -3248,7 +3266,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       }));
     }
 
-    // Empty chambers stay empty â€” DO adds clients chamber-wise in Master Setup
+    // Empty chambers stay empty - DO adds clients chamber-wise in Master Setup
     // (no auto-seed of example clients)
 
     const lots = getClientLotMaster();
@@ -3490,7 +3508,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     fetchChamberLogsForDate(dateStr);
   }, [currentNavTab, selectedReportDate]);
 
-  // Launch phone camera â€” GPS AFTER return (safer). Pending marker survives Android process death.
+  // Launch phone camera - GPS AFTER return (safer). Pending marker survives Android process death.
   const chamberCameraInFlightRef = useRef(false);
   const applyChamberCapturedAsset = useCallback((asset) => {
     if (!asset?.uri) return;
@@ -3527,7 +3545,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
       let result;
       try {
-        // Do NOT start GPS while camera is open â€” that increases process-death risk.
+        // Do NOT start GPS while camera is open - that increases process-death risk.
         result = await launchVerificationCamera();
       } catch (err) {
         await clearPendingCameraCapture();
@@ -3555,7 +3573,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
   };
 
-  // Android may kill Expo Go while system camera is open â€” restore photo on return
+  // Android may kill Expo Go while system camera is open - restore photo on return
   useEffect(() => {
     let cancelled = false;
     const tryRecover = async () => {
@@ -3740,7 +3758,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   };
 
   const handleSelectClientPill = (clientName) => {
-    // Already submitted for this shift â†’ do not re-open for new entry
+    // Already submitted for this shift -> do not re-open for new entry
     if (
       selectedChamber &&
       isClientCompletedToday(selectedChamber.id, clientName, selectedShift) &&
@@ -3780,7 +3798,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     const todayStr = getLocalDateStr();
     const targetDate = selectedTaskDueDate || todayStr;
     const submitNowMs = Date.now();
-    // Always use real photo capture time (never fake as submit) â€” compared with submitNowMs
+    // Always use real photo capture time (never fake as submit) - compared with submitNowMs
     const captureTimeStr = formatDateTime(capturedImageTimestamp);
     const photoVsSubmitMins = getImageTimeDifferenceInMinutes(submitNowMs);
 
@@ -3796,7 +3814,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
       const serverLogId = getServerLogIdForPermission(editingExistingLog);
       const nowTs = formatDateTime(submitNowMs);
-      // Keep original inspection time â€” Update Time / client name are not editable on edit
+      // Keep original inspection time - Update Time / client name are not editable on edit
       const keepInspectionTime =
         editingExistingLog.inspection_time ||
         (editingExistingLog.shift === 'Evening' ? '16:00' : '10:00');
@@ -3982,7 +4000,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         'Inspection Saved',
         chamberFullyDone
           ? `All ${totalClients} client(s) logged for ${selectedChamber.name}. Chamber completed.`
-          : `Saved "${selectedClient}". ${doneAfter}/${totalClients || '?'} done â€” ${remaining} more needed.`,
+          : `Saved "${selectedClient}". ${doneAfter}/${totalClients || '?'} done - ${remaining} more needed.`,
         [
           { text: 'OK' },
           ...(!chamberFullyDone && target != null && remaining > 0 && currentNavTab === 'Tasks'
@@ -4328,7 +4346,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     handleDeleteClient(clientName, selectedChamber);
   };
 
-  // Chamber type is the source of truth â€” every client on that chamber uses the same compliance.
+  // Chamber type is the source of truth - every client on that chamber uses the same compliance.
   const getChamberTypeAndDefault = (chamberId, clientName) => {
     const foundCh = chambersList.find((c) => Number(c.id) === Number(chamberId));
     let dbType = foundCh?.chamber_type || null;
@@ -4371,7 +4389,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     
     const tempVal = hasLogs ? chamberLogs[chamberLogs.length - 1].box_temp : null;
 
-    let displayTemp = '--.-Â°C';
+    let displayTemp = '--.- C';
     let status = 'Pending';
     let statusColor = '#f59e0b';
     let type = pattern.type;
@@ -4403,7 +4421,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     }
 
     if (tempVal !== null) {
-      displayTemp = `${tempVal.toFixed(1)}Â°C`;
+      displayTemp = `${tempVal.toFixed(1)} C`;
     }
 
     return { displayTemp, status, statusColor, type, icon, pillColor, pillBg, hasAlert };
@@ -4498,8 +4516,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
   /**
    * Tasks screen list:
-   * - All / Pending / Overdue â†’ one row per chamber (+ shift)
-   * - Completed â†’ one row per client lot (logged)
+   * - All / Pending / Overdue -> one row per chamber (+ shift)
+   * - Completed -> one row per client lot (logged)
    */
   const getTasksScreenList = (targetTab = activeTab) => {
     let list = [];
@@ -4610,7 +4628,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           shifts.forEach((shift) => {
             const target = getChamberClientTarget(ch.id);
             const doneCount = countLoggedClientsForChamber(ch.id, shift.name, todayStr);
-            // User-typed total (1,2,3,4â€¦) â€” chamber complete only when logged >= target
+            // User-typed total (1,2,3,4...) - chamber complete only when logged >= target
             const clientsTotal = target != null ? target : 0;
             const isDone = target != null && doneCount >= target;
 
@@ -4730,8 +4748,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       log.chamber_type || getChamberTypeAndDefault(item.chamber_id, item.client_name).type
     );
     setLogOperatorName(log.monitor_supervisor_name || displayName);
-    setLogWarehouseName(log.warehouse_name || user?.warehouse_name || 'â€”');
-    setLogOperatorEmail(log.operator_email || user?.email || 'â€”');
+    setLogWarehouseName(log.warehouse_name || user?.warehouse_name || '-');
+    setLogOperatorEmail(log.operator_email || user?.email || '-');
     setLogSyncStatus(log.sync_status || 'synced');
     setLogEntryDate(logDateKey(log.entry_date || log.formatted_date) || targetDate);
     setLogEntryTime(log.inspection_time || item.shift_time || '');
@@ -4813,7 +4831,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   const getServerLogIdForPermission = (log) => {
     if (!log) return null;
     if (log.server_log_id) return Number(log.server_log_id);
-    // Fallback: parse RF-CH-26-0042 â†’ 42
+    // Fallback: parse RF-CH-26-0042 -> 42
     const ref = String(log.reference_no || '');
     const m = ref.match(/(\d+)\s*$/);
     return m ? parseInt(m[1], 10) : null;
@@ -4844,8 +4862,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
   };
 
   /**
-   * Completed task â†’ Edit requires Super Admin permission.
-   * Approved â†’ open edit form; otherwise show permission request popup (SA Role & Permission gets notification).
+   * Completed task -> Edit requires Super Admin permission.
+   * Approved -> open edit form; otherwise show permission request popup (SA Role & Permission gets notification).
    */
   const handleEditCompletedLog = async (item) => {
     const todayStr = getLocalDateStr();
@@ -5029,7 +5047,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const descText =
         `Requested permission to edit Chamber log (Ref: ${log.reference_no || ('ID: ' + serverLogId)})` +
         ` | Client: ${log.client_name || 'N/A'} | Chamber: ${log.chamber_name || 'N/A'}` +
-        ` | Shift: ${log.shift || 'N/A'} | Temp: ${log.box_temp ?? 'N/A'}Â°C` +
+        ` | Shift: ${log.shift || 'N/A'} | Temp: ${log.box_temp ?? 'N/A'} C` +
         ` | Mobile native app`;
 
       const res = await fetch(`${apiUrl}/api/permission-requests`, {
@@ -5371,7 +5389,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             </TouchableOpacity>
           </View>
           <View style={styles.metricsRow}>
-            {/* 0. All Tasks Card â€” chamber count */}
+            {/* 0. All Tasks Card - chamber count */}
             <TouchableOpacity 
               style={[
                 styles.metricCard, 
@@ -5391,7 +5409,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <Text style={styles.metricSubtitle}>Chambers</Text>
             </TouchableOpacity>
 
-            {/* 2. Pending Tasks Card â€” pending chambers */}
+            {/* 2. Pending Tasks Card - pending chambers */}
             <TouchableOpacity 
               style={[
                 styles.metricCard, 
@@ -5411,7 +5429,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <Text style={styles.metricSubtitle}>Chambers</Text>
             </TouchableOpacity>
 
-            {/* 3. Completed Card â€” completed chambers */}
+            {/* 3. Completed Card - completed chambers */}
             <TouchableOpacity 
               style={[
                 styles.metricCard, 
@@ -5431,7 +5449,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <Text style={styles.metricSubtitle}>Chambers</Text>
             </TouchableOpacity>
 
-            {/* 4. Overdue â€” unique overdue chambers */}
+            {/* 4. Overdue - unique overdue chambers */}
             <TouchableOpacity 
               style={[
                 styles.metricCard, 
@@ -5482,8 +5500,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 </Text>
                 <Text style={styles.setupClientsBannerSub}>
                   {allEmpty
-                    ? 'No clients are configured yet. Open Master Setup â†’ Clients to add them.'
-                    : `${emptyClientChambers.length} chamber(s) have no clients â€” tap to add.`}
+                    ? 'No clients are configured yet. Open Master Setup -> Clients to add them.'
+                    : `${emptyClientChambers.length} chamber(s) have no clients - tap to add.`}
                 </Text>
               </View>
               <Text style={styles.setupClientsBannerCta}>Add âž”</Text>
@@ -5538,7 +5556,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       color: needsClients ? '#0369a1' : '#64748b',
                       marginTop: 6
                     }}>
-                      {needsClients ? 'No clients Â· Tap to add' : `${clientCount} client${clientCount === 1 ? '' : 's'}`}
+                      {needsClients ? 'No clients | Tap to add' : `${clientCount} client${clientCount === 1 ? '' : 's'}`}
                     </Text>
                   </View>
 
@@ -5576,7 +5594,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
     return (
       <View style={styles.tabContainer}>
-        {/* Top Filters â€” Reports tab only lists completed tasks */}
+        {/* Top Filters - Reports tab only lists completed tasks */}
         {!completedOnly ? (
         <View style={styles.filterTabsRow}>
           {['All', 'Pending', 'Completed', 'Overdue'].map((tab) => {
@@ -5614,7 +5632,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
         )}
 
-        {/* Chamber & Client Filters â€” bottom sheet (same as DO profile / Daily Reports) */}
+        {/* Chamber & Client Filters - bottom sheet (same as DO profile / Daily Reports) */}
         {(() => {
           const chamberFilterOn = taskChamberFilter !== 'All';
           const clientFilterOn = taskClientFilter !== 'All';
@@ -5904,7 +5922,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 item.shift_label || (item.shift_time === '10:00' ? 'Morning' : 'Evening');
               const isEveningShift =
                 item.shift_time === '16:00' || /evening/i.test(String(shiftLabel));
-              const shiftColor = isEveningShift ? '#2563eb' : '#ca8a04'; // Evening blue Â· Morning yellow (dashboard match)
+              const shiftColor = isEveningShift ? '#2563eb' : '#ca8a04'; // Evening blue | Morning yellow (dashboard match)
 
               const titleText = isChamberRow
                 ? (item.chamber_name || `Chamber ${item.chamber_id}`)
@@ -5939,14 +5957,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   />
 
                   <View style={[styles.taskCardBody, isChamberRow && { alignItems: 'flex-start' }]}>
-                    {/* Card body is display-only â€” All / Pending / Completed: only Record Log or Edit buttons act */}
+                    {/* Card body is display-only - All / Pending / Completed: only Record Log or Edit buttons act */}
                     <View style={styles.taskCardMain} pointerEvents="none">
                       <Text style={styles.taskClientName} numberOfLines={1}>
                         {titleText}
                       </Text>
 
                       <Text style={styles.taskMetaLine} numberOfLines={1}>
-                        {prefixMeta ? `${prefixMeta}  Â·  ` : ''}
+                        {prefixMeta ? `${prefixMeta}  |  ` : ''}
                         <Text style={{ color: shiftColor, fontWeight: '800' }}>{shiftLabel}</Text>
                       </Text>
 
@@ -5965,7 +5983,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       {isCompleted && log && !isChamberRow ? (
                         <View style={styles.taskReadingRow}>
                           <Text style={[styles.readingLoggedText, hasWarning && { color: '#64748b' }]}>
-                            {log.box_temp}Â°C
+                            {log.box_temp} C
                           </Text>
                           <Text style={styles.taskLoggedTime}>
                             {log.inspection_time || item.shift_label || ''}
@@ -6179,7 +6197,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <Ionicons name="chevron-back" size={16} color="#003580" />
             <Text style={{ fontSize: 11, fontWeight: '800', color: '#003580' }}>All Chambers</Text>
             <Text style={{ fontSize: 11, fontWeight: '700', color: '#64748b' }} numberOfLines={1}>
-              {'  Â·  '}{subtitle}
+              {'  |  '}{subtitle}
             </Text>
           </TouchableOpacity>
         ) : (
@@ -6399,7 +6417,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <View style={styles.calendarSheetHandle} />
               <Text style={styles.reportFilterModalTitle}>Select date</Text>
               <Text style={styles.calendarSheetHint}>
-                One day only Â· {dateLabel}
+                One day only | {dateLabel}
               </Text>
               <View style={styles.calendarSheetMonthRow}>
                 <TouchableOpacity
@@ -6545,16 +6563,16 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
     const formatBoxQty = (log) => {
       const raw = log?.box_count ?? log?.physical_audit_count ?? log?.count;
-      if (raw == null || raw === '') return 'â€”';
+      if (raw == null || raw === '') return '-';
       const n = Number(raw);
-      return Number.isFinite(n) ? String(n) : 'â€”';
+      return Number.isFinite(n) ? String(n) : '-';
     };
 
     const formatBoxTemp = (log) => {
       const raw = log?.box_temp ?? log?.chamber_temp ?? log?.temperature;
-      if (raw == null || raw === '') return 'â€”';
+      if (raw == null || raw === '') return '-';
       const n = Number(raw);
-      return Number.isFinite(n) ? `${n}Â°C` : 'â€”';
+      return Number.isFinite(n) ? `${n} C` : '-';
     };
 
     if (drill) {
@@ -6632,10 +6650,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 </Text>
                 <Text style={styles.reportListMeta} numberOfLines={1}>
                   {shiftName}
-                  {'  Â·  '}
+                  {'  |  '}
                   {isDone ? 'Done' : 'Pending'}
-                  {'  Â·  '}Qty {formatBoxQty(log)}
-                  {'  Â·  '}Temp {formatBoxTemp(log)}
+                  {'  |  '}Qty {formatBoxQty(log)}
+                  {'  |  '}Temp {formatBoxTemp(log)}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -6652,7 +6670,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       return (
         <View style={styles.tabContainer}>
           {renderFilterBar(
-            `${chamber.name || 'Chamber'} Â· ${visibleClients.length} client${visibleClients.length === 1 ? '' : 's'}`
+            `${chamber.name || 'Chamber'} | ${visibleClients.length} client${visibleClients.length === 1 ? '' : 's'}`
           )}
           {renderFilterModal()}
           {renderDailyDateCalendar()}
@@ -6691,7 +6709,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
     return (
       <View style={styles.tabContainer}>
-        {renderFilterBar(dateIsToday ? 'Chambers Â· tap View for clients' : `Reports Â· ${dateLabel}`)}
+        {renderFilterBar(dateIsToday ? 'Chambers | tap View for clients' : `Reports | ${dateLabel}`)}
         {renderFilterModal()}
         {renderDailyDateCalendar()}
 
@@ -6796,7 +6814,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           const resolved = normalizeShiftLabel(log.shift || log.inspection_time);
           if (resolved !== reportShiftFilter) return false;
         }
-        // Calendar date range (From â†’ To)
+        // Calendar date range (From -> To)
         const entryDay = logDateKey(log.entry_date || log.formatted_date);
         if (entryDay) {
           const from = reportDateFrom <= reportDateTo ? reportDateFrom : reportDateTo;
@@ -6811,7 +6829,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         return true;
       })
       .sort((a, b) => {
-        // Latest on top: date DESC â†’ Evening before Morning â†’ timestamp DESC â†’ id DESC
+        // Latest on top: date DESC -> Evening before Morning -> timestamp DESC -> id DESC
         const da = String(a.entry_date || '');
         const db = String(b.entry_date || '');
         if (db !== da) return db.localeCompare(da);
@@ -7281,7 +7299,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       const t = to24hTime(c);
       if (t) return t;
     }
-    return 'â€”';
+    return '-';
   };
 
   // Modal to display Client Box Inventory Reports in a dedicated overlay view
@@ -7527,7 +7545,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       <View style={{ flex: 1, paddingRight: 8 }}>
                         <Text style={styles.inventoryClientName}>{item.clientName}</Text>
                         <Text style={styles.inventoryChamberLabel}>
-                          <Text style={{ fontWeight: 'bold', color: '#475569' }}>{item.chamberName}</Text> â€¢ {item.chamberType}
+                          <Text style={{ fontWeight: 'bold', color: '#475569' }}>{item.chamberName}</Text> - {item.chamberType}
                         </Text>
                       </View>
                       <View style={styles.inventoryCountBadge}>
@@ -7555,7 +7573,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       {item.history.slice(0, 3).map((hist, hIdx) => (
                         <View key={hIdx} style={styles.historyRow}>
                           <Text style={styles.historyDate}>{hist.date} ({hist.time})</Text>
-                          <Text style={styles.historyBoxes}>{hist.boxCount} Boxes ({hist.temp}Â°C)</Text>
+                          <Text style={styles.historyBoxes}>{hist.boxCount} Boxes ({hist.temp} C)</Text>
                         </View>
                       ))}
                       
@@ -7685,7 +7703,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                 ? 'Client Add'
                                 : 'Client Delete')
                             : 'Edit Permission'}{' '}
-                      Â· {formattedDate}
+                      | {formattedDate}
                     </Text>
                       <View style={{
                         backgroundColor:
@@ -7728,25 +7746,25 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                               String(notif.request_description || notif.description || '').match(/DELETE client "([^"]+)"/i)?.[1] ||
                               'Client master'
                             )
-                          : `${meta.chamber_name} Â· ${meta.client_name}`}
+                          : `${meta.chamber_name} | ${meta.client_name}`}
                     </Text>
                     <Text style={{ fontSize: 11, fontWeight: '600', color: '#475569', marginBottom: 6 }}>
                       {notif.record_type === 'MasterSetup'
                         ? 'Master Setup (approval not required)'
                         : notif.record_type === 'ChamberType' || /EDIT chamber type/i.test(permText)
-                          ? `Chamber type ${isApproved ? 'approved â€” updating automatically' : 'denied'}`
+                          ? `Chamber type ${isApproved ? 'approved - updating automatically' : 'denied'}`
                         : notif.record_type === 'ChamberMaster'
                           ? `${/ADD chamber/i.test(permText) ? 'Chamber add' : (/EDIT chamber/i.test(permText) ? 'Chamber edit' : 'Chamber delete')} ${isApproved ? 'approved' : 'denied'}`
                           : notif.record_type === 'ClientMaster'
-                            ? `Client change ${isApproved ? 'approved â€” updating automatically' : 'denied'}`
-                          : `${shiftLabel} task Â· Edit ${isApproved ? 'approved' : 'denied'}${meta.reference_no ? ` Â· ${meta.reference_no}` : ''}`}
+                            ? `Client change ${isApproved ? 'approved - updating automatically' : 'denied'}`
+                          : `${shiftLabel} task | Edit ${isApproved ? 'approved' : 'denied'}${meta.reference_no ? ` | ${meta.reference_no}` : ''}`}
                     </Text>
 
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                       <Text style={{ fontSize: 9.5, color: isApproved ? '#16a34a' : '#ef4444', fontWeight: '800' }}>
                         {notif.record_type === 'ChamberMaster' && isApproved
                           ? (/ADD chamber/i.test(permText)
-                            ? 'Tap to assign chamber â†’'
+                            ? 'Tap to assign chamber ->'
                             : /EDIT chamber type/i.test(permText)
                               ? 'Type updates automatically âž”'
                             : /EDIT chamber/i.test(permText)
@@ -7813,7 +7831,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                   <Text style={{ fontSize: 9.5, color: '#ca8a04', fontWeight: '800' }}>
-                    {pendingMorning.length > 0 ? 'Review Tasks â†’' : 'View Details â†’'}
+                    {pendingMorning.length > 0 ? 'Review Tasks ->' : 'View Details ->'}
                   </Text>
                   {pendingMorning.length > 0 && <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#eab308' }} />}
                 </View>
@@ -7859,7 +7877,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Text style={{ fontSize: 9.5, color: '#3b82f6', fontWeight: '800' }}>
-                      {pendingEvening.length > 0 ? 'Review Tasks â†’' : 'View Details â†’'}
+                      {pendingEvening.length > 0 ? 'Review Tasks ->' : 'View Details ->'}
                     </Text>
                     {pendingEvening.length > 0 && <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3b82f6' }} />}
                   </View>
@@ -7906,7 +7924,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   {selectedInventoryItem.clientName}
                 </Text>
                 <Text style={{ fontSize: 10, color: '#93c5fd', marginTop: 1 }} numberOfLines={1}>
-                  History â€¢ <Text style={{ fontWeight: 'bold', color: '#ffffff' }}>{selectedInventoryItem.chamberName}</Text>
+                  History - <Text style={{ fontWeight: 'bold', color: '#ffffff' }}>{selectedInventoryItem.chamberName}</Text>
                 </Text>
               </View>
             </View>
@@ -7961,7 +7979,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       <View style={{ alignItems: 'flex-end' }}>
                         <Text style={{ fontSize: 13, fontWeight: '800', color: '#0f172a' }}>{hist.boxCount} Boxes</Text>
                         {hist.temp !== undefined && hist.temp !== null && (
-                          <Text style={{ fontSize: 11, color: '#475569', marginTop: 3 }}>Temp: {hist.temp}Â°C</Text>
+                          <Text style={{ fontSize: 11, color: '#475569', marginTop: 3 }}>Temp: {hist.temp} C</Text>
                         )}
                       </View>
                     </View>
@@ -7978,7 +7996,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     );
   };
 
-  // C. REPORTS TAB VIEW â€” inventory (Client filter only; no WH / chamber)
+  // C. REPORTS TAB VIEW - inventory (Client filter only; no WH / chamber)
   const renderReportsView = () => {
     const closeReportFilters = () => {
       setShowReportClientDropdown(false);
@@ -8260,7 +8278,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <View style={styles.dailyBanner}>
               <Text style={styles.dailyBannerText}>
                 {inventoryReportSummary.lots} lot{inventoryReportSummary.lots === 1 ? '' : 's'}
-                {` Â· ${inventoryReportSummary.totalBoxes} boxes`}
+                {` | ${inventoryReportSummary.totalBoxes} boxes`}
               </Text>
             </View>
           ) : null}
@@ -8275,7 +8293,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             ) ? (
               <View style={styles.reportsCenterState}>
                 <ActivityIndicator size="large" color="#003580" />
-                <Text style={styles.reportsStateText}>Loading temperature logsâ€¦</Text>
+                <Text style={styles.reportsStateText}>Loading temperature logs...</Text>
               </View>
             ) : chamberReportsError && getFilteredReportLogs().length === 0 ? (
               <View style={styles.reportsCenterState}>
@@ -8298,10 +8316,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 renderItem={({ item }) => {
                   const temp =
                     item.box_temp != null
-                      ? `${item.box_temp}Â°C`
+                      ? `${item.box_temp} C`
                       : item.chamber_temp != null
-                        ? `${item.chamber_temp}Â°C`
-                        : 'â€”';
+                        ? `${item.chamber_temp} C`
+                        : '-';
                   return (
                     <TouchableOpacity
                       style={styles.dailyCard}
@@ -8315,14 +8333,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                           </Text>
                           <Text style={styles.dailyMetaLine} numberOfLines={1}>
                             {item.chamber_name || 'Chamber'}
-                            {item.shift ? ` Â· ${item.shift}` : ''}
-                            {` Â· ${chamberZoneStyle(resolveReportLotType(item)).type}`}
+                            {item.shift ? ` | ${item.shift}` : ''}
+                            {` | ${chamberZoneStyle(resolveReportLotType(item)).type}`}
                           </Text>
                         </View>
                         <View style={styles.totalBoxesCol}>
                           <Text style={styles.totalBoxesValue}>{temp}</Text>
                           <Text style={styles.totalBoxesLabel}>
-                            {item.formatted_date || item.entry_date || 'â€”'}
+                            {item.formatted_date || item.entry_date || '-'}
                           </Text>
                         </View>
                       </View>
@@ -8355,14 +8373,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   reportsRefreshing,
                   getFilteredReportLogs().length
                 )}
-                label="Updating logsâ€¦"
+                label="Updating logs..."
               />
               </View>
             )
           ) : isBlockingListLoad(reportsLoading, reportsRefreshing, filteredInventoryReportRows.length) ? (
             <View style={styles.reportsCenterState}>
               <ActivityIndicator size="large" color="#003580" />
-              <Text style={styles.reportsStateText}>Loading inventoryâ€¦</Text>
+              <Text style={styles.reportsStateText}>Loading inventory...</Text>
             </View>
           ) : reportsError && filteredInventoryReportRows.length === 0 ? (
             <View style={styles.reportsCenterState}>
@@ -8392,7 +8410,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     <View style={{ paddingVertical: 14, alignItems: 'center' }}>
                       <ActivityIndicator size="small" color="#003580" />
                       <Text style={{ marginTop: 6, fontSize: 11, color: '#64748b', fontWeight: '600' }}>
-                        Loading moreâ€¦
+                        Loading more...
                       </Text>
                     </View>
                   ) : null
@@ -8422,7 +8440,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   reportsRefreshing,
                   filteredInventoryReportRows.length
                 )}
-                label="Updating inventoryâ€¦"
+                label="Updating inventory..."
               />
             </View>
           )}
@@ -8444,10 +8462,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   <Text style={styles.invExcelSub} numberOfLines={1}>
                     {selectedInventoryReport?.warehouse_name || user?.warehouse_name || 'Warehouse'}
                     {selectedInventoryReport?.chamber_name
-                      ? ` Â· ${selectedInventoryReport.chamber_name}`
+                      ? ` | ${selectedInventoryReport.chamber_name}`
                       : ''}
                     {selectedInventoryReport
-                      ? ` Â· ${chamberZoneStyle(resolveReportLotType(selectedInventoryReport)).type}`
+                      ? ` | ${chamberZoneStyle(resolveReportLotType(selectedInventoryReport)).type}`
                       : ''}
                   </Text>
                 </View>
@@ -8482,8 +8500,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       ]}
                     >
                       {outOfStock
-                        ? 'Out of stock Â· Total boxes 0'
-                        : `Total boxes Â· ${totalBoxes}`}
+                        ? 'Out of stock | Total boxes 0'
+                        : `Total boxes | ${totalBoxes}`}
                     </Text>
                   </View>
                 );
@@ -8591,7 +8609,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               {inventoryHistoryLoading ? (
                 <View style={styles.reportsCenterState}>
                   <ActivityIndicator size="large" color="#003580" />
-                  <Text style={styles.reportsStateText}>Loading day recordsâ€¦</Text>
+                  <Text style={styles.reportsStateText}>Loading day records...</Text>
                 </View>
               ) : inventoryHistoryError ? (
                 <View style={styles.reportsCenterState}>
@@ -8624,17 +8642,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       ) : (
                         filteredHistory.map((row, idx) => {
                           const dateLabel =
-                            String(row.formatted_date || row.entry_date || '').slice(0, 10) || 'â€”';
+                            String(row.formatted_date || row.entry_date || '').slice(0, 10) || '-';
                           const timeLabel = formatInventoryReportTime(row);
                           const temp =
                             row.box_temp != null
-                              ? `${row.box_temp}Â°C`
+                              ? `${row.box_temp} C`
                               : row.chamber_temp != null
-                                ? `${row.chamber_temp}Â°C`
-                                : 'â€”';
+                                ? `${row.chamber_temp} C`
+                                : '-';
                           const qty = row._qty != null ? row._qty : null;
-                          const inQty = row._inQty != null ? row._inQty : 'â€”';
-                          const outQty = row._outQty != null ? row._outQty : 'â€”';
+                          const inQty = row._inQty != null ? row._inQty : '-';
+                          const outQty = row._outQty != null ? row._outQty : '-';
                           return (
                             <TouchableOpacity
                               key={String(row.id || `${dateLabel}-${idx}`)}
@@ -8655,7 +8673,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                 style={[
                                   styles.invExcelCell,
                                   styles.invExcelColIn,
-                                  inQty !== 'â€”' && inQty !== '0' && { color: '#059669', fontWeight: '800' }
+                                  inQty !== '-' && inQty !== '0' && { color: '#059669', fontWeight: '800' }
                                 ]}
                                 numberOfLines={1}
                               >
@@ -8665,7 +8683,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                 style={[
                                   styles.invExcelCell,
                                   styles.invExcelColOut,
-                                  outQty !== 'â€”' && outQty !== '0' && { color: '#dc2626', fontWeight: '800' }
+                                  outQty !== '-' && outQty !== '0' && { color: '#dc2626', fontWeight: '800' }
                                 ]}
                                 numberOfLines={1}
                               >
@@ -8675,7 +8693,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                 style={[styles.invExcelCell, styles.invExcelColQty, { fontWeight: '800' }]}
                                 numberOfLines={1}
                               >
-                                {qty == null ? 'â€”' : qty}
+                                {qty == null ? '-' : qty}
                               </Text>
                             </TouchableOpacity>
                           );
@@ -8709,9 +8727,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       [
         'Temperature',
         item.box_temp != null
-          ? `${item.box_temp}Â°C`
+          ? `${item.box_temp} C`
           : item.chamber_temp != null
-            ? `${item.chamber_temp}Â°C`
+            ? `${item.chamber_temp} C`
             : null
       ],
       [
@@ -8744,10 +8762,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
 
     const tempText =
       item.box_temp != null
-        ? `${item.box_temp}Â°C`
+        ? `${item.box_temp} C`
         : item.chamber_temp != null
-          ? `${item.chamber_temp}Â°C`
-          : 'â€”';
+          ? `${item.chamber_temp} C`
+          : '-';
 
     const renderDetailRow = (label, value) => {
       if (value == null || value === '') return null;
@@ -8791,8 +8809,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               <Text style={styles.doDetailHeroMeta}>
                 {item.box_count != null && item.box_count !== ''
                   ? `${item.box_count} boxes`
-                  : 'Box qty â€”'}
-                {item.shift ? ` Â· ${item.shift}` : ''}
+                  : 'Box qty -'}
+                {item.shift ? ` | ${item.shift}` : ''}
               </Text>
             </View>
 
@@ -8864,11 +8882,11 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 }
               ]}>
                 {syncStatus === 'syncing'
-                  ? 'Syncingâ€¦'
+                  ? 'Syncing...'
                   : syncStatus === 'failed'
-                    ? `Sync failed Â· ${syncPendingCount} pending`
+                    ? `Sync failed | ${syncPendingCount} pending`
                     : syncStatus === 'partial'
-                      ? `Partial sync Â· ${syncPendingCount} left`
+                      ? `Partial sync | ${syncPendingCount} left`
                       : syncPendingCount > 0
                         ? `${syncPendingCount} item(s) pending`
                         : 'All Synced'}
@@ -8893,7 +8911,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               </Text>
               {syncFailures.slice(0, 4).map((f, idx) => (
                 <Text key={`${f.type}-${idx}`} style={{ fontSize: 10, color: '#64748b', marginBottom: 2 }} numberOfLines={2}>
-                  â€¢ {f.label}: {f.message}
+                  - {f.label}: {f.message}
                 </Text>
               ))}
             </View>
@@ -9086,7 +9104,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                         Chamber - {getChamberDisplayNo(selectedChamber)}
                       </Text>
                       <Text style={{ fontSize: 11, color: '#64748b', fontWeight: 'bold', marginTop: 2 }}>
-                        Compliance: {selectedChamberType} | Target: {selectedChamberType === 'Frozen' ? 'â‰¤ -18.0Â°C' : selectedChamberType === 'Chilled' ? '-5.0Â°C to 5.0Â°C' : '> 0.0Â°C'}
+                        Compliance: {selectedChamberType} | Target: {selectedChamberType === 'Frozen' ? 'â‰¤ -18.0 C' : selectedChamberType === 'Chilled' ? '-5.0 C to 5.0 C' : '> 0.0 C'}
                       </Text>
                     </View>
                   </View>
@@ -9118,7 +9136,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               {/* Vertical Stack Form Design */}
               <View style={{ paddingHorizontal: 4 }}>
                 
-                {/* Chamber Dropdown Selector (FAB '+') â€” inline list (not absolute) so Android does not clip */}
+                {/* Chamber Dropdown Selector (FAB '+') - inline list (not absolute) so Android does not clip */}
                 {openedFromFab && isProfileEditable && (
                   <View style={{ marginBottom: 12, zIndex: 20 }}>
                     <Text style={styles.modalLabel}>Select Chamber</Text>
@@ -9182,7 +9200,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   </View>
                 </View>
 
-                {/* Client Lot Name â€” locked on edit (cannot change client) */}
+                {/* Client Lot Name - locked on edit (cannot change client) */}
                 <View style={{ marginBottom: 12, zIndex: 10 }}>
                     <Text style={styles.modalLabel}>Client Lot Name</Text>
                     {editingExistingLog ? (
@@ -9234,7 +9252,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                               if (ordered.length === 0) {
                                 return (
                                   <Text style={{ padding: 12, fontSize: 12, color: '#94a3b8' }}>
-                      No clients on this chamber yet. Open Master Setup â†’ Clients to add client names for this chamber.
+                      No clients on this chamber yet. Open Master Setup -> Clients to add client names for this chamber.
                                   </Text>
                                 );
                               }
@@ -9367,7 +9385,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   
                   {/* Left: Box Temp */}
                   <View style={{ flex: 1.1, marginRight: 8 }}>
-                    <Text style={styles.modalLabel}>Box Temp Reading (Â°C)</Text>
+                    <Text style={styles.modalLabel}>Box Temp Reading ( C)</Text>
                     {isProfileEditable ? (
                       <>
                         <View style={styles.inputWrapper}>
@@ -9383,14 +9401,14 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                         </View>
                         {selectedChamber && (
                           <Text style={{ fontSize: 9, color: '#475569', marginTop: 4, marginLeft: 2, fontWeight: '600' }}>
-                            Target: {selectedChamberType === 'Frozen' ? 'â‰¤ -18.0Â°C (Frozen)' : selectedChamberType === 'Chilled' ? '-5.0Â°C to 5.0Â°C (Chilled)' : selectedChamberType === 'Dry' ? '15.0Â°C to 25.0Â°C (Dry)' : 'No compliance limit'}
+                            Target: {selectedChamberType === 'Frozen' ? 'â‰¤ -18.0 C (Frozen)' : selectedChamberType === 'Chilled' ? '-5.0 C to 5.0 C (Chilled)' : selectedChamberType === 'Dry' ? '15.0 C to 25.0 C (Dry)' : 'No compliance limit'}
                           </Text>
                         )}
                       </>
                     ) : (
                       <View style={[styles.readOnlyField, { borderLeftWidth: 4, borderLeftColor: hasWarning ? '#ef4444' : '#16a34a' }]}>
                         <Text style={[styles.readOnlyText, { fontWeight: 'bold', color: hasWarning ? '#ef4444' : '#16a34a' }]}>
-                          {tempInput}Â°C
+                          {tempInput} C
                         </Text>
                       </View>
                     )}
@@ -9410,7 +9428,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                             keyboardType="numeric"
                             value={boxCountInput}
                             onChangeText={(text) => {
-                              // Digits only â€” box qty can never go negative
+                              // Digits only - box qty can never go negative
                               const cleaned = String(text || '').replace(/[^\d]/g, '');
                               setBoxCountInput(cleaned);
                             }}
@@ -9675,7 +9693,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                         </View>
                       </View>
 
-                      {/* Edit / Collapse â€” empty chamber edits immediately; clients require SA allow */}
+                      {/* Edit / Collapse - empty chamber edits immediately; clients require SA allow */}
                       <TouchableOpacity
                         style={{
                           backgroundColor: isExpanded ? '#64748b' : '#003580',
@@ -9815,9 +9833,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                                         {type}
                                       </Text>
                                       <Text style={{ fontSize: 7, fontWeight: '700', color: active ? activeTextColor : '#94a3b8', marginTop: 0.5, textAlign: 'center' }}>
-                                        {type === 'Frozen' ? '< -18Â°C' :
-                                         type === 'Chilled' ? '-5Â° to 5Â°C' :
-                                         type === 'Dry' ? '15Â° to 25Â°C' : 'Ambient'}
+                                        {type === 'Frozen' ? '< -18 C' :
+                                         type === 'Chilled' ? '-5 deg to 5 C' :
+                                         type === 'Dry' ? '15 deg to 25 C' : 'Ambient'}
                                       </Text>
                                     </TouchableOpacity>
                                   );
@@ -10245,7 +10263,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                     clientToDelete?.type === 'chamber_delete_request'
                       ? 'Add remark: why you want to delete this chamber'
                       : clientToDelete?.type === 'chamber_type_update'
-                        ? 'Add remark: what type change you want (e.g. Frozen â†’ Chilled)'
+                        ? 'Add remark: what type change you want (e.g. Frozen -> Chilled)'
                         : 'Add remark: what you want to edit (e.g. add/change client)'
                   }
                   placeholderTextColor="#94a3b8"
@@ -10536,7 +10554,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 </Text>
               ) : mode === 'client_rename' ? (
                 <Text style={{ fontSize: 12, color: '#334155' }}>
-                  <Text style={{ fontWeight: '800' }}>Client:</Text> {permissionModal.oldName || '-'} â†’ {permissionModal.newName || '-'}
+                  <Text style={{ fontWeight: '800' }}>Client:</Text> {permissionModal.oldName || '-'} -> {permissionModal.newName || '-'}
                 </Text>
               ) : mode === 'client_add' ? (
                 <Text style={{ fontSize: 12, color: '#334155' }}>
@@ -10544,7 +10562,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 </Text>
               ) : permissionModal.nextType ? (
                 <Text style={{ fontSize: 12, color: '#334155' }}>
-                  <Text style={{ fontWeight: '800' }}>Type:</Text> {permissionModal.oldType || '-'} â†’ {permissionModal.nextType}
+                  <Text style={{ fontWeight: '800' }}>Type:</Text> {permissionModal.oldType || '-'} -> {permissionModal.nextType}
                 </Text>
               ) : null}
             </>
@@ -10568,7 +10586,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               mode === 'chamber_setup'
                 ? 'Add remark: type change / client add / client delete'
                 : mode === 'chamber_type'
-                ? 'Add remark: what type change you want (e.g. Frozen â†’ Chilled)'
+                ? 'Add remark: what type change you want (e.g. Frozen -> Chilled)'
                 : mode === 'client_rename'
                   ? 'Add remark: why this client name is changing'
                   : 'Add remark: what you want to edit (e.g. add/change client)'
@@ -10665,7 +10683,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     );
   };
 
-  // Submission Confirmation Dialog â€” photo capture time vs submit time (new + edit)
+  // Submission Confirmation Dialog - photo capture time vs submit time (new + edit)
   const renderSubmitConfirmModal = () => {
     if (!showSubmitConfirmModal) return null;
 
@@ -10749,13 +10767,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
               if (!isNaN(tempVal)) {
                 if (selectedChamberType === 'Frozen' && tempVal > -18) {
                   isTempNonCompliant = true;
-                  rangeText = '<= -18Â°C';
+                  rangeText = '<= -18 C';
                 } else if (selectedChamberType === 'Chilled' && (tempVal < -5 || tempVal > 5)) {
                   isTempNonCompliant = true;
-                  rangeText = '-5Â°C to 5Â°C';
+                  rangeText = '-5 C to 5 C';
                 } else if (selectedChamberType === 'Dry' && (tempVal < 15 || tempVal > 25)) {
                   isTempNonCompliant = true;
-                  rangeText = '15Â°C to 25Â°C';
+                  rangeText = '15 C to 25 C';
                 }
               }
 
@@ -10779,7 +10797,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                       Non-Compliant Temperature
                     </Text>
                     <Text style={{ fontSize: 10, fontWeight: '600', color: '#d97706', marginTop: 1 }}>
-                      Your temp of {tempVal}Â°C is not good as a compliance {selectedChamberType} (Range: {rangeText}).
+                      Your temp of {tempVal} C is not good as a compliance {selectedChamberType} (Range: {rangeText}).
                     </Text>
                   </View>
                 </View>
@@ -10850,7 +10868,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     return days;
   };
 
-  // Custom month calendar modal â€” pick From then To for report range
+  // Custom month calendar modal - pick From then To for report range
   const renderCalendarModal = () => {
     const days = getCalendarDays(calendarMonth);
     const monthName = calendarMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
@@ -11759,8 +11777,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     const shortQty = parseInt(item.inward_short_received_boxes_qty, 10) || 0;
     const excessQty = parseInt(item.inward_excess_received_boxes_qty, 10) || 0;
     const damageQty = parseInt(item.inward_damage_received_boxes_qty, 10) || 0;
-    const recordWarehouse = item.warehouse_name || user?.warehouse_name || 'â€”';
-    const recordOperator = item.operator_email || user?.email || 'â€”';
+    const recordWarehouse = item.warehouse_name || user?.warehouse_name || '-';
+    const recordOperator = item.operator_email || user?.email || '-';
     const operatorLabel = recordOperator.includes('@')
       ? recordOperator.split('@')[0]
       : recordOperator;
@@ -11805,8 +11823,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       {
         title: 'Temperature & Quantity',
         rows: [
-          ['Vehicle temp', item.inward_vehicle_temp != null ? `${item.inward_vehicle_temp}Â°C` : null],
-          ['Material temp', item.inward_material_temp != null ? `${item.inward_material_temp}Â°C` : null],
+          ['Vehicle temp', item.inward_vehicle_temp != null ? `${item.inward_vehicle_temp} C` : null],
+          ['Material temp', item.inward_material_temp != null ? `${item.inward_material_temp} C` : null],
           ['Pallets in', item.inward_pallets_in_qty],
           ['Invoice boxes', item.inward_invoice_qty],
           ['Boxes received', item.inward_received_boxes_qty ?? item.inward_received_qty],
@@ -11876,9 +11894,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 Inward details
               </Text>
               <Text style={styles.doDetailSub} numberOfLines={2}>
-                {item.reference_no || `INW-${item.inward_id}`} Â· {item.inward_client_name || 'Client'}
+                {item.reference_no || `INW-${item.inward_id}`} | {item.inward_client_name || 'Client'}
                 {'\n'}
-                {recordWarehouse} Â· {operatorLabel}
+                {recordWarehouse} | {operatorLabel}
               </Text>
             </View>
           </View>
@@ -11886,13 +11904,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
             <View style={styles.doDetailHeroCard}>
               <Text style={styles.doDetailHeroTemp}>
-                {item.inward_material_temp != null ? `${item.inward_material_temp}Â°C` : 'â€”'}
+                {item.inward_material_temp != null ? `${item.inward_material_temp} C` : '-'}
               </Text>
               <Text style={styles.doDetailHeroMeta}>
                 {recordWarehouse}
-                {item.inward_entry_date ? ` Â· ${item.inward_entry_date}` : ''}
-                {' Â· Material temp'}
-                {item.inward_vehicle_temp != null ? ` Â· Veh ${item.inward_vehicle_temp}Â°C` : ''}
+                {item.inward_entry_date ? ` | ${item.inward_entry_date}` : ''}
+                {' | Material temp'}
+                {item.inward_vehicle_temp != null ? ` | Veh ${item.inward_vehicle_temp} C` : ''}
               </Text>
             </View>
 
@@ -11906,7 +11924,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <View style={styles.doDetailCard}>
               <Text style={styles.doDetailSectionTitle}>POD Photo</Text>
               <Text style={styles.podUpdateHint}>
-                Add or replace POD later â€” no need to re-fill the full inward form.
+                Add or replace POD later - no need to re-fill the full inward form.
               </Text>
               {podPaths.length > 0 ? (
                 <PhotoGridWithLocation
@@ -11971,7 +11989,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 }}>
         <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Inward Reports</Text>
         <Text style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-          Saved inward entries Â· tap a card for full details
+          Saved inward entries | tap a card for full details
         </Text>
       </View>
 
@@ -11980,7 +11998,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           <Ionicons name="search-outline" size={14} color="#64748b" />
           <TextInput
             style={styles.dockReportSearchInput}
-            placeholder="Search vehicle, client, refâ€¦"
+            placeholder="Search vehicle, client, ref..."
             placeholderTextColor="#94a3b8"
             value={inwardReportSearch}
             onChangeText={setInwardReportSearch}
@@ -12087,7 +12105,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       {isBlockingListLoad(inwardReportsLoading, inwardReportsRefreshing, inwardReportRows.length) ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color="#003580" />
-          <Text style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>Loading reportsâ€¦</Text>
+          <Text style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>Loading reports...</Text>
         </View>
       ) : inwardReportsError && inwardReportRows.length === 0 ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
@@ -12132,7 +12150,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   <Text style={styles.dockReportPageBtnText}>Previous</Text>
                 </TouchableOpacity>
                 <Text style={styles.dockReportPageMeta}>
-                  {(inwardReportPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}â€“
+                  {(inwardReportPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}-
                   {Math.min(inwardReportPage * DOCK_REPORT_PAGE_SIZE, inwardReportTotal)} of{' '}
                   {inwardReportTotal}
                 </Text>
@@ -12166,17 +12184,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             const received = item.inward_received_boxes_qty ?? item.inward_received_qty;
             const rightValue =
               item.inward_material_temp != null
-                ? `${item.inward_material_temp}Â°C`
+                ? `${item.inward_material_temp} C`
                 : item.inward_vehicle_temp != null
-                  ? `${item.inward_vehicle_temp}Â°C`
+                  ? `${item.inward_vehicle_temp} C`
                   : received != null
                     ? String(received)
-                    : 'â€”';
+                    : '-';
             const vehicleOrDock = item.inward_vehicle_no
               ? `Vehicle ${item.inward_vehicle_no}`
               : item.inward_dock_no
                 ? `Dock ${item.inward_dock_no}`
-                : 'â€”';
+                : '-';
             const podVal = String(item.inward_pod_photo || '').trim();
             const podMissing = !podVal || podVal === 'null' || podVal === 'undefined';
             return (
@@ -12199,10 +12217,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   </View>
                   <Text style={styles.dockLogMeta} numberOfLines={2}>
                     {vehicleOrDock}
-                    {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
-                    {' Â· '}
-                    {String(item.inward_entry_date || '').slice(0, 10) || 'â€”'}
-                    {item.inward_material_type ? ` Â· ${item.inward_material_type}` : ''}
+                    {item.warehouse_name ? ` | ${item.warehouse_name}` : ''}
+                    {' | '}
+                    {String(item.inward_entry_date || '').slice(0, 10) || '-'}
+                    {item.inward_material_type ? ` | ${item.inward_material_type}` : ''}
                   </Text>
                 </View>
                 <Text style={styles.dockLogTemp}>{rightValue}</Text>
@@ -12216,7 +12234,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             inwardReportsRefreshing,
             inwardReportRows.length
           )}
-          label="Loading pageâ€¦"
+          label="Loading page..."
         />
         </View>
       )}
@@ -12497,8 +12515,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     const shortQty = parseInt(item.outward_short_received_boxes_qty, 10) || 0;
     const excessQty = parseInt(item.outward_excess_received_boxes_qty, 10) || 0;
     const damageQty = parseInt(item.outward_damage_received_boxes_qty, 10) || 0;
-    const recordWarehouse = item.warehouse_name || user?.warehouse_name || 'â€”';
-    const recordOperator = item.operator_email || user?.email || 'â€”';
+    const recordWarehouse = item.warehouse_name || user?.warehouse_name || '-';
+    const recordOperator = item.operator_email || user?.email || '-';
     const operatorLabel = recordOperator.includes('@')
       ? recordOperator.split('@')[0]
       : recordOperator;
@@ -12544,8 +12562,8 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       {
         title: 'Temperature & Quantity',
         rows: [
-          ['Pre vehicle temp', preVehicleTemp != null ? `${preVehicleTemp}Â°C` : null],
-          ['Material temp', item.outward_material_temp != null ? `${item.outward_material_temp}Â°C` : null],
+          ['Pre vehicle temp', preVehicleTemp != null ? `${preVehicleTemp} C` : null],
+          ['Material temp', item.outward_material_temp != null ? `${item.outward_material_temp} C` : null],
           ['Pallets out', item.outward_pallets_in_qty],
           ['Invoice boxes', item.outward_invoice_qty],
           ['Boxes loaded', item.outward_received_boxes_qty ?? item.outward_received_qty],
@@ -12621,9 +12639,9 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 Outward details
               </Text>
               <Text style={styles.doDetailSub} numberOfLines={2}>
-                {item.reference_no || `OUT-${item.outward_id}`} Â· {item.outward_client_name || 'Client'}
+                {item.reference_no || `OUT-${item.outward_id}`} | {item.outward_client_name || 'Client'}
                 {'\n'}
-                {recordWarehouse} Â· {operatorLabel}
+                {recordWarehouse} | {operatorLabel}
               </Text>
             </View>
           </View>
@@ -12631,13 +12649,13 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           <ScrollView contentContainerStyle={styles.doDetailBody} showsVerticalScrollIndicator={false}>
             <View style={styles.doDetailHeroCard}>
               <Text style={styles.doDetailHeroTemp}>
-                {item.outward_material_temp != null ? `${item.outward_material_temp}Â°C` : 'â€”'}
+                {item.outward_material_temp != null ? `${item.outward_material_temp} C` : '-'}
               </Text>
               <Text style={styles.doDetailHeroMeta}>
                 {recordWarehouse}
-                {item.outward_entry_date ? ` Â· ${item.outward_entry_date}` : ''}
-                {' Â· Material temp'}
-                {preVehicleTemp != null ? ` Â· Pre veh ${preVehicleTemp}Â°C` : ''}
+                {item.outward_entry_date ? ` | ${item.outward_entry_date}` : ''}
+                {' | Material temp'}
+                {preVehicleTemp != null ? ` | Pre veh ${preVehicleTemp} C` : ''}
               </Text>
             </View>
 
@@ -12651,7 +12669,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             <View style={styles.doDetailCard}>
               <Text style={styles.doDetailSectionTitle}>POD Photo</Text>
               <Text style={styles.podUpdateHint}>
-                Add or replace POD later â€” no need to re-fill the full outward form.
+                Add or replace POD later - no need to re-fill the full outward form.
               </Text>
               {podPaths.length > 0 ? (
                 <PhotoGridWithLocation
@@ -12716,7 +12734,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 }}>
         <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Outward Reports</Text>
         <Text style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-          Saved outward entries Â· tap a card for full details
+          Saved outward entries | tap a card for full details
         </Text>
       </View>
 
@@ -12725,7 +12743,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           <Ionicons name="search-outline" size={14} color="#64748b" />
           <TextInput
             style={styles.dockReportSearchInput}
-            placeholder="Search vehicle, client, refâ€¦"
+            placeholder="Search vehicle, client, ref..."
             placeholderTextColor="#94a3b8"
             value={outwardReportSearch}
             onChangeText={setOutwardReportSearch}
@@ -12832,7 +12850,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
       {isBlockingListLoad(outwardReportsLoading, outwardReportsRefreshing, outwardReportRows.length) ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color="#003580" />
-          <Text style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>Loading reportsâ€¦</Text>
+          <Text style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>Loading reports...</Text>
         </View>
       ) : outwardReportsError && outwardReportRows.length === 0 ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
@@ -12877,7 +12895,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   <Text style={styles.dockReportPageBtnText}>Previous</Text>
                 </TouchableOpacity>
                 <Text style={styles.dockReportPageMeta}>
-                  {(outwardReportPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}â€“
+                  {(outwardReportPage - 1) * DOCK_REPORT_PAGE_SIZE + 1}-
                   {Math.min(outwardReportPage * DOCK_REPORT_PAGE_SIZE, outwardReportTotal)} of{' '}
                   {outwardReportTotal}
                 </Text>
@@ -12912,17 +12930,17 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             const preVehicleTemp = item.outward_pre_vehicle_temp ?? item.outward_vehicle_temp;
             const rightValue =
               item.outward_material_temp != null
-                ? `${item.outward_material_temp}Â°C`
+                ? `${item.outward_material_temp} C`
                 : preVehicleTemp != null
-                  ? `${preVehicleTemp}Â°C`
+                  ? `${preVehicleTemp} C`
                   : loaded != null
                     ? String(loaded)
-                    : 'â€”';
+                    : '-';
             const vehicleOrDock = item.outward_vehicle_no
               ? `Vehicle ${item.outward_vehicle_no}`
               : item.outward_dock_no
                 ? `Dock ${item.outward_dock_no}`
-                : 'â€”';
+                : '-';
             const podVal = String(item.outward_pod_photo || '').trim();
             const podMissing = !podVal || podVal === 'null' || podVal === 'undefined';
             return (
@@ -12945,10 +12963,10 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                   </View>
                   <Text style={styles.dockLogMeta} numberOfLines={2}>
                     {vehicleOrDock}
-                    {item.warehouse_name ? ` Â· ${item.warehouse_name}` : ''}
-                    {' Â· '}
-                    {String(item.outward_entry_date || '').slice(0, 10) || 'â€”'}
-                    {item.outward_material_type ? ` Â· ${item.outward_material_type}` : ''}
+                    {item.warehouse_name ? ` | ${item.warehouse_name}` : ''}
+                    {' | '}
+                    {String(item.outward_entry_date || '').slice(0, 10) || '-'}
+                    {item.outward_material_type ? ` | ${item.outward_material_type}` : ''}
                   </Text>
                 </View>
                 <Text style={styles.dockLogTemp}>{rightValue}</Text>
@@ -12962,7 +12980,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
             outwardReportsRefreshing,
             outwardReportRows.length
           )}
-          label="Loading pageâ€¦"
+          label="Loading page..."
         />
         </View>
       )}
@@ -13201,7 +13219,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
     );
   };
 
-  // 5. ADD CHAMBER MODAL (name + remark â†’ SA allow)
+  // 5. ADD CHAMBER MODAL (name + remark -> SA allow)
   const renderAddChamberModal = () => {
     return (
       <Modal
@@ -13259,7 +13277,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
                 onPress={submitAddChamberRequest}
               >
                 <Text style={styles.dialogSaveBtnText}>
-                  {addChamberBusy ? 'Sendingâ€¦' : 'Send Request'}
+                  {addChamberBusy ? 'Sending...' : 'Send Request'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -13286,7 +13304,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
           <View style={styles.dialogContent}>
             <Text style={styles.dialogTitle}>Request New Client Lot</Text>
             <Text style={styles.dialogSubtitle}>
-              Send add request for {selectedChamber?.name}. Super Admin must allow first â€” client will appear automatically after approval.
+              Send add request for {selectedChamber?.name}. Super Admin must allow first - client will appear automatically after approval.
             </Text>
             
             <Text style={[styles.modalLabel, { fontSize: 11, marginBottom: 4 }]}>Client Name</Text>
@@ -13579,7 +13597,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         </View>
       </View>
 
-      {/* Conditional View Rendering â€” switch with menu; lazy-load heavy content/data */}
+      {/* Conditional View Rendering - switch with menu; lazy-load heavy content/data */}
       <LazyNavTabPanel
         isActive={currentNavTab === 'Dashboard'}
         isMounted={!!mountedNavTabs.Dashboard}
@@ -13603,7 +13621,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         isMounted={!!mountedNavTabs.InwardReports}
         paintReady={!!tabPaintReady.InwardReports}
         dataLoading={isBlockingListLoad(inwardReportsLoading, inwardReportsRefreshing, inwardReportRows.length)}
-        loadingLabel="Loading reportsâ€¦"
+        loadingLabel="Loading reports..."
         render={renderInwardReportsView}
       />
       <LazyNavTabPanel
@@ -13611,7 +13629,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         isMounted={!!mountedNavTabs.OutwardReports}
         paintReady={!!tabPaintReady.OutwardReports}
         dataLoading={isBlockingListLoad(outwardReportsLoading, outwardReportsRefreshing, outwardReportRows.length)}
-        loadingLabel="Loading reportsâ€¦"
+        loadingLabel="Loading reports..."
         render={renderOutwardReportsView}
       />
       <LazyNavTabPanel
@@ -13631,7 +13649,7 @@ export default function DashboardScreen({ user, token, apiUrl, onLogout, onUserU
         isMounted={!!mountedNavTabs.Reports}
         paintReady={!!tabPaintReady.Reports}
         dataLoading={isBlockingListLoad(reportsLoading, reportsRefreshing, inventoryReportRows.length)}
-        loadingLabel="Loading reportsâ€¦"
+        loadingLabel="Loading reports..."
         render={renderDailyReportsView}
       />
       <LazyNavTabPanel
@@ -15002,7 +15020,7 @@ const styles = StyleSheet.create({
     width: '100%',
     zIndex: 9999,
   },
-  // Inline (non-absolute) â€” works inside ScrollView on Android
+  // Inline (non-absolute) - works inside ScrollView on Android
   dropdownListInline: {
     marginTop: 6,
     backgroundColor: '#ffffff',
@@ -15703,7 +15721,7 @@ const styles = StyleSheet.create({
     color: '#dbeafe',
   },
 
-  // Reports View Styles â€” match Sub-Admin layout
+  // Reports View Styles - match Sub-Admin layout
   reportsContainer: {
     padding: 14,
     flexGrow: 1,
@@ -16328,7 +16346,7 @@ const styles = StyleSheet.create({
     gap: 6,
     marginTop: 10,
   },
-  /* DO Reports filters â€” same as Sub-Admin filterPanel */
+  /* DO Reports filters - same as Sub-Admin filterPanel */
   doFilterPanel: {
     backgroundColor: '#fff',
     paddingHorizontal: 10,

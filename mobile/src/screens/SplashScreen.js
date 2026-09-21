@@ -13,11 +13,11 @@ import {
 const VISTA_WORDS = ['Visibility', 'Inspection', 'Stock', 'Trust', 'Audit'];
 const SLIDE_FROM = -56;
 
-/** Approximate full intro length (ms) — App can use as fallback wait. */
+/** Approximate full intro length (ms) - App can use as fallback wait. */
 export const SPLASH_ANIMATION_MS = 3200;
 
 /**
- * First-open splash: logo → VISTA → full-form words (L→R) → small spinner under the line.
+ * First-open splash: logo -> VISTA -> full-form words (L->R) -> small spinner under the line.
  * Set playIntro={false} for a static loading frame (e.g. DO data load).
  */
 export default function SplashScreen({
@@ -181,7 +181,7 @@ export default function SplashScreen({
               >
                 <Text style={styles.vistaWord}>{word}</Text>
                 {i < VISTA_WORDS.length - 1 ? (
-                  <Text style={styles.vistaDot}> · </Text>
+                  <Text style={styles.vistaDot}> | </Text>
                 ) : null}
               </Animated.View>
             ))}
@@ -191,7 +191,7 @@ export default function SplashScreen({
         <Animated.View style={[styles.spinnerWrap, { opacity: spinnerOpacity }]}>
           <ActivityIndicator size="small" color="#003580" />
           {showWaitingSpinner ? (
-            <Text style={styles.waitingText}>Loading session…</Text>
+            <Text style={styles.waitingText}>Loading session...</Text>
           ) : null}
         </Animated.View>
       </View>

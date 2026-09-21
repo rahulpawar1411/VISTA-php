@@ -476,7 +476,7 @@ export default function InwardFormView({
     }
   };
 
-  // Android may kill the app while the system camera is open — recover the photo on return
+  // Android may kill the app while the system camera is open - recover the photo on return
   useEffect(() => {
     let cancelled = false;
 
@@ -553,7 +553,7 @@ export default function InwardFormView({
     if (!validation.ok) {
       const keyMap = Object.fromEntries(validation.missingKeys.map((k) => [k, true]));
       setInvalidFields(keyMap);
-      Alert.alert('Step incomplete', validation.missing.map((m) => `• ${m}`).join('\n'));
+      Alert.alert('Step incomplete', validation.missing.map((m) => `- ${m}`).join('\n'));
       return;
     }
     setInvalidFields({});
@@ -584,7 +584,7 @@ export default function InwardFormView({
       if (firstKey) {
         goToStep(getInwardStepForKey(firstKey));
       }
-      Alert.alert('Validation Error', validation.missing.map((m) => `• ${m}`).join('\n'));
+      Alert.alert('Validation Error', validation.missing.map((m) => `- ${m}`).join('\n'));
       return;
     }
 
@@ -693,7 +693,7 @@ export default function InwardFormView({
           ? referenceNo
             ? `Uploaded to server.\nReference: ${referenceNo}`
             : 'Inward record uploaded to server.'
-          : 'Record saved on this phone. It will upload automatically when you are online — tap Sync in More if needed.'
+          : 'Record saved on this phone. It will upload automatically when you are online - tap Sync in More if needed.'
       );
     } catch (err) {
       Alert.alert('Submit Failed', err.message || 'Could not save inward record.');
@@ -737,7 +737,7 @@ export default function InwardFormView({
                 <ActivityIndicator size="large" color="#003580" />
                 <Text style={styles.submitModalLoadingTitle}>Submitting inward record</Text>
                 <Text style={styles.submitModalLoadingText}>
-                  Uploading photos and saving data. Please wait…
+                  Uploading photos and saving data. Please wait...
                 </Text>
               </View>
             ) : (
@@ -762,7 +762,7 @@ export default function InwardFormView({
                   <View style={styles.submitModalInfoRow}>
                     <Text style={styles.submitModalInfoLabel}>Reference photo</Text>
                     <Text style={styles.submitModalInfoValue} numberOfLines={1}>
-                      {refLabel || '—'}
+                      {refLabel || '-'}
                     </Text>
                   </View>
                   <View style={styles.submitModalInfoRow}>
@@ -915,7 +915,7 @@ export default function InwardFormView({
             ]}
             value={form.inward_client_name}
             onChangeText={(v) => updateField('inward_client_name', v)}
-            placeholder="Type client name…"
+            placeholder="Type client name..."
             placeholderTextColor="#94a3b8"
             onFocus={() => {
               setClientNameFocused(true);
@@ -959,7 +959,7 @@ export default function InwardFormView({
         ) : null}
         </View>
         {clientNameFocused && uniqueClients.length === 0 ? (
-          <Text style={styles.suggestHint}>No saved clients — type a new client name.</Text>
+          <Text style={styles.suggestHint}>No saved clients - type a new client name.</Text>
         ) : null}
       </View>
     );
@@ -997,7 +997,7 @@ export default function InwardFormView({
             numberOfLines={1}
           >
             {materialCustomMode && !form.inward_material_type
-              ? 'Other — enter below'
+              ? 'Other - enter below'
               : displayValue}
           </Text>
           <Ionicons
@@ -1123,7 +1123,7 @@ export default function InwardFormView({
             </Text>
             <Text style={styles.photoCardSub}>
               {isMulti ? 'Multiple photos allowed' : 'Single photo'}
-              {!isRequired ? ' · Optional' : ''}
+              {!isRequired ? ' | Optional' : ''}
             </Text>
           </View>
           {hasPhotos ? (
@@ -1427,13 +1427,13 @@ export default function InwardFormView({
           <SectionCard icon="thermometer-outline" title="3. Pre-Unload Check">
             <View style={styles.row2}>
               <View style={styles.row2Item}>
-                {renderInput('inward_vehicle_temp', 'Vehicle Temp (°C)', {
+                {renderInput('inward_vehicle_temp', 'Vehicle Temp (C)', {
                   required: true,
                   keyboardType: 'decimal-pad',
                 })}
               </View>
               <View style={styles.row2Item}>
-                {renderInput('inward_material_temp', 'Material Temp (°C)', {
+                {renderInput('inward_material_temp', 'Material Temp (C)', {
                   required: true,
                   keyboardType: 'decimal-pad',
                 })}
@@ -1559,7 +1559,7 @@ export default function InwardFormView({
             })}
             {renderInput('inward_remarks', 'Remarks (optional)', {
               multiline: true,
-              placeholder: 'Any notes…',
+              placeholder: 'Any notes...',
             })}
           </SectionCard>
         );

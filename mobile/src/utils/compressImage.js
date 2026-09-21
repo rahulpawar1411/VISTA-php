@@ -5,7 +5,7 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import { Image } from 'react-native';
 
-/** JPEG quality 0–1. Sensor text still readable ~0.5–0.6 */
+/** JPEG quality 0-1. Sensor text still readable ~0.5-0.6 */
 const DEFAULT_COMPRESS = 0.55;
 
 /** Cap long edge so full-res phone photos do not blow memory on Android. */

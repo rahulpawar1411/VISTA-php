@@ -1,5 +1,5 @@
 /**
- * Stub for ExpoTopicSubscriptionModule — not present in Expo Go.
+ * Stub for ExpoTopicSubscriptionModule - not present in Expo Go.
  * Matches expo-notifications TopicSubscriptionModule.js (non-Android default).
  */
 const module = {

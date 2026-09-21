@@ -110,7 +110,7 @@ export function PhotoCaptureMetaSection({ metadata }) {
   );
 }
 
-/** Full-screen image viewer — tap photo in details to open. */
+/** Full-screen image viewer - tap photo in details to open. */
 export function ImagePreviewModal({ visible, uri, label, onClose, locationText, lat, lng, timeText }) {
   if (!uri) return null;
   const hasGps =

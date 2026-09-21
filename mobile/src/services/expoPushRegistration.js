@@ -19,7 +19,7 @@ let lastRegisterAt = 0;
 let lastRegisterFingerprint = '';
 let appStateSub = null;
 
-/** Remote FCM push token APIs throw on Android Expo Go — never call them there. */
+/** Remote FCM push token APIs throw on Android Expo Go - never call them there. */
 export function canUseRemotePush() {
   return !isExpoGoAndroid();
 }

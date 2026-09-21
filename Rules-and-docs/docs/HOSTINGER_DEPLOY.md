@@ -3,7 +3,7 @@
 This app is ready for Hostinger shared hosting:
 - API = pure PHP (no Composer / no Node on server)
 - Web = React build (`frontend/dist`)
-- Photos = `backend/uploads/crm/...` (Cloudinary-style names)
+- Photos = `backend/uploads/images/...` (Cloudinary-style filenames, local disk only)
 
 ---
 
@@ -89,7 +89,7 @@ Set production API to `https://api.yourdomain.com`
 | Web opens but login CORS error | Set `FRONTEND_URL=https://yourdomain.com` on API `.env` |
 | Blank page on refresh | Missing `dist/.htaccess` (rebuild so `public/.htaccess` copies in) |
 | Photo upload fail | `uploads` not writable, or PHP upload limit (see `public/.user.ini`) |
-| Images not showing | `VITE_PREFER_CLOUDINARY=false` then rebuild web |
+| Images not showing | Ensure file is under `backend/uploads/images` and API serves `/uploads/...` |
 
 ---
 

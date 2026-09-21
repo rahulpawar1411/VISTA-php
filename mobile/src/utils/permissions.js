@@ -1,5 +1,5 @@
 /**
- * Runtime permission helpers — camera & notifications (Android + iOS).
+ * Runtime permission helpers - camera & notifications (Android + iOS).
  */
 import { Alert, Linking, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
@@ -30,7 +30,7 @@ export async function ensureLocationServicesEnabled({ required = false } = {}) {
       try {
         await Location.enableNetworkProviderAsync();
       } catch (_) {
-        /* ignore — may still be off */
+        /* ignore - may still be off */
       }
     }
 
@@ -152,7 +152,7 @@ export async function ensureLocationPermission({ required = false } = {}) {
  */
 export async function ensureNotificationChannel() {
   if (Platform.OS !== 'android') return;
-  // Expo Go Android: native ChannelsProvider is null — skip (local schedule still works).
+  // Expo Go Android: native ChannelsProvider is null - skip (local schedule still works).
   if (isExpoGoAndroid()) return;
   try {
     await Notifications.setNotificationChannelAsync('task-reminders', {

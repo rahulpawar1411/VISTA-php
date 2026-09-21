@@ -31,7 +31,7 @@ const sameClient = (a, b) =>
     : String(a.client_name || '').toLowerCase() === String(b.client_name || '').toLowerCase();
 
 /**
- * Sub Admin — editable Master Setup for one DO warehouse.
+ * Sub Admin - editable Master Setup for one DO warehouse.
  *
  * Edits chambers + chamber_client_assignments (operational graph).
  * Client picker prefers client_master for that warehouse; custom names
@@ -628,7 +628,7 @@ export default function SubAdminDoMasterSetup({
         );
         const ok = await syncDoChamberLimit(newLimit);
         if (!ok) {
-          throw new Error('Chamber limit update failed. Check DO phone in Admin → DOs.');
+          throw new Error('Chamber limit update failed. Check DO phone in Admin -> DOs.');
         }
       }
 
@@ -754,8 +754,8 @@ export default function SubAdminDoMasterSetup({
             <View style={{ flex: 1 }}>
               <Text style={styles.title}>Chambers & Clients</Text>
               <Text style={styles.sub} numberOfLines={1}>
-                {operatorName || operatorEmail || 'DO'} · {warehouseName || '—'}
-                {hasUnsavedChanges ? ' · Unsaved' : ''}
+                {operatorName || operatorEmail || 'DO'} | {warehouseName || '-'}
+                {hasUnsavedChanges ? ' | Unsaved' : ''}
               </Text>
             </View>
             <TouchableOpacity onPress={requestClose} style={styles.closeBtn} hitSlop={10}>
@@ -880,8 +880,8 @@ export default function SubAdminDoMasterSetup({
                         <View style={{ flex: 1 }}>
                           <Text style={styles.chamberName}>{ch.name}</Text>
                           <Text style={styles.chamberMeta}>
-                            {ch.activeClients.length} active · {ch.deactiveClients.length}{' '}
-                            deactive · {ch.chamber_type}
+                            {ch.activeClients.length} active | {ch.deactiveClients.length}{' '}
+                            deactive | {ch.chamber_type}
                           </Text>
                         </View>
                         <Ionicons
@@ -990,7 +990,7 @@ export default function SubAdminDoMasterSetup({
                                 style={styles.input}
                                 value={clientQuery}
                                 onChangeText={setClientQuery}
-                                placeholder="Search master clients…"
+                                placeholder="Search master clients..."
                                 placeholderTextColor="#94a3b8"
                               />
                               <ScrollView
@@ -1026,7 +1026,7 @@ export default function SubAdminDoMasterSetup({
                                     customClient.trim(),
                                     warehouseName,
                                     warehouseCode
-                                  ) || '—'}
+                                  ) || '-'}
                                 </Text>
                               ) : null}
                               <TouchableOpacity
@@ -1068,7 +1068,7 @@ export default function SubAdminDoMasterSetup({
 
           <View style={styles.footer}>
             {hasUnsavedChanges ? (
-              <Text style={styles.footerHint}>Tap Save & Done to save — back will not save.</Text>
+              <Text style={styles.footerHint}>Tap Save & Done to save - back will not save.</Text>
             ) : null}
             <TouchableOpacity
               style={[styles.doneFooterBtn, busyKey === 'save-all' && { opacity: 0.7 }]}

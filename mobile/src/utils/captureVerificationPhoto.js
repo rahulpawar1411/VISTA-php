@@ -12,7 +12,7 @@ import { stabilizePhotoForDraft } from './formDraftStorage';
 
 const PENDING_KEY = 'pending_camera_capture_v1';
 
-/** Camera JPEG quality — avoid 1.0 (OOM / process death on Android Expo Go). */
+/** Camera JPEG quality - avoid 1.0 (OOM / process death on Android Expo Go). */
 const CAMERA_QUALITY = 0.65;
 
 function mediaTypeImages() {
@@ -163,7 +163,7 @@ export async function captureVerificationPhoto({
 
   let result;
   try {
-    // No GPS work while system camera is open — that was a crash risk.
+    // No GPS work while system camera is open - that was a crash risk.
     result = await launchVerificationCamera();
   } catch (err) {
     await clearPendingCameraCapture();

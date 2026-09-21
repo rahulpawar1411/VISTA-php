@@ -35,7 +35,7 @@ export function normalizeChamberZone(raw) {
   return s;
 }
 
-/** Frozen / Chilled / Dry — ignore stale "Other" from old logs. */
+/** Frozen / Chilled / Dry - ignore stale "Other" from old logs. */
 export function isRealComplianceZone(raw) {
   const t = normalizeChamberZone(raw);
   return t === 'Frozen' || t === 'Chilled' || t === 'Dry';

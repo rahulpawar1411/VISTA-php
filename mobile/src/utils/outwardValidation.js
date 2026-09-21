@@ -1,4 +1,4 @@
-// Client-side outward validation — mirrors backend/web rules
+// Client-side outward validation - mirrors backend/web rules
 
 const REQUIRED_FIELDS = [
   ['outward_entry_date', 'Entry Date'],
@@ -78,7 +78,7 @@ function getExpectedPhoneDigits(countryCode) {
   return 10;
 }
 
-/** Vehicle no — uppercase + auto hyphens (e.g. MH-12-QW-1234), max 10 alnum. */
+/** Vehicle no - uppercase + auto hyphens (e.g. MH-12-QW-1234), max 10 alnum. */
 export function formatVehicleNumber(value) {
   const raw = String(value ?? '')
     .replace(/[^a-zA-Z0-9]/g, '')
@@ -497,7 +497,7 @@ export function getLocalEntryDateTime(date = new Date()) {
   return {
     entryDate,
     timeStr,
-    display: `${day} ${month} ${year} · ${timeStr}`,
+    display: `${day} ${month} ${year} | ${timeStr}`,
   };
 }
 
@@ -585,9 +585,9 @@ function flattenOutwardPhotoEntries(photos) {
 }
 
 export function formatOutwardClockTime(timestamp) {
-  if (!timestamp) return '—';
+  if (!timestamp) return '-';
   const dateObj = new Date(timestamp);
-  if (Number.isNaN(dateObj.getTime())) return '—';
+  if (Number.isNaN(dateObj.getTime())) return '-';
   const hh = String(dateObj.getHours()).padStart(2, '0');
   const min = String(dateObj.getMinutes()).padStart(2, '0');
   const ss = String(dateObj.getSeconds()).padStart(2, '0');

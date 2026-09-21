@@ -89,7 +89,7 @@ function watchForPosition(timeoutMs = 12000) {
 }
 
 /**
- * Read GPS — last-known → Lowest → Low → Balanced → short watch.
+ * Read GPS - last-known -> Lowest -> Low -> Balanced -> short watch.
  */
 export async function readCaptureLocation() {
   try {
@@ -153,7 +153,7 @@ export async function readCaptureLocation() {
 
 /**
  * Lightweight GPS while the system camera is open.
- * Avoid full getCurrentPosition / watch here — concurrent GPS + full-res camera
+ * Avoid full getCurrentPosition / watch here - concurrent GPS + full-res camera
  * often kills the Android process (app appears to "close").
  * Full accuracy fixup still runs in buildPhotoCaptureMeta after return.
  */
@@ -197,7 +197,7 @@ export async function buildPhotoCaptureMeta(locationPromise = null) {
     console.warn('buildPhotoCaptureMeta locationPromise failed:', err?.message || err);
   }
 
-  // Always retry after camera — GPS often unlocks once user is outdoors / after cold start
+  // Always retry after camera - GPS often unlocks once user is outdoors / after cold start
   if (!location?.latitude || !location?.longitude) {
     try {
       location = await readCaptureLocation();

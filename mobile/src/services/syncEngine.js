@@ -26,12 +26,16 @@ import {
   describeInwardQueueItem,
   describeOutwardQueueItem,
   assertQueuePhotosExist,
+  prepareQueueRecordForUpload,
+  INWARD_PHOTO_FIELDS,
+  OUTWARD_PHOTO_FIELDS,
 } from '../utils/offlineLogFormData';
 import {
   appendLocalFile,
   localFileExists,
   multipartRequest,
 } from '../utils/formDataAppendFile';
+import { compressImageOnly } from '../utils/compressImage';
 
 function toLocalYmd(d = new Date()) {
   const y = d.getFullYear();
@@ -92,7 +96,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
   emitProgress(onSyncProgress, {
     status: 'syncing',
     pendingCount: countPending(warehouseName, operatorName, operatorEmail),
-    message: 'Uploading offline queue…',
+    message: 'Uploading offline queue...',
     failures: [],
   });
 
@@ -108,6 +112,21 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
       label,
       message: message || 'Upload failed',
     });
+  };
+
+  const apiErrorMessage = (resData, status, fallback) => {
+    const msg = String(resData?.error || resData?.message || '').trim();
+    if (msg) return msg;
+    if (status === 413) {
+      return 'Upload too large for server. Photos need more compression.';
+    }
+    if (status === 401 || status === 403) {
+      return 'Login expired or permission denied. Log out and log in again.';
+    }
+    if (status === 0) {
+      return 'Network failed while uploading. Check internet and retry Sync.';
+    }
+    return fallback || `Upload failed (${status})`;
   };
 
   try {
@@ -139,11 +158,30 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
       } catch (actErr) {
         recordFailure(
           'activity',
-          `Activity · ${item.action}`,
+          `Activity | ${item.action}`,
           actErr.message || String(actErr)
         );
-        console.error('❌ Sync failed for operator activity:', actErr.message || actErr);
+        console.error('X Sync failed for operator activity:', actErr.message || actErr);
       }
+    }
+
+    // Pull server assignments first so already-live clients drop out of the pending queue.
+    try {
+      const assignRes = await fetch(`${apiBaseUrl}/api/chambers/assignments`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+      if (assignRes.status === 200) {
+        const assignData = await assignRes.json().catch(() => ({}));
+        const rows = Array.isArray(assignData?.data) ? assignData.data : [];
+        cacheAssignments(rows, warehouseName, userProfile?.warehouse_code);
+        assignmentsUpdated = true;
+        console.log(`⬇️ Sync Engine: cached ${rows.length} chamber assignment(s) from server`);
+      }
+    } catch (pullAssignErr) {
+      console.warn(
+        'Warning:  Sync Engine: Failed to pull chamber assignments:',
+        pullAssignErr.message || pullAssignErr
+      );
     }
 
     const pendingAssignments = getPendingAssignments(warehouseName);
@@ -162,6 +200,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
             chamber_id: item.chamber_id,
             client_name: item.client_name,
             client_code: item.client_code || null,
+            warehouse_name: item.warehouse_name || warehouseName || null,
             warehouse_code: item.warehouse_code || userProfile?.warehouse_code || null,
             remark: item.remark,
             chamber_type: item.chamber_type,
@@ -174,8 +213,10 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           syncedCount += 1;
         } else {
           const resData = await response.json().catch(() => ({}));
-          const msg = String(resData.message || resData.error || `Sync failed (${response.status})`);
-          // Client master needs SA approval — remove local pending add so we stop 403 spam.
+          const msg = String(
+            resData.error || resData.message || `Sync failed (${response.status})`
+          );
+          // Client master needs SA approval - remove local pending add so we stop 403 spam.
           if (
             response.status === 403 &&
             /super admin approval|approval is required/i.test(msg)
@@ -187,8 +228,18 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
               markAssignmentSynced(item.chamber_id, item.client_name, 'delete');
             }
             console.warn(
-              `⚠️ Cleared pending client sync (needs SA approval): ${item.client_name}`
+              `Warning:  Cleared pending client sync (needs SA approval): ${item.client_name}`
             );
+            continue;
+          }
+          // Duplicate / already active — treat as synced so badge can show success.
+          if (
+            !isDelete &&
+            (response.status === 409 ||
+              /already (active|exists|assigned)|duplicate/i.test(msg))
+          ) {
+            markAssignmentSynced(item.chamber_id, item.client_name, item.action);
+            syncedCount += 1;
             continue;
           }
           throw new Error(msg);
@@ -196,13 +247,14 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
       } catch (assignErr) {
         recordFailure(
           'assignment',
-          `Client · ${item.client_name}`,
+          `Client | ${item.client_name}`,
           assignErr.message || String(assignErr)
         );
-        console.error(`❌ Sync failed for assignment ${item.client_name}:`, assignErr.message || assignErr);
+        console.error(`X Sync failed for assignment ${item.client_name}:`, assignErr.message || assignErr);
       }
     }
 
+    // Refresh cache after pushes so UI sees newly uploaded clients.
     try {
       const assignRes = await fetch(`${apiBaseUrl}/api/chambers/assignments`, {
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
@@ -212,14 +264,8 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
         const rows = Array.isArray(assignData?.data) ? assignData.data : [];
         cacheAssignments(rows, warehouseName, userProfile?.warehouse_code);
         assignmentsUpdated = true;
-        console.log(`⬇️ Sync Engine: cached ${rows.length} chamber assignment(s) from server`);
       }
-    } catch (pullAssignErr) {
-      console.warn(
-        '⚠️ Sync Engine: Failed to pull chamber assignments:',
-        pullAssignErr.message || pullAssignErr
-      );
-    }
+    } catch (_) {}
 
     const pendingInspections = getPendingInspections(operatorName);
     for (const log of pendingInspections) {
@@ -264,8 +310,9 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
               'Sensor photo file missing on device. Open the task, capture photo again, then sync.'
             );
           }
-          const filename = log.temp_sensor_image.split('/').pop() || `inspection-${log.id}.jpg`;
-          appendLocalFile(formData, 'sensor_photo', log.temp_sensor_image, {
+          const compressedUri = await compressImageOnly(log.temp_sensor_image, 0.45);
+          const filename = compressedUri.split('/').pop() || `inspection-${log.id}.jpg`;
+          appendLocalFile(formData, 'sensor_photo', compressedUri, {
             name: filename,
             type: 'image/jpeg',
           });
@@ -277,7 +324,7 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           body: formData,
         });
 
-        const resData = await response.json();
+        const resData = await response.json().catch(() => ({}));
 
         if (response.status === 200 || response.status === 201) {
           markInspectionAsSynced(log.id, resData.reference_no, resData.logId);
@@ -286,15 +333,15 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           markInspectionAsSynced(log.id, resData.reference_no, resData.logId);
           syncedCount += 1;
         } else {
-          throw new Error(resData.message || resData.error || `Sync failed (${response.status})`);
+          throw new Error(apiErrorMessage(resData, response.status, `Sync failed (${response.status})`));
         }
       } catch (err) {
         recordFailure(
           'inspection',
-          `Task · ${log.chamber_name || log.chamber_id} · ${log.client_name}`,
+          `Task | ${log.chamber_name || log.chamber_id} | ${log.client_name}`,
           err.message || String(err)
         );
-        console.error(`❌ Sync failed for log ${log.id}:`, err.message || err);
+        console.error(`X Sync failed for log ${log.id}:`, err.message || err);
       }
     }
 
@@ -303,7 +350,8 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
       try {
         markInwardSyncing(record.id);
         await assertQueuePhotosExist(record);
-        const formData = buildInwardFormData(record);
+        const prepared = await prepareQueueRecordForUpload(record, INWARD_PHOTO_FIELDS);
+        const formData = buildInwardFormData(prepared);
         const response = await multipartRequest(`${apiBaseUrl}/api/inward-logs`, {
           method: 'POST',
           headers: {
@@ -317,14 +365,14 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           markInwardAsSynced(record.id, resData.reference_no, resData.id);
           syncedCount += 1;
         } else {
-          const msg = resData.message || resData.error || `Inward upload failed (${response.status})`;
+          const msg = apiErrorMessage(resData, response.status, `Inward upload failed (${response.status})`);
           markInwardSyncError(record.id, msg);
           throw new Error(msg);
         }
       } catch (err) {
         markInwardSyncError(record.id, err.message || String(err));
         recordFailure('inward', describeInwardQueueItem(record), err.message || String(err));
-        console.error(`❌ Sync failed for inward ${record.id}:`, err.message || err);
+        console.error(`X Sync failed for inward ${record.id}:`, err.message || err);
       }
     }
 
@@ -333,7 +381,8 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
       try {
         markOutwardSyncing(record.id);
         await assertQueuePhotosExist(record);
-        const formData = buildOutwardFormData(record);
+        const prepared = await prepareQueueRecordForUpload(record, OUTWARD_PHOTO_FIELDS);
+        const formData = buildOutwardFormData(prepared);
         const response = await multipartRequest(`${apiBaseUrl}/api/outward-logs`, {
           method: 'POST',
           headers: {
@@ -347,14 +396,14 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           markOutwardAsSynced(record.id, resData.reference_no, resData.id);
           syncedCount += 1;
         } else {
-          const msg = resData.message || resData.error || `Outward upload failed (${response.status})`;
+          const msg = apiErrorMessage(resData, response.status, `Outward upload failed (${response.status})`);
           markOutwardSyncError(record.id, msg);
           throw new Error(msg);
         }
       } catch (err) {
         markOutwardSyncError(record.id, err.message || String(err));
         recordFailure('outward', describeOutwardQueueItem(record), err.message || String(err));
-        console.error(`❌ Sync failed for outward ${record.id}:`, err.message || err);
+        console.error(`X Sync failed for outward ${record.id}:`, err.message || err);
       }
     }
 
@@ -400,19 +449,19 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
           operatorEmail,
         });
         if (pulled > 0) {
-          console.log(`⬇️ Sync Engine: mirrored ${pulled} server inspection(s) to SQLite (${fromStr}→${toStr})`);
+          console.log(`⬇️ Sync Engine: mirrored ${pulled} server inspection(s) to SQLite (${fromStr}->${toStr})`);
         }
       }
     } catch (pullHistoryErr) {
       console.warn(
-        '⚠️ Sync Engine: Failed to pull chamber history:',
+        'Warning:  Sync Engine: Failed to pull chamber history:',
         pullHistoryErr.message || pullHistoryErr
       );
     }
   } catch (error) {
     failedCount += 1;
     recordFailure('sync', 'Sync engine', error.message || String(error));
-    console.error('❌ Sync Engine encountered an error:', error);
+    console.error('X Sync Engine encountered an error:', error);
   } finally {
     isSyncing = false;
     const stillPending = countPending(warehouseName, operatorName, operatorEmail);
@@ -420,22 +469,25 @@ export const triggerSync = async (apiBaseUrl, token, onSyncProgress = () => {}, 
     let message = null;
     let lastSyncAt;
 
-    if (failedCount > 0 && syncedCount > 0) {
-      status = 'partial';
-      message = `${syncedCount} uploaded · ${stillPending} still on phone`;
-    } else if (failedCount > 0 || stillPending > 0) {
-      status = stillPending > 0 ? 'failed' : 'idle';
-      message =
-        stillPending > 0
-          ? `${stillPending} item(s) waiting — tap Sync when online`
-          : 'Sync failed — data safe on device';
+    // Badge follows what is still on the phone — not every transient API error.
+    if (stillPending === 0) {
+      status = 'idle';
+      if (syncedCount > 0) {
+        message = `${syncedCount} item(s) synced to server`;
+      } else if (failedCount > 0) {
+        message = 'Queue cleared (some items skipped — see issues below)';
+      } else {
+        message = 'All data synced';
+      }
     } else if (syncedCount > 0) {
-      message = `${syncedCount} item(s) synced to server`;
+      status = 'partial';
+      message = `${syncedCount} uploaded | ${stillPending} still on phone`;
     } else {
-      message = 'All data synced';
+      status = 'failed';
+      message = `${stillPending} item(s) waiting - tap Sync when online`;
     }
 
-    if (syncedCount > 0) {
+    if (syncedCount > 0 || stillPending === 0) {
       lastSyncAt = new Date().toISOString();
       await persistLastSync(lastSyncAt);
     } else {

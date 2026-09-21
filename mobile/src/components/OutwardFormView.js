@@ -476,7 +476,7 @@ export default function OutwardFormView({
     }
   };
 
-  // Android may kill the app while the system camera is open — recover the photo on return
+  // Android may kill the app while the system camera is open - recover the photo on return
   useEffect(() => {
     let cancelled = false;
 
@@ -553,7 +553,7 @@ export default function OutwardFormView({
     if (!validation.ok) {
       const keyMap = Object.fromEntries(validation.missingKeys.map((k) => [k, true]));
       setInvalidFields(keyMap);
-      Alert.alert('Step incomplete', validation.missing.map((m) => `• ${m}`).join('\n'));
+      Alert.alert('Step incomplete', validation.missing.map((m) => `- ${m}`).join('\n'));
       return;
     }
     setInvalidFields({});
@@ -584,7 +584,7 @@ export default function OutwardFormView({
       if (firstKey) {
         goToStep(getOutwardStepForKey(firstKey));
       }
-      Alert.alert('Validation Error', validation.missing.map((m) => `• ${m}`).join('\n'));
+      Alert.alert('Validation Error', validation.missing.map((m) => `- ${m}`).join('\n'));
       return;
     }
 
@@ -693,7 +693,7 @@ export default function OutwardFormView({
           ? referenceNo
             ? `Uploaded to server.\nReference: ${referenceNo}`
             : 'Outward record uploaded to server.'
-          : 'Record saved on this phone. It will upload automatically when you are online — tap Sync in More if needed.'
+          : 'Record saved on this phone. It will upload automatically when you are online - tap Sync in More if needed.'
       );
     } catch (err) {
       Alert.alert('Submit Failed', err.message || 'Could not save Outward record.');
@@ -737,7 +737,7 @@ export default function OutwardFormView({
                 <ActivityIndicator size="large" color="#003580" />
                 <Text style={styles.submitModalLoadingTitle}>Submitting Outward record</Text>
                 <Text style={styles.submitModalLoadingText}>
-                  Uploading photos and saving data. Please wait…
+                  Uploading photos and saving data. Please wait...
                 </Text>
               </View>
             ) : (
@@ -762,7 +762,7 @@ export default function OutwardFormView({
                   <View style={styles.submitModalInfoRow}>
                     <Text style={styles.submitModalInfoLabel}>Reference photo</Text>
                     <Text style={styles.submitModalInfoValue} numberOfLines={1}>
-                      {refLabel || '—'}
+                      {refLabel || '-'}
                     </Text>
                   </View>
                   <View style={styles.submitModalInfoRow}>
@@ -923,7 +923,7 @@ export default function OutwardFormView({
             ]}
             value={form.outward_client_name}
             onChangeText={(v) => updateField('outward_client_name', v)}
-            placeholder="Type client name…"
+            placeholder="Type client name..."
             placeholderTextColor="#94a3b8"
             onFocus={() => {
               setClientNameFocused(true);
@@ -967,7 +967,7 @@ export default function OutwardFormView({
           ) : null}
         </View>
         {clientNameFocused && uniqueClients.length === 0 ? (
-          <Text style={styles.suggestHint}>No saved clients — type a new client name.</Text>
+          <Text style={styles.suggestHint}>No saved clients - type a new client name.</Text>
         ) : null}
       </View>
     );
@@ -1005,7 +1005,7 @@ export default function OutwardFormView({
             numberOfLines={1}
           >
             {materialCustomMode && !form.outward_material_type
-              ? 'Other — enter below'
+              ? 'Other - enter below'
               : displayValue}
           </Text>
           <Ionicons
@@ -1136,7 +1136,7 @@ export default function OutwardFormView({
             </Text>
             <Text style={styles.photoCardSub}>
               {conditionalHint ||
-                `${isMulti ? 'Multiple photos allowed' : 'Single photo'}${!isRequired ? ' · Optional' : ''}`}
+                `${isMulti ? 'Multiple photos allowed' : 'Single photo'}${!isRequired ? ' | Optional' : ''}`}
             </Text>
           </View>
           {hasPhotos ? (
@@ -1440,13 +1440,13 @@ export default function OutwardFormView({
           <SectionCard icon="thermometer-outline" title="3. Pre-Load Check">
             <View style={styles.row2}>
               <View style={styles.row2Item}>
-                {renderInput('outward_pre_vehicle_temp', 'Pre Vehicle Temp (°C)', {
+                {renderInput('outward_pre_vehicle_temp', 'Pre Vehicle Temp (C)', {
                   required: true,
                   keyboardType: 'decimal-pad',
                 })}
               </View>
               <View style={styles.row2Item}>
-                {renderInput('outward_material_temp', 'Material Temp (°C)', {
+                {renderInput('outward_material_temp', 'Material Temp (C)', {
                   required: true,
                   keyboardType: 'decimal-pad',
                 })}
@@ -1573,7 +1573,7 @@ export default function OutwardFormView({
             })}
             {renderInput('outward_remarks', 'Remarks (optional)', {
               multiline: true,
-              placeholder: 'Any notes…',
+              placeholder: 'Any notes...',
             })}
           </SectionCard>
         );

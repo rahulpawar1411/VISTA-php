@@ -2,11 +2,11 @@
 // Offline SQLite Layer (mobile/src/database/db.js)
 // --------------------------------------------------------------------
 // Stores:
-//   local_assignments  → chamber/client master cache + pending add/delete
-//   local_inspections  → DO temperature logs waiting for upload
-//   local_inward_logs  → inward forms waiting for upload
-//   local_outward_logs → outward forms waiting for upload
-//   client_lot_master  → suggestion names for Add Client UI
+//   local_assignments  -> chamber/client master cache + pending add/delete
+//   local_inspections  -> DO temperature logs waiting for upload
+//   local_inward_logs  -> inward forms waiting for upload
+//   local_outward_logs -> outward forms waiting for upload
+//   client_lot_master  -> suggestion names for Add Client UI
 //
 // RULES FOR DEVELOPERS:
 //   1) Prefer ALTER TABLE ADD COLUMN for schema changes
@@ -22,7 +22,7 @@ try {
   // Single on-device DB file (Expo SQLite sync API)
   db = SQLite.openDatabaseSync('reeferon_offline.db');
 } catch (err) {
-  console.error('❌ Error opening SQLite database:', err);
+  console.error('X Error opening SQLite database:', err);
 }
 
 /**
@@ -58,7 +58,7 @@ export const initDatabase = () => {
       console.log(`🌱 SQLite: Added ${table}.${column}`);
     } catch (err) {
       if (!/duplicate column/i.test(String(err?.message || err))) {
-        console.warn(`⚠️ SQLite migrate ${table}.${column}:`, err?.message || err);
+        console.warn(`Warning:  SQLite migrate ${table}.${column}:`, err?.message || err);
       }
     }
   };
@@ -119,7 +119,7 @@ export const initDatabase = () => {
       );
     `);
 
-    // Older app builds used different column names — copy values, do not DROP
+    // Older app builds used different column names - copy values, do not DROP
     const inspCols = tableColumns('local_inspections');
     if (inspCols.length > 0) {
       ensureColumn('local_inspections', 'box_temp', 'box_temp REAL');
@@ -166,7 +166,7 @@ export const initDatabase = () => {
           );
         }
       } catch (copyErr) {
-        console.warn('⚠️ SQLite legacy column copy skipped:', copyErr?.message || copyErr);
+        console.warn('Warning:  SQLite legacy column copy skipped:', copyErr?.message || copyErr);
       }
     }
 
@@ -255,7 +255,7 @@ export const initDatabase = () => {
 
     console.log('✅ SQLite Database Tables initialized successfully.');
   } catch (error) {
-    console.error('❌ Failed to initialize SQLite database tables:', error);
+    console.error('X Failed to initialize SQLite database tables:', error);
   }
 };
 
@@ -288,7 +288,7 @@ export const getClientLotMaster = () => {
     });
     return merged;
   } catch (error) {
-    console.error('❌ Failed to read client lot master:', error);
+    console.error('X Failed to read client lot master:', error);
     return [...DEFAULT_CLIENT_LOT_MASTER];
   }
 };
@@ -309,7 +309,7 @@ export const addClientLotMaster = (clientName) => {
     console.log(`🌱 Client lot master: ensured "${name}"`);
     return true;
   } catch (error) {
-    console.error('❌ Failed to add client lot master:', error);
+    console.error('X Failed to add client lot master:', error);
     return false;
   }
 };
@@ -345,9 +345,19 @@ export const cacheAssignments = (assignments, warehouseName, warehouseCode = nul
       );
     }
 
-    // Re-insert pending assignments (skip old demo auto-seed rows)
+    // Re-insert pending assignments (skip demo seeds + anything already on server)
     const demoNames = new Set(
       DEFAULT_CLIENT_LOT_MASTER.map((n) => String(n).trim().toLowerCase())
+    );
+    const serverKey = (chamberId, clientName) =>
+      `${parseInt(chamberId, 10)}|${String(clientName || '').trim().toLowerCase()}`;
+    const onServerActive = new Set(
+      (assignments || [])
+        .filter((a) => String(a.status || 'active').toLowerCase() !== 'inactive')
+        .map((a) => serverKey(a.chamber_id, a.client_name))
+    );
+    const onServerAny = new Set(
+      (assignments || []).map((a) => serverKey(a.chamber_id, a.client_name))
     );
     for (const item of pending) {
       const remark = String(item.remark || '').trim().toLowerCase();
@@ -359,12 +369,21 @@ export const cacheAssignments = (assignments, warehouseName, warehouseCode = nul
       ) {
         continue;
       }
+      const key = serverKey(item.chamber_id, item.client_name);
       if (item.action === 'add') {
+        // Already live on server → do not keep a stuck pending add (causes Sync failed forever).
+        if (onServerActive.has(key)) {
+          continue;
+        }
         db.runSync(
           "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, client_code, remark, chamber_type, status, sync_status, action, warehouse_name, warehouse_code) VALUES (?, ?, ?, ?, ?, ?, 'active', 'pending', 'add', ?, ?);",
           [item.chamber_id, item.chamber_name, item.client_name, item.client_code || null, item.remark, item.chamber_type || 'Frozen', item.warehouse_name || wh, item.warehouse_code || whCode || null]
         );
       } else if (item.action === 'delete') {
+        // Already gone / inactive on server → nothing left to push.
+        if (!onServerAny.has(key) || !onServerActive.has(key)) {
+          continue;
+        }
         db.runSync(
           "INSERT OR REPLACE INTO local_assignments (chamber_id, chamber_name, client_name, remark, status, sync_status, action, warehouse_name) VALUES (?, ?, ?, ?, 'inactive', 'pending', 'delete', ?);",
           [item.chamber_id, item.chamber_name, item.client_name, item.remark, item.warehouse_name || wh]
@@ -373,7 +392,7 @@ export const cacheAssignments = (assignments, warehouseName, warehouseCode = nul
     }
     console.log('🌱 Successfully cached assignments locally in SQLite (preserved pending).');
   } catch (error) {
-    console.error('❌ Failed to cache assignments:', error);
+    console.error('X Failed to cache assignments:', error);
   }
 };
 
@@ -397,7 +416,7 @@ export const getLocalAssignments = (warehouseName, warehouseCode = null) => {
       return true;
     });
   } catch (error) {
-    console.error('❌ Failed to read local assignments:', error);
+    console.error('X Failed to read local assignments:', error);
     return [];
   }
 };
@@ -441,7 +460,7 @@ export const saveInspectionLocally = (log) => {
     console.log(`💾 Saved inspection locally in SQLite queue: ${log.client_name} - ${log.chamber_name} (${log.chamber_type || 'Frozen'}, Overdue: ${log.overdue_time || 'same day'})`);
     return true;
   } catch (error) {
-    console.error('❌ Failed to save inspection locally:', error);
+    console.error('X Failed to save inspection locally:', error);
     return false;
   }
 };
@@ -459,7 +478,7 @@ export const checkDuplicateInspection = (date, chamberId, clientName, entryTime)
     );
     return row && row.count > 0;
   } catch (error) {
-    console.error('❌ Failed to check duplicate inspection:', error);
+    console.error('X Failed to check duplicate inspection:', error);
     return false;
   }
 };
@@ -480,14 +499,14 @@ export const getPendingInspections = (operatorName) => {
       "SELECT * FROM local_inspections WHERE sync_status = 'pending' ORDER BY entry_date DESC, COALESCE(updated_at, created_at) DESC, id DESC;"
     );
   } catch (error) {
-    console.error('❌ Failed to fetch pending sync inspections:', error);
+    console.error('X Failed to fetch pending sync inspections:', error);
     return [];
   }
 };
 
 /**
  * Fetches local inspections for a date (optionally scoped to operator name and/or email).
- * Email match lets live DO data show after server→phone pull even if supervisor label differs.
+ * Email match lets live DO data show after server->phone pull even if supervisor label differs.
  */
 export const getTodaysInspections = (date, operatorName, operatorEmail) => {
   if (!db) return [];
@@ -522,7 +541,7 @@ export const getTodaysInspections = (date, operatorName, operatorEmail) => {
       [day]
     );
   } catch (error) {
-    console.error('❌ Failed to fetch today\'s inspections:', error);
+    console.error('X Failed to fetch today\'s inspections:', error);
     return [];
   }
 };
@@ -559,7 +578,7 @@ export const getAllLocalInspections = (operatorName, operatorEmail) => {
       "SELECT * FROM local_inspections ORDER BY entry_date DESC, COALESCE(updated_at, created_at) DESC, id DESC;"
     );
   } catch (error) {
-    console.error('❌ Failed to fetch all inspections:', error);
+    console.error('X Failed to fetch all inspections:', error);
     return [];
   }
 };
@@ -782,7 +801,7 @@ export const upsertSyncedInspectionFromServer = (serverLog, opts = {}) => {
   } catch (error) {
     if (!/UNIQUE|constraint/i.test(String(error?.message || error))) {
       console.warn(
-        '⚠️ upsertSyncedInspectionFromServer:',
+        'Warning:  upsertSyncedInspectionFromServer:',
         error?.message || error
       );
     }
@@ -879,13 +898,13 @@ export const reconcileSyncedInspectionsFromServer = (serverItems, opts = {}) => 
 
     if (deleted > 0) {
       console.log(
-        `🗑️ Reconciled SQLite: removed ${deleted} synced inspection(s) missing on server (${fromDate}→${toDate})`
+        `🗑️ Reconciled SQLite: removed ${deleted} synced inspection(s) missing on server (${fromDate}->${toDate})`
       );
     }
     return deleted;
   } catch (error) {
     console.warn(
-      '⚠️ reconcileSyncedInspectionsFromServer:',
+      'Warning:  reconcileSyncedInspectionsFromServer:',
       error?.message || error
     );
     return 0;
@@ -913,7 +932,7 @@ export const clearSyncedInspectionsLocally = () => {
     }
     return n;
   } catch (error) {
-    console.warn('⚠️ clearSyncedInspectionsLocally:', error?.message || error);
+    console.warn('Warning:  clearSyncedInspectionsLocally:', error?.message || error);
     return 0;
   }
 };
@@ -933,7 +952,7 @@ export const markInspectionAsSynced = (id, referenceNo, serverLogId = null) => {
     );
     console.log(`🚀 Marked inspection ${id} as SYNCED with Ref: ${referenceNo}, server_log_id: ${serverLogId} in local SQLite.`);
   } catch (error) {
-    console.error('❌ Failed to mark inspection as synced:', error);
+    console.error('X Failed to mark inspection as synced:', error);
   }
 };
 
@@ -974,7 +993,7 @@ export const updateInspectionLocally = (localId, updates = {}) => {
     );
     return true;
   } catch (error) {
-    console.error('❌ Failed to update local inspection:', error);
+    console.error('X Failed to update local inspection:', error);
     return false;
   }
 };
@@ -992,7 +1011,7 @@ export const deleteInspectionLocally = (date, chamberId, clientName, shift) => {
     console.log(`🗑️ Deleted local inspection: ${clientName} in Chamber ${chamberId} for date ${date} for shift ${shift}`);
     return true;
   } catch (error) {
-    console.error('❌ Failed to delete local inspection:', error);
+    console.error('X Failed to delete local inspection:', error);
     return false;
   }
 };
@@ -1011,7 +1030,7 @@ export const addLocalAssignment = (chamberId, chamberName, clientName, remark, c
     console.log(`➕ Added local client assignment: ${clientName} in ${chamberName} with type: ${chamberType}, remark: ${remark}, warehouse: ${wh}`);
     return true;
   } catch (error) {
-    console.error('❌ Failed to add local assignment:', error);
+    console.error('X Failed to add local assignment:', error);
     return false;
   }
 };
@@ -1050,7 +1069,7 @@ export const seedDefaultClientsForEmptyChambers = (chambers) => {
         } catch (_) {}
       }
     } catch (err) {
-      console.warn('⚠️ seedDefaultClientsForEmptyChambers failed for chamber', cid, err?.message || err);
+      console.warn('Warning:  seedDefaultClientsForEmptyChambers failed for chamber', cid, err?.message || err);
     }
   }
   if (added > 0) {
@@ -1086,7 +1105,7 @@ export const purgeAutoSeededMasterLotsOnce = () => {
     if (n > 0) console.log(`🧹 Purged ${n} auto-seeded chamber client lots.`);
     return n;
   } catch (error) {
-    console.error('❌ Failed to purge auto-seeded lots:', error);
+    console.error('X Failed to purge auto-seeded lots:', error);
     return 0;
   }
 };
@@ -1144,10 +1163,10 @@ export const renameLocalAssignment = (chamberId, chamberName, oldClientName, new
         ]
       );
     }
-    console.log(`✏️ Renamed client on chamber ${cid}: "${oldName}" → "${newName}"`);
+    console.log(`✏️ Renamed client on chamber ${cid}: "${oldName}" -> "${newName}"`);
     return true;
   } catch (error) {
-    console.error('❌ Failed to rename local assignment:', error);
+    console.error('X Failed to rename local assignment:', error);
     return false;
   }
 };
@@ -1169,7 +1188,7 @@ export const updateLocalChamberType = (chamberId, chamberType) => {
     console.log(`✏️ Updated chamber ${cid} assignments type to: ${type}`);
     return true;
   } catch (error) {
-    console.error('❌ Failed to update local chamber type:', error);
+    console.error('X Failed to update local chamber type:', error);
     return false;
   }
 };
@@ -1200,7 +1219,7 @@ export const deleteLocalAssignment = (chamberId, clientName, remark) => {
     }
     return true;
   } catch (error) {
-    console.error('❌ Failed to soft-delete local assignment:', error);
+    console.error('X Failed to soft-delete local assignment:', error);
     return false;
   }
 };
@@ -1216,7 +1235,7 @@ export const getPendingAssignments = (warehouseName) => {
       return !rowWh || rowWh === wh;
     });
   } catch (error) {
-    console.error('❌ Failed to fetch pending assignments:', error);
+    console.error('X Failed to fetch pending assignments:', error);
     return [];
   }
 };
@@ -1241,7 +1260,7 @@ export const markAssignmentSynced = (chamberId, clientName, action) => {
       console.log(`🚀 Marked assignment synced: ${clientName} in Chamber ${chamberId}`);
     }
   } catch (error) {
-    console.error('❌ Failed to mark assignment synced:', error);
+    console.error('X Failed to mark assignment synced:', error);
   }
 };
 
@@ -1280,7 +1299,7 @@ export const saveInwardLocally = ({
     console.log(`💾 Saved inward log locally: ${id}`);
     return { id, created_at: now };
   } catch (error) {
-    console.error('❌ Failed to save inward locally:', error);
+    console.error('X Failed to save inward locally:', error);
     return null;
   }
 };
@@ -1316,7 +1335,7 @@ export const saveOutwardLocally = ({
     console.log(`💾 Saved outward log locally: ${id}`);
     return { id, created_at: now };
   } catch (error) {
-    console.error('❌ Failed to save outward locally:', error);
+    console.error('X Failed to save outward locally:', error);
     return null;
   }
 };
@@ -1341,7 +1360,7 @@ export const getPendingInwardLogs = (operatorEmail = null) => {
       [staleBefore]
     );
   } catch (error) {
-    console.error('❌ Failed to fetch pending inward logs:', error);
+    console.error('X Failed to fetch pending inward logs:', error);
     return [];
   }
 };
@@ -1366,7 +1385,7 @@ export const getPendingOutwardLogs = (operatorEmail = null) => {
       [staleBefore]
     );
   } catch (error) {
-    console.error('❌ Failed to fetch pending outward logs:', error);
+    console.error('X Failed to fetch pending outward logs:', error);
     return [];
   }
 };
@@ -1392,7 +1411,7 @@ export const getPendingSyncFailures = (operatorEmail = null) => {
         );
     return [...inward, ...outward];
   } catch (error) {
-    console.error('❌ Failed to fetch sync failures:', error);
+    console.error('X Failed to fetch sync failures:', error);
     return [];
   }
 };
@@ -1405,7 +1424,7 @@ export const markInwardSyncing = (id) => {
       [new Date().toISOString(), id]
     );
   } catch (error) {
-    console.error('❌ Failed to mark inward as syncing:', error);
+    console.error('X Failed to mark inward as syncing:', error);
   }
 };
 
@@ -1417,7 +1436,7 @@ export const markOutwardSyncing = (id) => {
       [new Date().toISOString(), id]
     );
   } catch (error) {
-    console.error('❌ Failed to mark outward as syncing:', error);
+    console.error('X Failed to mark outward as syncing:', error);
   }
 };
 
@@ -1429,7 +1448,7 @@ export const markInwardAsSynced = (id, referenceNo, serverLogId = null) => {
       [referenceNo || null, serverLogId != null ? parseInt(serverLogId, 10) : null, new Date().toISOString(), id]
     );
   } catch (error) {
-    console.error('❌ Failed to mark inward as synced:', error);
+    console.error('X Failed to mark inward as synced:', error);
   }
 };
 
@@ -1441,7 +1460,7 @@ export const markOutwardAsSynced = (id, referenceNo, serverLogId = null) => {
       [referenceNo || null, serverLogId != null ? parseInt(serverLogId, 10) : null, new Date().toISOString(), id]
     );
   } catch (error) {
-    console.error('❌ Failed to mark outward as synced:', error);
+    console.error('X Failed to mark outward as synced:', error);
   }
 };
 
@@ -1453,7 +1472,7 @@ export const markInwardSyncError = (id, message) => {
       [String(message || 'Upload failed').slice(0, 500), new Date().toISOString(), id]
     );
   } catch (error) {
-    console.error('❌ Failed to record inward sync error:', error);
+    console.error('X Failed to record inward sync error:', error);
   }
 };
 
@@ -1465,7 +1484,7 @@ export const markOutwardSyncError = (id, message) => {
       [String(message || 'Upload failed').slice(0, 500), new Date().toISOString(), id]
     );
   } catch (error) {
-    console.error('❌ Failed to record outward sync error:', error);
+    console.error('X Failed to record outward sync error:', error);
   }
 };
 
@@ -1488,7 +1507,7 @@ export const queueLocalActivity = ({ action, logType, description, remark, permi
     );
     return result?.lastInsertRowId || result?.lastInsertRowid || null;
   } catch (error) {
-    console.error('❌ Failed to queue operator activity:', error);
+    console.error('X Failed to queue operator activity:', error);
     return null;
   }
 };
@@ -1498,7 +1517,7 @@ export const getPendingActivities = () => {
   try {
     return db.getAllSync("SELECT * FROM local_activity_queue WHERE sync_status = 'pending' ORDER BY id ASC;") || [];
   } catch (error) {
-    console.error('❌ Failed to fetch pending activities:', error);
+    console.error('X Failed to fetch pending activities:', error);
     return [];
   }
 };
@@ -1508,7 +1527,7 @@ export const markActivitySynced = (id) => {
   try {
     db.runSync("DELETE FROM local_activity_queue WHERE id = ?;", [id]);
   } catch (error) {
-    console.error('❌ Failed to mark activity synced:', error);
+    console.error('X Failed to mark activity synced:', error);
   }
 };
 

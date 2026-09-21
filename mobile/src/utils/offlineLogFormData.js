@@ -1,6 +1,7 @@
 import { convertYYYYMMDDToDDMMYYYY } from './inwardValidation';
 import { buildPhotoMetadataPayload } from './photoCaptureMeta';
 import { appendLocalFile, localFileExists } from './formDataAppendFile';
+import { compressImageOnly } from './compressImage';
 
 export const INWARD_PHOTO_FIELDS = [
   { key: 'inward_invoice_photos', multi: true },
@@ -68,7 +69,7 @@ export async function collectMissingPhotoUris(photos = {}) {
 }
 
 /**
- * Preflight for sync queue — throw if any photo file is gone.
+ * Preflight for sync queue - throw if any photo file is gone.
  * Mirrors inspection sensor-photo existence check.
  */
 export async function assertQueuePhotosExist(record) {
@@ -84,6 +85,48 @@ export async function assertQueuePhotosExist(record) {
       'Photo file(s) missing on device. Open the form, capture photos again, then sync.'
     );
   }
+}
+
+async function compressPhotoValue(value) {
+  if (Array.isArray(value)) {
+    const next = [];
+    for (const item of value) {
+      if (!item?.uri) {
+        next.push(item);
+        continue;
+      }
+      const uri = await compressImageOnly(item.uri, 0.45);
+      next.push({ ...item, uri });
+    }
+    return next;
+  }
+  if (value?.uri) {
+    const uri = await compressImageOnly(value.uri, 0.45);
+    return { ...value, uri };
+  }
+  return value;
+}
+
+/**
+ * Re-compress queue photos right before upload so Hostinger post_max_size
+ * is less likely to wipe the multipart body.
+ */
+export async function prepareQueueRecordForUpload(record, photoFields) {
+  let photos = {};
+  try {
+    photos = JSON.parse(record?.photos_json || '{}');
+  } catch (_) {
+    photos = {};
+  }
+  const next = { ...photos };
+  for (const { key } of photoFields || []) {
+    if (next[key] == null) continue;
+    next[key] = await compressPhotoValue(next[key]);
+  }
+  return {
+    ...record,
+    photos_json: JSON.stringify(next),
+  };
 }
 
 export function buildInwardFormData(record) {
@@ -220,9 +263,9 @@ export function describeInwardQueueItem(record) {
     const form = JSON.parse(record.form_json || '{}');
     const vehicle = form.inward_vehicle_no || 'Vehicle';
     const client = form.inward_client_name || 'Client';
-    return `Inward · ${vehicle} · ${client}`;
+    return `Inward | ${vehicle} | ${client}`;
   } catch (_) {
-    return `Inward · ${record.id}`;
+    return `Inward | ${record.id}`;
   }
 }
 
@@ -231,8 +274,8 @@ export function describeOutwardQueueItem(record) {
     const form = JSON.parse(record.form_json || '{}');
     const vehicle = form.outward_vehicle_no || 'Vehicle';
     const client = form.outward_client_name || 'Client';
-    return `Outward · ${vehicle} · ${client}`;
+    return `Outward | ${vehicle} | ${client}`;
   } catch (_) {
-    return `Outward · ${record.id}`;
+    return `Outward | ${record.id}`;
   }
 }

@@ -14,7 +14,7 @@ export function isBlockingListLoad(loading, refreshing, itemCount) {
   return Boolean(loading && !refreshing && !(itemCount > 0));
 }
 
-/** Soft overlay while refreshing in place (keeps list mounted — no blink). */
+/** Soft overlay while refreshing in place (keeps list mounted - no blink). */
 export function isSoftListLoad(loading, refreshing, itemCount) {
   return Boolean(loading && !refreshing && itemCount > 0);
 }

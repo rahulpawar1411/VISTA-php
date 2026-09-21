@@ -1,8 +1,8 @@
 /**
  * Build report reading rows with correct In / Out / Qty.
- * Example: prev 65 → next 60 ⇒ Out 5, Qty 60 (stock left).
+ * Example: prev 65 -> next 60 ⇒ Out 5, Qty 60 (stock left).
  *
- * Computes deltas in oldest→newest order, then returns newest-first for UI.
+ * Computes deltas in oldest->newest order, then returns newest-first for UI.
  */
 export function buildReportReadingRows(items) {
   if (!Array.isArray(items) || items.length === 0) return [];
@@ -49,7 +49,7 @@ export function buildReportReadingRows(items) {
     return Number.isFinite(n) ? Math.max(0, n) : null;
   };
 
-  // Oldest → newest (so step = current - previous)
+  // Oldest -> newest (so step = current - previous)
   const chrono = [...items].sort((a, b) => {
     const da = dateOf(a);
     const db = dateOf(b);
@@ -78,15 +78,15 @@ export function buildReportReadingRows(items) {
         break;
       }
     }
-    let inQty = '—';
-    let outQty = '—';
+    let inQty = '-';
+    let outQty = '-';
     if (qty != null && prevQty != null) {
       const step = qty - prevQty;
       if (step > 0) {
         inQty = String(step);
-        outQty = '—';
+        outQty = '-';
       } else if (step < 0) {
-        inQty = '—';
+        inQty = '-';
         outQty = String(Math.abs(step));
       } else {
         inQty = '0';

@@ -11,7 +11,7 @@ import {
 let handlerSet = false;
 let lastPendingPermissions = null;
 let initialized = false;
-/** When true, server Expo push handles alerts (incl. app closed) — skip local overdue/dupes. */
+/** When true, server Expo push handles alerts (incl. app closed) - skip local overdue/dupes. */
 let remotePushReady = false;
 
 function ensureHandler() {
@@ -103,7 +103,7 @@ export function subscribeSubAdminPushTokenRefresh({ apiUrl, token }) {
 
 /**
  * Local fallback when Expo push token is not registered.
- * Never notifies for overdue — only permission request increases.
+ * Never notifies for overdue - only permission request increases.
  */
 export async function notifySubAdminIfNeeded({ pendingPermissions }) {
   ensureHandler();
@@ -115,8 +115,8 @@ export async function notifySubAdminIfNeeded({ pendingPermissions }) {
     await pushLocal(
       'New permission request',
       delta === 1
-        ? '1 DO permission needs your review — open Admin'
-        : `${delta} new permission requests — open Admin`,
+        ? '1 DO permission needs your review - open Admin'
+        : `${delta} new permission requests - open Admin`,
       { screen: 'Admin', section: 'permissions', type: 'permission_request' }
     );
   }
@@ -132,7 +132,7 @@ export function resetSubAdminPushAlerts() {
 }
 
 /**
- * When Sub-Admin taps a permission push (app open or from killed), open Admin → permissions.
+ * When Sub-Admin taps a permission push (app open or from killed), open Admin -> permissions.
  */
 export function subscribePermissionNotificationOpen(onOpen) {
   ensureHandler();

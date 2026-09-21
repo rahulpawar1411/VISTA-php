@@ -2,9 +2,9 @@ import React from 'react';
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 
 /**
- * Non-blocking loader over a mounted FlatList — avoids unmount flicker on large data.
+ * Non-blocking loader over a mounted FlatList - avoids unmount flicker on large data.
  */
-export default function ListLoadingOverlay({ visible, label = 'Loading…' }) {
+export default function ListLoadingOverlay({ visible, label = 'Loading...' }) {
   if (!visible) return null;
   return (
     <View style={styles.wrap} pointerEvents="none">

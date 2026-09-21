@@ -33,7 +33,7 @@ export default function LoginScreen({
   apiUrl,
   onUpdateApiUrl,
   productionApiUrl = 'https://darkcyan-octopus-294935.hostingersite.com/backend/public',
-  localApiUrl = 'http://192.168.64.129:5080'
+  localApiUrl = 'http://192.168.137.129:5080'
 }) {
   // Input form state variables
   const [email, setEmail] = useState('');
@@ -87,7 +87,7 @@ export default function LoginScreen({
       if (response.ok && data.success) {
         const role = String(data.user?.role || '').trim();
         if (role === 'do_operator' || role === 'customer' || role === 'sub_admin') {
-          console.log('ðŸ”‘ Login success:', role, data.user?.email);
+          console.log('”‘ Login success:', role, data.user?.email);
           if (role === 'do_operator' || role === 'sub_admin') {
             void ensureLocationPermission({ required: false });
           }
@@ -167,7 +167,7 @@ export default function LoginScreen({
             </View>
             <Text style={styles.headerTitle}>VISTA</Text>
             <Text style={styles.headerSubtitle}>
-              Visibility Â· Inspection Â· Stock Â· Trust Â· Audit
+              Visibility | Inspection | Stock | Trust | Audit
             </Text>
           </View>
         </ImageBackground>
@@ -240,7 +240,7 @@ export default function LoginScreen({
               {loading ? (
                 <>
                   <ActivityIndicator size="small" color="#ffffff" style={styles.buttonSpinner} />
-                  <Text style={styles.signInButtonText}>Signing inâ€¦</Text>
+                  <Text style={styles.signInButtonText}>Signing in...</Text>
                 </>
               ) : (
                 <>
@@ -315,7 +315,7 @@ export default function LoginScreen({
                 />
               </View>
               <Text style={{ marginTop: 6, fontSize: 10, color: '#64748b' }}>
-                {isProduction ? 'Using Render (production)' : `Using local: ${localApiUrl}`}
+                {isProduction ? 'Using Hostinger (production)' : `Using local: ${localApiUrl}`}
               </Text>
             </View>
           )}

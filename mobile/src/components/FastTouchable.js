@@ -1,5 +1,5 @@
 /**
- * FastTouchable — snappy taps for mobile buttons.
+ * FastTouchable - snappy taps for mobile buttons.
  * - No press delay (delayPressIn=0)
  * - Clear press feedback (opacity)
  */

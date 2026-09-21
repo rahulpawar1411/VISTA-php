@@ -225,7 +225,7 @@ export default function TimePickerField({
                 />
               </View>
 
-              {!listOpen ? <Text style={styles.hint}>Tap Hour or Min · 24h</Text> : null}
+              {!listOpen ? <Text style={styles.hint}>Tap Hour or Min | 24h</Text> : null}
             </View>
           </Pressable>
         </Pressable>

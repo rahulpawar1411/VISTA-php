@@ -6,7 +6,7 @@ import FastTouchable from './FastTouchable';
 const TouchableOpacity = FastTouchable;
 
 /**
- * Success popup after Sub-Admin / DO updates — “Changes saved” + Done.
+ * Success popup after Sub-Admin / DO updates - “Changes saved” + Done.
  */
 export default function SavedChangesPopup({
   visible,

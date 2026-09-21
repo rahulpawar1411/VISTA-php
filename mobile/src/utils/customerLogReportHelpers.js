@@ -1,5 +1,11 @@
 export const DOCK_REPORT_PAGE_SIZE = 20;
 
+function fileNameOnly(rel) {
+  const s = String(rel || '').replace(/\\/g, '/');
+  const parts = s.split('/').filter(Boolean);
+  return parts[parts.length - 1] || '';
+}
+
 export function splitLogPhotoPaths(value) {
   if (!value) return [];
   const raw = String(value).trim();
@@ -17,7 +23,7 @@ export function splitLogPhotoPaths(value) {
     .filter((s) => s && s !== 'null' && s !== 'undefined');
 }
 
-/** Map a Cloudinary CRM asset URL back to local uploads/images/… path. */
+/** Map legacy Cloudinary CRM asset URL -> local uploads/images/... (no credentials). */
 export function cloudinaryUrlToUploadsPath(raw) {
   if (raw == null) return null;
   const value = String(raw).trim();
@@ -30,31 +36,58 @@ export function cloudinaryUrlToUploadsPath(raw) {
     /^(?:images|outward_images|inward_images|daily_temp_monitor_images)\/(.+)$/i
   );
   if (fileMatch) return `uploads/images/${fileMatch[1]}`;
-  return null;
+  const name = fileNameOnly(rest);
+  return name ? `uploads/images/${name}` : null;
 }
 
-/** Map uploads/… path → Cloudinary CDN URL (optional). */
-export function uploadsPathToCloudinaryUrl(raw, cloudName = 'de9ba8bpk') {
-  if (raw == null) return null;
-  const value = String(raw).trim().replace(/\\/g, '/').replace(/^\/+/, '');
-  if (!value.startsWith('uploads/')) return null;
-  const match = value.match(
-    /^uploads\/(?:crm\/)?(images|outward_images|inward_images|daily_temp_monitor_images)\/(.+)$/i
-  );
-  if (!match || !match[2]) return null;
-  const file = String(match[2]).replace(/\.(jpe?g|png|webp|gif)$/i, '');
-  return `https://res.cloudinary.com/${cloudName}/image/upload/crm/images/${file}`;
+function normalizeUploadsRelPath(raw) {
+  let value = String(raw || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!value) return null;
+  if (value.startsWith('uploads/crm/images/')) {
+    return value.replace(/^uploads\/crm\/images\//i, 'uploads/images/');
+  }
+  if (/^uploads\/crm\/(inward_images|outward_images|daily_temp_monitor_images)\//i.test(value)) {
+    return value.replace(
+      /^uploads\/crm\/(?:inward_images|outward_images|daily_temp_monitor_images)\//i,
+      'uploads/images/'
+    );
+  }
+  if (/^uploads\/(inward_images|outward_images|daily_temp_monitor_images)\//i.test(value)) {
+    return value.replace(
+      /^uploads\/(?:inward_images|outward_images|daily_temp_monitor_images)\//i,
+      'uploads/images/'
+    );
+  }
+  if (/^(inward_images|outward_images|daily_temp_monitor_images|images)\//i.test(value)) {
+    const name = fileNameOnly(value);
+    return name ? `uploads/images/${name}` : null;
+  }
+  if (value.startsWith('uploads/')) return value;
+  if (!value.includes('/')) return `uploads/images/${value}`;
+  return value.startsWith('uploads/') ? value : `uploads/${value}`;
 }
 
 /**
- * Resolve image URL for React Native.
+ * Resolve image URL for React Native - server uploads first.
  */
 export function resolveLogImageUrl(raw, baseUrl, folderHint = 'images') {
-  if (raw == null) return null;
-  let value = String(raw).trim();
-  if (!value || value === 'null' || value === 'undefined') return null;
+  const candidates = resolveLogImageUrlCandidates(raw, baseUrl, folderHint);
+  return candidates[0] || null;
+}
+
+/** Ordered candidates: local /uploads first, then CDN / absolute. */
+export function resolveLogImageUrlCandidates(raw, baseUrl, folderHint = 'images') {
+  const out = [];
+  const push = (u) => {
+    if (u && !out.includes(u)) out.push(u);
+  };
+  if (raw == null) return out;
+  const value = String(raw).trim();
+  if (!value || value === 'null' || value === 'undefined') return out;
+
   if (value.startsWith('file://') || value.startsWith('content://') || value.startsWith('data:')) {
-    return value;
+    push(value);
+    return out;
   }
   const looksBase64 =
     value.length > 200 &&
@@ -63,55 +96,47 @@ export function resolveLogImageUrl(raw, baseUrl, folderHint = 'images') {
     /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
   if (looksBase64 || value.startsWith('/9j/') || value.startsWith('iVBOR')) {
     const mime = value.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
-    return `data:${mime};base64,${value.replace(/\s/g, '')}`;
+    push(`data:${mime};base64,${value.replace(/\s/g, '')}`);
+    return out;
   }
 
-  const base = String(baseUrl || '').replace(/\/$/, '');
+  const base = String(baseUrl || '').replace(/\/$/, '').replace(/\/api$/i, '');
+  const join = (rel) => (base ? `${base}/${String(rel).replace(/^\/+/, '')}` : null);
+
   if (/^https?:\/\//i.test(value)) {
+    // Fix Hostinger URLs missing /backend/public
+    if (/hostingersite\.com/i.test(value) && /\/uploads\//i.test(value) && !/\/backend\/public\/uploads\//i.test(value)) {
+      const up = value.match(/\/uploads\/(.+)$/i);
+      if (up) push(join(`uploads/${up[1]}`));
+    }
     const local = cloudinaryUrlToUploadsPath(value);
-    if (local && base) return `${base}/${local}`;
-    return value;
-  }
-  value = value.replace(/\\/g, '/').replace(/^\/+/, '');
-  if (value.startsWith('uploads/crm/images/')) {
-    value = value.replace(/^uploads\/crm\/images\//i, 'uploads/images/');
-  }
-  if (value.startsWith('uploads/')) {
-    if (!base) return null;
-    return `${base}/${value}`;
-  }
-  if (!base) return null;
-  if (!value.includes('/')) {
-    return `${base}/uploads/images/${value}`;
-  }
-  return `${base}/${value}`;
-}
-
-/** Ordered candidates: local /uploads first, then original Cloudinary URL. */
-export function resolveLogImageUrlCandidates(raw, baseUrl, folderHint = 'images') {
-  const out = [];
-  const push = (u) => {
-    if (u && !out.includes(u)) out.push(u);
-  };
-  if (raw == null) return out;
-  const value = String(raw).trim();
-  if (!value) return out;
-
-  const primary = resolveLogImageUrl(value, baseUrl, folderHint);
-  push(primary);
-
-  const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
-  const base = String(baseUrl || '').replace(/\/$/, '');
-  if (!normalized.includes('/') && base) {
-    push(`${base}/uploads/images/${normalized}`);
-  }
-  if (normalized.startsWith('uploads/')) {
-    if (base) push(`${base}/${normalized}`);
-  } else if (/^https?:\/\/res\.cloudinary\.com\//i.test(value)) {
-    const local = cloudinaryUrlToUploadsPath(value);
-    if (local && base) push(`${base}/${local}`);
+    if (local) {
+      push(join(local));
+      const name = fileNameOnly(local);
+      if (name) {
+        push(join(`uploads/images/${name}`));
+        push(join(`uploads/inward_images/${name}`));
+        push(join(`uploads/outward_images/${name}`));
+        push(join(`uploads/daily_temp_monitor_images/${name}`));
+      }
+    }
     push(value);
+    return out;
   }
+
+  const normalized = normalizeUploadsRelPath(value);
+  if (normalized) push(join(normalized));
+  const name = fileNameOnly(value);
+  if (name) {
+    push(join(`uploads/images/${name}`));
+    push(join(`uploads/${folderHint || 'images'}/${name}`));
+    push(join(`uploads/inward_images/${name}`));
+    push(join(`uploads/outward_images/${name}`));
+    push(join(`uploads/daily_temp_monitor_images/${name}`));
+  }
+  const rawPath = value.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (rawPath.startsWith('uploads/')) push(join(rawPath));
+
   return out;
 }
 
@@ -154,7 +179,7 @@ export function formatPhotoCaptureMetadataLines(raw) {
         const parts = [`${label}${entries.length > 1 ? ` ${idx + 1}` : ''}`];
         if (time) parts.push(time);
         if (gps) parts.push(gps);
-        return parts.length > 1 ? parts.join(' · ') : null;
+        return parts.length > 1 ? parts.join(' | ') : null;
       })
       .filter(Boolean);
   });

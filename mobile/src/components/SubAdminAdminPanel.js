@@ -35,10 +35,10 @@ function StatusBadge({ status }) {
 }
 
 /**
- * Sub-Admin Admin panel — three sections:
- *   1) Permissions — approve/deny DO requests
- *   2) DOs — create/edit operators (warehouse + chamber_limit)
- *   3) Master — catalog warehouse_master / client_master CRUD
+ * Sub-Admin Admin panel - three sections:
+ *   1) Permissions - approve/deny DO requests
+ *   2) DOs - create/edit operators (warehouse + chamber_limit)
+ *   3) Master - catalog warehouse_master / client_master CRUD
  * Chamber↔client assignments for a DO are edited in SubAdminDoMasterSetup, not here.
  */
 export default function SubAdminAdminPanel({
@@ -174,7 +174,7 @@ export default function SubAdminAdminPanel({
     }
   }, [apiUrl, token, headers]);
 
-  /** Catalog + chamber assignments — so soft-deactivated clients also appear. */
+  /** Catalog + chamber assignments - so soft-deactivated clients also appear. */
   const displayClients = useMemo(() => {
     const isAssignInactive = (row) => {
       const s = String(row?.status || 'active').trim().toLowerCase();
@@ -240,7 +240,7 @@ export default function SubAdminAdminPanel({
     });
 
     return Array.from(map.values()).map((row) => {
-      // Prefer operational assignment status: deactive assignment → show Deactive
+      // Prefer operational assignment status: deactive assignment -> show Deactive
       // even if catalog is_active is still 1
       let is_active = row.is_active;
       if (row._hasDeactiveAssign && !row._hasActiveAssign) is_active = 0;
@@ -305,7 +305,7 @@ export default function SubAdminAdminPanel({
       ]
         .map((v) => String(v || '').toLowerCase().trim())
         .filter(Boolean)
-        .join(' · ');
+        .join(' | ');
       return tokens.every((t) => hay.includes(t));
     });
   }, [operators, search]);
@@ -322,7 +322,7 @@ export default function SubAdminAdminPanel({
     const list = !q
       ? [...src]
       : src.filter((row) => JSON.stringify(row).toLowerCase().includes(q));
-    // Active first, then Deactive — both always visible
+    // Active first, then Deactive - both always visible
     return list.sort((a, b) => {
       const aActive = isMasterActive(a) ? 0 : 1;
       const bActive = isMasterActive(b) ? 0 : 1;
@@ -675,7 +675,7 @@ export default function SubAdminAdminPanel({
     <View style={styles.wrap}>
       <View style={styles.hero}>
         <Text style={styles.heroTitle}>Admin Control</Text>
-        <Text style={styles.heroSub}>Permissions · Data Operators · Master data</Text>
+        <Text style={styles.heroSub}>Permissions | Data Operators | Master data</Text>
       </View>
 
       <View style={styles.sectionRow}>
@@ -719,10 +719,10 @@ export default function SubAdminAdminPanel({
           onChangeText={setSearch}
           placeholder={
             section === 'permissions'
-              ? 'Search permission requests…'
+              ? 'Search permission requests...'
               : section === 'dos'
-                ? 'Search DOs by name, email, warehouse, phone…'
-                : 'Search master…'
+                ? 'Search DOs by name, email, warehouse, phone...'
+                : 'Search master...'
           }
           placeholderTextColor="#94a3b8"
         />
@@ -762,7 +762,7 @@ export default function SubAdminAdminPanel({
               })}
             </View>
             {permissionsUpdatedAt ? (
-              <Text style={styles.updatedAt}>Updated · {permissionsUpdatedAt}</Text>
+              <Text style={styles.updatedAt}>Updated | {permissionsUpdatedAt}</Text>
             ) : null}
 
             {permissionLoading && !refreshing ? (
@@ -789,13 +789,13 @@ export default function SubAdminAdminPanel({
                         </Text>
                         <Text style={styles.cardMeta} numberOfLines={2}>
                           {n.operator_email || n.requested_by || 'DO'}
-                          {n.chamber_name ? ` · ${n.chamber_name}` : ''}
+                          {n.chamber_name ? ` | ${n.chamber_name}` : ''}
                         </Text>
                       </View>
                       <StatusBadge status={n.status} />
                     </View>
                     <Text style={styles.cardBody} numberOfLines={3}>
-                      {n._subtitle || n.details || n.message || '—'}
+                      {n._subtitle || n.details || n.message || '-'}
                     </Text>
                     {pending ? (
                       <View style={styles.actionRow}>
@@ -887,7 +887,7 @@ export default function SubAdminAdminPanel({
                       <Text style={styles.cardTitle}>{op.full_name || op.email}</Text>
                       <Text style={styles.cardMeta} numberOfLines={1}>
                         {op.email}
-                        {op.phone_no ? ` · ${op.phone_no}` : ''}
+                        {op.phone_no ? ` | ${op.phone_no}` : ''}
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
@@ -980,10 +980,10 @@ export default function SubAdminAdminPanel({
                       </Text>
                       <Text style={styles.cardMeta}>
                         {masterTab === 'warehouses'
-                          ? `${row.warehouse_code || '—'}${row.city ? ` · ${row.city}` : ''}`
-                          : `${row.client_code || '—'}${
-                              row.warehouse_name ? ` · ${row.warehouse_name}` : ''
-                            }${row.chamber_name ? ` · ${row.chamber_name}` : ''}`}
+                          ? `${row.warehouse_code || '-'}${row.city ? ` | ${row.city}` : ''}`
+                          : `${row.client_code || '-'}${
+                              row.warehouse_name ? ` | ${row.warehouse_name}` : ''
+                            }${row.chamber_name ? ` | ${row.chamber_name}` : ''}`}
                       </Text>
                       <View style={[styles.statusPill, styles.statusActive]}>
                         <Text style={[styles.statusPillText, styles.statusActiveText]}>Active</Text>
@@ -1009,10 +1009,10 @@ export default function SubAdminAdminPanel({
                       </Text>
                       <Text style={styles.cardMeta}>
                         {masterTab === 'warehouses'
-                          ? `${row.warehouse_code || '—'}${row.city ? ` · ${row.city}` : ''}`
-                          : `${row.client_code || '—'}${
-                              row.warehouse_name ? ` · ${row.warehouse_name}` : ''
-                            }${row.chamber_name ? ` · ${row.chamber_name}` : ''}`}
+                          ? `${row.warehouse_code || '-'}${row.city ? ` | ${row.city}` : ''}`
+                          : `${row.client_code || '-'}${
+                              row.warehouse_name ? ` | ${row.warehouse_name}` : ''
+                            }${row.chamber_name ? ` | ${row.chamber_name}` : ''}`}
                       </Text>
                       <View style={[styles.statusPill, styles.statusDeactive]}>
                         <Text style={[styles.statusPillText, styles.statusDeactiveText]}>
@@ -1133,7 +1133,7 @@ export default function SubAdminAdminPanel({
             {masterTab === 'warehouses' ? (
               <>
                 <View style={styles.field}>
-                  <Text style={styles.fieldLabel}>Code (WH-…)</Text>
+                  <Text style={styles.fieldLabel}>Code (WH-...)</Text>
                   <TextInput
                     style={styles.input}
                     value={whForm.warehouse_code}

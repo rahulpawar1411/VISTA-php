@@ -92,7 +92,7 @@
     ],
     "extra": {
       "apiUrl": "https://darkcyan-octopus-294935.hostingersite.com/backend/public",
-      "cloudinaryCloudName": "de9ba8bpk",
+
       "eas": {
         "projectId": "05781cac-f64a-4635-a343-5613ba0302eb"
       }

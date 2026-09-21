@@ -1,7 +1,7 @@
 /**
  * Morning / Evening local reminders.
- * - If Morning tasks already completed today → do NOT notify morning (schedule tomorrow only)
- * - If Evening tasks already completed today → do NOT notify evening (schedule tomorrow only)
+ * - If Morning tasks already completed today -> do NOT notify morning (schedule tomorrow only)
+ * - If Evening tasks already completed today -> do NOT notify evening (schedule tomorrow only)
  * Bodies include total client temperature-task counts; evening also flags morning still due.
  */
 import * as Notifications from 'expo-notifications';
@@ -99,7 +99,7 @@ export async function refreshTaskReminders({
   }
 
   try {
-    // Morning 10:00 — skip today if morning already done
+    // Morning 10:00 - skip today if morning already done
     const morningDate = morningCompleted ? tomorrowAt(10, 0) : nextOccurrence(10, 0);
     // If scheduling for tomorrow (already done today), use full client total again
     const morningBodyCount = morningClientCount;
@@ -118,11 +118,11 @@ export async function refreshTaskReminders({
     );
     console.log(
       morningCompleted
-        ? `🔔 Morning notify skipped today (completed) → next at ${morningDate.toISOString()}`
+        ? `🔔 Morning notify skipped today (completed) -> next at ${morningDate.toISOString()}`
         : `🔔 Morning notify scheduled at ${morningDate.toISOString()} (${morningBodyCount} clients)`
     );
 
-    // Evening 16:00 — skip today if evening already done
+    // Evening 16:00 - skip today if evening already done
     const eveningDate = eveningCompleted ? tomorrowAt(16, 0) : nextOccurrence(16, 0);
     // Morning-due note only when evening fires today and morning still pending
     const includeMorningDue =
@@ -145,7 +145,7 @@ export async function refreshTaskReminders({
     );
     console.log(
       eveningCompleted
-        ? `🔔 Evening notify skipped today (completed) → next at ${eveningDate.toISOString()}`
+        ? `🔔 Evening notify skipped today (completed) -> next at ${eveningDate.toISOString()}`
         : `🔔 Evening notify scheduled at ${eveningDate.toISOString()} (${eveningClientCount} clients, morning due ${includeMorningDue})`
     );
   } catch (err) {

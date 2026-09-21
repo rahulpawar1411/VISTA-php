@@ -121,7 +121,7 @@ Masters ke **do layers** hain:
                                             â”‚
                     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
                     â–¼                       â–¼                       â–¼
-              MySQL DB              Cloudinary (images)      Expo Push (alerts)
+              MySQL DB           Local uploads/images       Expo Push (alerts)
          reeferon_crm_db            temp / POD photos        Sub Admin + DO
 ```
 
@@ -154,7 +154,7 @@ Masters ke **do layers** hain:
 
 | Action | English | Hinglish |
 |--------|---------|----------|
-| Chamber temp / inward / outward | DO form â†’ API (or SQLite first if offline) â†’ MySQL + Cloudinary photo | Pehle local queue ho sakta hai, phir sync |
+| Chamber temp / inward / outward | DO form → API (or SQLite first if offline) → MySQL + local photo | Pehle local queue ho sakta hai, phir sync |
 | Catalog master create | SA / Sub Admin â†’ `/api/masters/*` | Direct (no DO permission) |
 | Chamber / client assignment change by DO | Request â†’ activity row Pending â†’ Approve â†’ apply | Allow ke baad apply |
 | Reports / inventory | Read from logs + masters codes via `masterResolver` | Codes se filter / reconcile |
@@ -233,7 +233,7 @@ DO app: bell / popup
 | **API** | Node.js + Express | Simple REST; same language as tooling |
 | **DB** | MySQL (`mysql2` pool) | Relational logs, roles, masters; WAMP/local + cloud |
 | **Auth** | JWT (`jsonwebtoken`) + bcryptjs | Stateless mobile/web login; hashed passwords |
-| **Files** | Multer + Cloudinary | Photos off-server CDN; EXIF via `exifr` |
+| **Files** | PHP upload → `uploads/images/` | Local disk photos; EXIF via `exifr` |
 | **Offline (DO)** | expo-sqlite + AsyncStorage | Cold rooms / weak network â€” queue then sync |
 | **Push** | expo-notifications + Expo Push HTTP API | Alerts when app closed; no full FCM SDK required |
 | **Email** | Nodemailer (SMTP) / Resend optional | Login / alerts when configured |
@@ -248,10 +248,9 @@ DO app: bell / popup
 | `dotenv` | `.env` config | Secrets out of code |
 | `bcryptjs` | Password hash | Safe storage; no plain passwords |
 | `jsonwebtoken` | Session token | Mobile Bearer + web cookie/Bearer |
-| `multer` | Multipart upload | Chamber/inward/outward photos |
-| `cloudinary` | Image host | Reliable photo URLs in production |
+| `multer` / PHP upload | Multipart upload | Chamber/inward/outward photos → `uploads/images/` |
 | `exifr` | Read photo EXIF / GPS | Verify capture metadata |
-| `nodemailer` | SMTP email | Local Gmail / any SMTP |
+| SMTP (`MailService`) | Credentials email | Operator/customer create |
 | `helmet` | Security headers | Harden HTTP |
 | `cors` | Cross-origin | Web `:3000` â†’ API `:5000` |
 | `express-rate-limit` | Login throttle | Brute-force protection |
@@ -284,9 +283,9 @@ DO app: bell / popup
 
 ### Why this mix (short) / Ye combo kyun
 
-**English:** Field DOs need **offline-first mobile**; managers need a **fast web console**; one **MySQL** source of truth; photos on **Cloudinary** so the API server stays light; **JWT** so mobile and web share the same API securely; **Expo Push** so permission decisions reach people even when the app is closed.
+**English:** Field DOs need **offline-first mobile**; managers need a **fast web console**; one **MySQL** source of truth; photos on **local disk** (`uploads/images`); **JWT** so mobile and web share the same API securely; **Expo Push** so permission decisions reach people even when the app is closed.
 
-**Hinglish:** DO ko offline chahiye â†’ SQLite. Boss ko web dashboard â†’ React/Vite. Sab data ek DB â†’ MySQL. Photos heavy hain â†’ Cloudinary. Mobile + web same API â†’ JWT. App band pe bhi alert â†’ Expo Push.
+**Hinglish:** DO ko offline chahiye → SQLite. Boss ko web dashboard → React/Vite. Sab data ek DB → MySQL. Photos local server pe → `uploads/images`. Mobile + web same API → JWT. App band pe bhi alert → Expo Push.
 
 ---
 
@@ -296,7 +295,7 @@ DO app: bell / popup
 ```bash
 cd backend
 npm install
-# Configure backend/.env (DB_*, JWT_SECRET, Cloudinary, email)
+# Configure backend/.env (DB_*, JWT_SECRET, SMTP/email)
 npm start
 ```
 API: `http://localhost:5000`
@@ -422,7 +421,7 @@ try {
 | Session expired | Bad/expired JWT | Logout â†’ login; prod `JWT_SECRET` match |
 | Permission denied / 403 | Role or pending allow | Approve request; check role |
 | Duplicate chamber/client | Unique name/code | Use unique names (`Bhopal Chamber 1`) |
-| Sync pending forever | Upload / Cloudinary / network | Check Cloudinary env; retry sync |
+| Sync pending forever | Upload / network | Check `uploads/images` writable; retry sync |
 | Push not received | No token / notifications off | Re-login; allow notifications; dead tokens auto-clear |
 
 ---
@@ -463,33 +462,18 @@ Set at least:
 - Email: SMTP or Resend
 - `APP_LOGIN_URL` â†’ live web URL in production (not `localhost`)
 
-### Photos / Cloudinary (important deploy decision)
+### Photos (local disk only)
 
-**English â€” today (dev):** Cloudinary is ON for easier photo CDN testing.  
-**Hinglish â€” abhi:** Development mein Cloudinary use ho raha hai.
-
-**At deployment (agreed):** We will **not** use Cloudinary on production. Switch to **local disk uploads** (Multer â†’ `uploads/` served by Express).
+Photos save on the PHP server under `backend/uploads/images/` with Cloudinary-**style** filenames (no Cloudinary account required).
 
 ```env
-# Development (current)
-UPLOAD_TO_CLOUDINARY=true
-CLOUDINARY_CLOUD_NAME=...
-CLOUDINARY_API_KEY=...
-CLOUDINARY_API_SECRET=...
-
-# Production / deploy (planned â€” change at deploy time)
-UPLOAD_TO_CLOUDINARY=false
-# Cloudinary keys can be omitted when false
-# Ensure uploads/ folder is writable and backed up on the server
+# Not used anymore — do not set CLOUDINARY_* keys
+# Writable folder: backend/uploads/images
 ```
 
-Code already supports this flag in `backend/config/multer.js`:
-- `true` â†’ local + Cloudinary (DB stores Cloudinary URL)
-- `false` â†’ local disk only (DB stores local `/uploads/...` path)
+**Deploy checklist:** ensure `uploads/images` is writable and backed up with the DB.
 
-**Deploy checklist item:** set `UPLOAD_TO_CLOUDINARY=false`, verify photos open in web + mobile, backup `uploads/` with DB.
-
-**Never commit real secrets.** Keep production values on the host (e.g. Render env vars).
+**Never commit real secrets.** Keep production DB/SMTP values only on the host `.env`.
 
 ---
 
@@ -500,7 +484,7 @@ Code already supports this flag in `backend/config/multer.js`:
 3. DO chamber morning log + inward (online + offline sync)  
 4. Permission request â†’ approve/deny with remark â†’ DO popup  
 5. Push with app closed (Sub Admin + DO)  
-6. Photos appear (**local uploads** on deploy â€” not Cloudinary)  
+6. Photos appear (**local** `uploads/images` — not Cloudinary)  
 7. Customer sees only allowed warehouse/clients  
 
 Backup notes: [`Rules-and-docs/docs/BACKUP.md`](Rules-and-docs/docs/BACKUP.md)
